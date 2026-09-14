@@ -77,6 +77,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════════════════
 # App setup
 # ═══════════════════════════════════════════════════════════════════
+STATIC_DIR = Path(__file__).resolve().parent  # project root (index.html lives here)
 
 app = Quart(__name__, static_folder=None)
 app = cors(app, allow_origin="*", allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type"])
@@ -252,12 +253,12 @@ def broadcast(lobby, event, data):
 # ═══════════════════════════════════════════════════════════════════
 @app.route("/")
 async def index():
-    return await send_from_directory("index.html")
+    return await send_from_directory(STATIC_DIR, "index.html")
 
 
 @app.route("/<path:path>")
 async def static_files(path):
-    return await send_from_directory(path)
+    return await send_from_directory(STATIC_DIR, path)
 
 
 # ═══════════════════════════════════════════════════════════════════
