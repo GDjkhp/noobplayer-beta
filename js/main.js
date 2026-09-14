@@ -166,4 +166,15 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   showOverlay('overlay-mode');
+
+  /* ───────── Leave-on-close ─────────
+     Tab close / refresh / navigation don't run normal JS to completion, so
+     this has to be a 'pagehide' listener using sendBeacon (survives the
+     page unloading). The server also self-heals via an SSE-disconnect
+     grace period if this never fires (e.g. the browser kills the page
+     before even 'pagehide' runs), so this is a fast-path, not the only
+     safety net. */
+  window.addEventListener('pagehide', () => {
+    if (typeof Lobby !== 'undefined') Lobby.leaveBeacon();
+  });
 });

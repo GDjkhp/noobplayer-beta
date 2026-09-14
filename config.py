@@ -24,3 +24,9 @@ ICE_SERVERS = ["stun:stun.l.google.com:19302"]
 # ── Lobbies ──
 LOBBY_CODE_LENGTH = 6
 CHAT_HISTORY_LIMIT = 100
+
+# How long (seconds) a dropped SSE connection is given to reconnect before
+# the participant is treated as having actually left. Covers EventSource's
+# own auto-retry and brief network blips without wrongly evicting someone
+# or handing off the host mid-session over a hiccup.
+DISCONNECT_GRACE_SECONDS = 12

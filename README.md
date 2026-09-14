@@ -1,13 +1,13 @@
 # NodeLink Client — Server Mode Setup
 
-This folder contains the Flask + aiortc backend that powers **Server / Lobby
-mode**. Standalone mode needs none of this — it's only required if you want
-shared lobbies (synced playback + chat + voice).
+The project root contains everything: the static frontend (`index.html`,
+`css/`, `js/`) **and** the Quart + aiortc backend that powers **Server /
+Lobby mode** (`server.py`, `config.py`). Standalone mode doesn't need the
+backend at all — only Server Mode does (synced playback + chat + voice).
 
 ## 1. Install dependencies
 
 ```bash
-cd server
 python3 -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
@@ -24,7 +24,7 @@ simply disabled (music sync, chat, and lobbies all still work).
 
 ## 2. Set your NodeLink credentials
 
-Edit `server/config.py`:
+Edit `config.py`:
 
 ```python
 NODELINK_HOST = "https://your-nodelink-host:443"
@@ -32,7 +32,7 @@ NODELINK_PASSWORD = "your-password"
 ```
 
 The browser never sees these — every NodeLink call (search, stream, lyrics,
-chapters, meaning) is proxied through Flask.
+chapters, meaning) is proxied through the backend.
 
 ## 3. Run it
 
@@ -75,7 +75,12 @@ server bandwidth flat no matter how many people are listening, and reuses
 the exact same `PCMPlayer` engine as standalone mode.
 
 State changes are pushed to every participant over Server-Sent Events
-(`/api/lobby/<code>/events`), so no polling is needed.
+(`/api/lobby/<code>/events`). Every control endpoint (play/pause/seek/skip/
+filters/queue) **also returns the fresh state directly in its HTTP
+response** — the client applies that immediately instead of waiting for its
+own SSE broadcast to loop back, so the person taking the action (usually the
+host) sees/hears the result right away rather than depending on round-trip
+timing.
 
 ### Voice chat (real audio relay)
 Voice needs actual low-latency audio, so it goes over WebRTC. Each client
@@ -96,20 +101,34 @@ strict NATs).
 Whoever creates a lobby is the **host**. Only the host can play/pause/seek/
 skip/change filters — this keeps playback from fighting itself with multiple
 people clicking buttons. Anyone can add tracks to the shared queue and use
-text/voice chat. If the host leaves, the next remaining participant is
-promoted automatically.
+text/voice chat.
+
+### Host departure / disconnects
+If the host leaves, the next remaining participant is promoted automatically;
+if the lobby becomes empty, it's destroyed. This is handled two ways:
+
+- **Explicit leave** (clicking "Leave", or a `pagehide`-triggered
+  `navigator.sendBeacon()` call on tab close/refresh/navigation) tears the
+  participant down immediately.
+- **Silent disconnects** (browser crash, lost network, force-quit) are
+  caught server-side: when a participant's SSE connection drops, the server
+  waits a short grace period (`DISCONNECT_GRACE_SECONDS` in `config.py`,
+  default 12s) in case it's just an EventSource auto-retry or a brief
+  network blip. If they haven't reconnected by then, they're treated as
+  having left — host promoted / lobby destroyed the same as an explicit
+  leave.
 
 ## Endpoints reference
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/lobby/create` | Create a lobby, become host |
-| POST | `/api/lobby/join` | Join by 6-letter code |
+| POST | `/api/lobby/create` | Create a lobby, become host (returns initial state) |
+| POST | `/api/lobby/join` | Join by 6-letter code (returns current state) |
 | GET  | `/api/lobby/public` | List public lobbies |
-| POST | `/api/lobby/<code>/leave` | Leave a lobby |
+| POST | `/api/lobby/<code>/leave` | Leave a lobby immediately |
 | GET  | `/api/lobby/<code>/events` | SSE stream: state / participants / chat |
 | POST | `/api/lobby/<code>/chat` | Send a chat message |
-| POST | `/api/lobby/<code>/play` \| `/pause` \| `/resume` \| `/seek` \| `/skip` \| `/filters` | Host-only playback control |
-| POST | `/api/lobby/<code>/queue/add` \| `/queue/remove` | Anyone can manage the shared queue |
+| POST | `/api/lobby/<code>/play` \| `/pause` \| `/resume` \| `/seek` \| `/skip` \| `/filters` | Host-only playback control (returns fresh state) |
+| POST | `/api/lobby/<code>/queue/add` \| `/queue/remove` | Anyone can manage the shared queue (returns fresh state) |
 | POST | `/api/lobby/<code>/webrtc/offer` | WebRTC signaling for voice |
 | GET/POST | `/api/nodelink/*` | Proxies to your NodeLink node |

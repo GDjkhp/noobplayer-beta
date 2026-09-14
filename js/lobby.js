@@ -42,7 +42,7 @@ const Lobby = {
   async create(name, isPublic, displayName) {
     try {
       const r = await LobbyAPI.create(name || 'Untitled Lobby', isPublic, displayName || 'Guest');
-      this._enterLobby(r.code, r.clientId, r.token, true, displayName || 'Guest');
+      this._enterLobby(r.code, r.clientId, r.token, true, displayName || 'Guest', r.state);
     } catch (e) { toast(`Failed to create lobby: ${e.message}`, 'error'); }
   },
 
@@ -99,12 +99,22 @@ const Lobby = {
     S.lobby.lastServerState = state;
     const wasHost = S.lobby.isHost;
     S.lobby.isHost = state.hostId === S.lobby.clientId;
-    if (wasHost !== S.lobby.isHost) UI.applyLockState();
+    if (wasHost !== S.lobby.isHost) {
+      UI.applyLockState();
+      if (S.lobby.isHost && !wasHost) toast('You are now the host', 'info');
+    }
 
     S.queue = state.queue || [];
     UI.renderQueue();
 
     Engine._localSync(state.currentTrack, state.paused, state.positionMs, state.filters || {});
+  },
+
+  // Applies a control endpoint's returned state immediately, so the person
+  // who just took the action (play/pause/seek/queue-add/etc.) doesn't have
+  // to wait for their own SSE echo to see or hear the result.
+  applyControlResult(result) {
+    if (result && result.state) this._applyState(result.state);
   },
 
   _applyParticipants(list) {
@@ -155,6 +165,21 @@ const Lobby = {
   copyCode() {
     navigator.clipboard?.writeText(S.lobby.code).then(() => toast('Code copied', 'success', 1500))
       .catch(() => toast(S.lobby.code, 'info'));
+  },
+
+  // Best-effort synchronous-ish leave notice fired from a 'pagehide'
+  // listener (tab close / navigation / refresh). sendBeacon queues the
+  // request with the browser and survives the page unloading, unlike a
+  // normal fetch() which gets cancelled. The server also detects the SSE
+  // connection dropping on its own after a grace period, so this just
+  // makes teardown near-instant instead of waiting ~12s.
+  leaveBeacon() {
+    if (S.mode !== 'server' || !S.lobby.active || !S.lobby.code || !S.lobby.clientId) return;
+    try {
+      const url = `${Backend.serverUrl}/api/lobby/${S.lobby.code}/leave`;
+      const blob = new Blob([JSON.stringify({ clientId: S.lobby.clientId })], { type: 'application/json' });
+      navigator.sendBeacon?.(url, blob);
+    } catch (_) {}
   },
 
   async leave() {

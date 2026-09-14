@@ -130,8 +130,10 @@ const Engine = {
   async playTrack(track) {
     if (S.mode === 'server') {
       if (!S.lobby.isHost) { toast('Only the host can change tracks', 'warn'); return; }
-      try { await LobbyAPI.control(S.lobby.code, 'play', { clientId: S.lobby.clientId, track }); }
-      catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'play', { clientId: S.lobby.clientId, track });
+        Lobby.applyControlResult(r);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
     S.current = track;
@@ -144,8 +146,10 @@ const Engine = {
       if (!S.lobby.isHost) { toast('Only the host controls playback', 'warn'); return; }
       if (!S.current) { toast('Queue is empty', 'warn'); return; }
       const action = (S.player && !S.player.isPaused) ? 'pause' : 'resume';
-      try { await LobbyAPI.control(S.lobby.code, action, { clientId: S.lobby.clientId }); }
-      catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, action, { clientId: S.lobby.clientId });
+        Lobby.applyControlResult(r);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
     if (!S.current) {
@@ -161,8 +165,10 @@ const Engine = {
   async skip() {
     if (S.mode === 'server') {
       if (!S.lobby.isHost) { toast('Only the host can skip', 'warn'); return; }
-      try { await LobbyAPI.control(S.lobby.code, 'skip', { clientId: S.lobby.clientId }); }
-      catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'skip', { clientId: S.lobby.clientId });
+        Lobby.applyControlResult(r);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
     if (S.queue.length === 0) { if (S.current) this.stop(); else toast('Queue is empty', 'warn'); return; }
@@ -182,7 +188,10 @@ const Engine = {
   async stop() {
     if (S.mode === 'server') {
       if (!S.lobby.isHost) { toast('Only the host can stop playback', 'warn'); return; }
-      try { await LobbyAPI.control(S.lobby.code, 'skip', { clientId: S.lobby.clientId }); } catch (_) {}
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'skip', { clientId: S.lobby.clientId });
+        Lobby.applyControlResult(r);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
     this._stopLocal();
@@ -194,8 +203,10 @@ const Engine = {
     posMs = Math.max(0, posMs);
     if (S.mode === 'server') {
       if (!S.lobby.isHost) { toast('Only the host can seek', 'warn'); return; }
-      try { await LobbyAPI.control(S.lobby.code, 'seek', { clientId: S.lobby.clientId, positionMs: posMs }); }
-      catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'seek', { clientId: S.lobby.clientId, positionMs: posMs });
+        Lobby.applyControlResult(r);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
     if (!S.current) return;
@@ -205,8 +216,10 @@ const Engine = {
 
   async addToQueue(track) {
     if (S.mode === 'server') {
-      try { await LobbyAPI.control(S.lobby.code, 'queue/add', { clientId: S.lobby.clientId, track }); }
-      catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'queue/add', { clientId: S.lobby.clientId, track });
+        Lobby.applyControlResult(r);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
     S.queue.push(track);
@@ -216,8 +229,10 @@ const Engine = {
 
   async removeFromQueue(i) {
     if (S.mode === 'server') {
-      try { await LobbyAPI.control(S.lobby.code, 'queue/remove', { clientId: S.lobby.clientId, index: i }); }
-      catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'queue/remove', { clientId: S.lobby.clientId, index: i });
+        Lobby.applyControlResult(r);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
     S.queue.splice(i, 1); UI.renderQueue();
@@ -253,8 +268,10 @@ const Engine = {
     UI.updateFilterStatus();
     if (S.mode === 'server') {
       if (!S.lobby.isHost) { toast('Only the host can change filters', 'warn'); return; }
-      try { await LobbyAPI.control(S.lobby.code, 'filters', { clientId: S.lobby.clientId, filters }); }
-      catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'filters', { clientId: S.lobby.clientId, filters });
+        Lobby.applyControlResult(r);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
     if (!S.current) { toast('Filters saved — will apply on next track', 'info'); return; }

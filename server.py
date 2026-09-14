@@ -249,6 +249,63 @@ def broadcast(lobby, event, data):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Participant departure — shared by the explicit /leave endpoint AND by
+# SSE disconnects (tab close, refresh, network drop). A dropped SSE
+# connection alone isn't necessarily a real departure — EventSource
+# auto-retries and brief network blips happen — so disconnects go through
+# a short grace period first; an explicit /leave (or the sendBeacon fired
+# on page unload) skips straight to _finalize_leave.
+# ═══════════════════════════════════════════════════════════════════
+async def _finalize_leave(lobby, client_id):
+    """Remove a participant for real: close their WebRTC connection,
+    promote a new host if they were host, broadcast the change, and tear
+    the whole lobby down if that was the last participant."""
+    if client_id not in lobby.participants:
+        return  # already handled by a prior call (explicit leave + a
+                 # later-expiring grace-period check both land here)
+
+    p = lobby.participants.pop(client_id, None)
+    lobby.subscribers.pop(client_id, None)
+    if p and p.pc:
+        try:
+            await p.pc.close()
+        except Exception:
+            pass
+
+    was_host = lobby.host_id == client_id
+    if was_host and lobby.participants:
+        lobby.host_id = next(iter(lobby.participants))
+
+    if not lobby.participants:
+        LOBBIES.pop(lobby.code, None)
+        return  # lobby is gone, nobody left to notify
+
+    if p:
+        broadcast(lobby, "participants", lobby.participant_list())
+        text = f"{p.name} left"
+        if was_host:
+            new_host = lobby.participants.get(lobby.host_id)
+            if new_host:
+                text += f" \u00b7 {new_host.name} is now host"
+        broadcast(lobby, "chat", {"system": True, "text": text, "ts": time.time() * 1000})
+
+    if was_host:
+        # hostId changed — push fresh state so host-only UI locks update
+        # on every remaining client, including the newly promoted host.
+        broadcast(lobby, "state", lobby.public_state())
+
+
+async def _schedule_disconnect_check(lobby, client_id):
+    """Wait out the grace period after an SSE connection drops; if the
+    client hasn't reconnected (re-registered a subscriber) by then, treat
+    it as a real departure."""
+    await asyncio.sleep(config.DISCONNECT_GRACE_SECONDS)
+    if client_id in lobby.subscribers:
+        return  # reconnected in time — nothing to do
+    await _finalize_leave(lobby, client_id)
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Static frontend
 # ═══════════════════════════════════════════════════════════════════
 @app.route("/")
@@ -337,7 +394,7 @@ async def create_lobby():
     lobby.participants[client_id] = Participant(client_id, display_name)
     LOBBIES[code] = lobby
 
-    return jsonify({"code": code, "clientId": client_id, "isHost": True})
+    return jsonify({"code": code, "clientId": client_id, "isHost": True, "state": lobby.public_state()})
 
 
 @app.route("/api/lobby/join", methods=["POST"])
@@ -375,19 +432,8 @@ async def leave_lobby(code):
     data = await request.get_json(force=True, silent=True) or {}
     client_id = data.get("clientId")
     lobby = get_lobby_or_404(code)
-    if lobby and client_id in lobby.participants:
-        p = lobby.participants.pop(client_id, None)
-        lobby.subscribers.pop(client_id, None)
-        if p and p.pc:
-            await p.pc.close()
-        if lobby.host_id == client_id and lobby.participants:
-            lobby.host_id = next(iter(lobby.participants))
-
-        if p:
-            broadcast(lobby, "participants", lobby.participant_list())
-            broadcast(lobby, "chat", {"system": True, "text": f"{p.name} left", "ts": time.time() * 1000})
-        if not lobby.participants:
-            LOBBIES.pop(code.upper(), None)
+    if lobby and client_id:
+        await _finalize_leave(lobby, client_id)
     return jsonify({"ok": True})
 
 
@@ -412,7 +458,13 @@ async def lobby_events(code):
                 except asyncio.TimeoutError:
                     yield b": ping\n\n"
         finally:
-            lobby.subscribers.pop(client_id, None)
+            # Only drop the subscriber queue here — actual participant
+            # removal (host promotion / lobby teardown) is deferred via a
+            # grace period in case this is just a reconnect, not a real
+            # departure. See _schedule_disconnect_check.
+            if lobby.subscribers.get(client_id) is q:
+                lobby.subscribers.pop(client_id, None)
+            asyncio.create_task(_schedule_disconnect_check(lobby, client_id))
 
     return Response(
         gen(),
@@ -454,8 +506,9 @@ async def lobby_play(code):
     lobby.paused = False
     lobby.position_anchor_ms = 0
     lobby.anchor_time = time.time()
-    broadcast(lobby, "state", lobby.public_state())
-    return jsonify({"ok": True})
+    state = lobby.public_state()
+    broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
 
 
 @app.route("/api/lobby/<code>/pause", methods=["POST"])
@@ -469,8 +522,9 @@ async def lobby_pause(code):
     lobby.position_anchor_ms = lobby.current_position_ms()
     lobby.paused = True
     lobby.anchor_time = time.time()
-    broadcast(lobby, "state", lobby.public_state())
-    return jsonify({"ok": True})
+    state = lobby.public_state()
+    broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
 
 
 @app.route("/api/lobby/<code>/resume", methods=["POST"])
@@ -483,8 +537,9 @@ async def lobby_resume(code):
         return jsonify({"error": "host only"}), 403
     lobby.paused = False
     lobby.anchor_time = time.time()
-    broadcast(lobby, "state", lobby.public_state())
-    return jsonify({"ok": True})
+    state = lobby.public_state()
+    broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
 
 
 @app.route("/api/lobby/<code>/seek", methods=["POST"])
@@ -497,8 +552,9 @@ async def lobby_seek(code):
         return jsonify({"error": "host only"}), 403
     lobby.position_anchor_ms = float(data.get("positionMs", 0))
     lobby.anchor_time = time.time()
-    broadcast(lobby, "state", lobby.public_state())
-    return jsonify({"ok": True})
+    state = lobby.public_state()
+    broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
 
 
 @app.route("/api/lobby/<code>/skip", methods=["POST"])
@@ -517,8 +573,9 @@ async def lobby_skip(code):
     else:
         lobby.current_track = None
         lobby.paused = True
-    broadcast(lobby, "state", lobby.public_state())
-    return jsonify({"ok": True})
+    state = lobby.public_state()
+    broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
 
 
 @app.route("/api/lobby/<code>/filters", methods=["POST"])
@@ -532,8 +589,9 @@ async def lobby_filters(code):
     lobby.position_anchor_ms = lobby.current_position_ms()
     lobby.anchor_time = time.time()
     lobby.filters = data.get("filters", {})
-    broadcast(lobby, "state", lobby.public_state())
-    return jsonify({"ok": True})
+    state = lobby.public_state()
+    broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
 
 
 @app.route("/api/lobby/<code>/queue/add", methods=["POST"])
@@ -553,8 +611,9 @@ async def lobby_queue_add(code):
         lobby.anchor_time = time.time()
     else:
         lobby.queue.append(track)
-    broadcast(lobby, "state", lobby.public_state())
-    return jsonify({"ok": True})
+    state = lobby.public_state()
+    broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
 
 
 @app.route("/api/lobby/<code>/queue/remove", methods=["POST"])
@@ -569,8 +628,9 @@ async def lobby_queue_remove(code):
     idx = data.get("index")
     if isinstance(idx, int) and 0 <= idx < len(lobby.queue):
         lobby.queue.pop(idx)
-    broadcast(lobby, "state", lobby.public_state())
-    return jsonify({"ok": True})
+    state = lobby.public_state()
+    broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
 
 
 # ═══════════════════════════════════════════════════════════════════
