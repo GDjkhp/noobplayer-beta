@@ -40,7 +40,7 @@ const S = {
     isHost: false,
     displayName: '',
     participants: [],
-    es: null,          // EventSource
+    socket: null,       // Socket.IO client
     pc: null,           // RTCPeerConnection
     micStream: null,
     micEnabled: false,

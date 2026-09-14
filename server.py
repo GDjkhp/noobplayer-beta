@@ -26,8 +26,13 @@ Architecture
   position from the broadcast anchor so everyone stays in sync. Bandwidth
   stays flat regardless of listener count.
 
-- State sync + chat: pushed to clients over Server-Sent Events, using an
-  asyncio.Queue per subscriber.
+- State sync + chat: pushed to clients over Socket.IO (WebSocket, with
+  automatic long-polling fallback and automatic client-side reconnection).
+  Each lobby is a Socket.IO "room" (named after the lobby code); state
+  changes are broadcast to that room. A client_id -> set-of-sids map on
+  each Lobby tracks which sockets are currently live for a participant,
+  which drives the same disconnect-grace-period logic that used to key
+  off the old SSE connection (see _schedule_disconnect_check below).
 
 - Voice chat: real audio, so it goes over WebRTC (aiortc). Each client
   opens ONE RTCPeerConnection to the server carrying their mic (send) and
@@ -42,16 +47,17 @@ Run (dev)
 
 Run (production, recommended)
 ------------------------------
-    hypercorn server:app --bind 0.0.0.0:5000
+    hypercorn server:asgi_app --bind 0.0.0.0:5000
 
-Then open http://localhost:5000 — this process serves both the API and the
-static frontend, so "use this server (default)" works with zero extra
-configuration.
+Note it's `server:asgi_app`, not `server:app` — `asgi_app` is the Quart app
+wrapped with the Socket.IO ASGI layer, so websocket traffic gets routed
+correctly. Then open http://localhost:5000 — this process serves the API,
+Socket.IO, and the static frontend, so "use this server (default)" works
+with zero extra configuration.
 """
 
 import asyncio
 import fractions
-import json
 import random
 import string
 import time
@@ -61,6 +67,7 @@ from pathlib import Path
 
 import aiohttp
 import numpy as np
+import socketio
 from quart import Quart, Response, jsonify, request, send_from_directory
 from quart_cors import cors
 
@@ -82,6 +89,14 @@ STATIC_DIR = Path(__file__).resolve().parent  # project root (index.html lives h
 
 app = Quart(__name__, static_folder=None)
 app = cors(app, allow_origin="*", allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type"])
+
+# Socket.IO server for real-time push (state/participants/chat), mounted
+# in front of the Quart app. Quart apps are themselves valid ASGI apps, so
+# socketio.ASGIApp forwards anything that isn't a Socket.IO request
+# straight through to `app` unchanged — regular REST routes below are
+# untouched. `asgi_app` (not `app`) is what you point a real server at.
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+asgi_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
 NL_HOST = config.NODELINK_HOST.rstrip("/")
 NL_PASS = config.NODELINK_PASSWORD
@@ -193,7 +208,7 @@ class Lobby:
         self.is_public = is_public
         self.host_id = host_id
         self.participants = {}   # client_id -> Participant
-        self.subscribers = {}    # client_id -> asyncio.Queue (SSE)
+        self.sids = {}           # client_id -> set of live Socket.IO sids
         self.queue = []          # list of track dicts
         self.current_track = None
         self.paused = True
@@ -228,6 +243,10 @@ class Lobby:
 
 LOBBIES = {}
 
+# Socket.IO sid -> (lobby_code, client_id), so the disconnect handler
+# (which only gets a bare sid from Socket.IO) knows who dropped.
+_sid_registry = {}
+
 
 def gen_code():
     while True:
@@ -240,23 +259,18 @@ def get_lobby_or_404(code):
     return LOBBIES.get((code or "").upper())
 
 
-def sse_format(event, data):
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
-
-
-def broadcast(lobby, event, data):
-    msg = sse_format(event, data)
-    for q in list(lobby.subscribers.values()):
-        q.put_nowait(msg)
+async def broadcast(lobby, event, data):
+    await sio.emit(event, data, room=lobby.code)
 
 
 # ═══════════════════════════════════════════════════════════════════
 # Participant departure — shared by the explicit /leave endpoint AND by
-# SSE disconnects (tab close, refresh, network drop). A dropped SSE
-# connection alone isn't necessarily a real departure — EventSource
-# auto-retries and brief network blips happen — so disconnects go through
-# a short grace period first; an explicit /leave (or the sendBeacon fired
-# on page unload) skips straight to _finalize_leave.
+# Socket.IO disconnects (tab close, refresh, network drop). A dropped
+# socket alone isn't necessarily a real departure — socket.io auto-
+# reconnects with backoff, and brief network blips happen — so
+# disconnects go through a short grace period first; an explicit /leave
+# (or the sendBeacon fired on page unload) skips straight to
+# _finalize_leave.
 # ═══════════════════════════════════════════════════════════════════
 async def _finalize_leave(lobby, client_id):
     """Remove a participant for real: close their WebRTC connection,
@@ -267,7 +281,13 @@ async def _finalize_leave(lobby, client_id):
                  # later-expiring grace-period check both land here)
 
     p = lobby.participants.pop(client_id, None)
-    lobby.subscribers.pop(client_id, None)
+    for sid in lobby.sids.pop(client_id, set()):
+        _sid_registry.pop(sid, None)
+        try:
+            await sio.disconnect(sid)
+        except Exception:
+            traceback.print_exc()
+            pass
     if p and p.pc:
         try:
             await p.pc.close()
@@ -284,26 +304,26 @@ async def _finalize_leave(lobby, client_id):
         return  # lobby is gone, nobody left to notify
 
     if p:
-        broadcast(lobby, "participants", lobby.participant_list())
+        await broadcast(lobby, "participants", lobby.participant_list())
         text = f"{p.name} left"
         if was_host:
             new_host = lobby.participants.get(lobby.host_id)
             if new_host:
                 text += f" \u00b7 {new_host.name} is now host"
-        broadcast(lobby, "chat", {"system": True, "text": text, "ts": time.time() * 1000})
+        await broadcast(lobby, "chat", {"system": True, "text": text, "ts": time.time() * 1000})
 
     if was_host:
         # hostId changed — push fresh state so host-only UI locks update
         # on every remaining client, including the newly promoted host.
-        broadcast(lobby, "state", lobby.public_state())
+        await broadcast(lobby, "state", lobby.public_state())
 
 
 async def _schedule_disconnect_check(lobby, client_id):
-    """Wait out the grace period after an SSE connection drops; if the
-    client hasn't reconnected (re-registered a subscriber) by then, treat
-    it as a real departure."""
+    """Wait out the grace period after a Socket.IO connection drops; if
+    the client hasn't reconnected (registered a new live sid) by then,
+    treat it as a real departure."""
     await asyncio.sleep(config.DISCONNECT_GRACE_SECONDS)
-    if client_id in lobby.subscribers:
+    if lobby.sids.get(client_id):
         return  # reconnected in time — nothing to do
     await _finalize_leave(lobby, client_id)
 
@@ -415,8 +435,8 @@ async def join_lobby():
     state = lobby.public_state()
     plist = lobby.participant_list()
 
-    broadcast(lobby, "participants", plist)
-    broadcast(lobby, "chat", {"system": True, "text": f"{display_name} joined", "ts": time.time() * 1000})
+    await broadcast(lobby, "participants", plist)
+    await broadcast(lobby, "chat", {"system": True, "text": f"{display_name} joined", "ts": time.time() * 1000})
 
     return jsonify({"code": code, "clientId": client_id, "isHost": False, "state": state})
 
@@ -440,41 +460,58 @@ async def leave_lobby(code):
     return jsonify({"ok": True})
 
 
-@app.route("/api/lobby/<code>/events")
-async def lobby_events(code):
-    client_id = request.args.get("clientId")
+# ═══════════════════════════════════════════════════════════════════
+# Socket.IO — real-time push. REST handlers above already return fresh
+# state to whoever made the change; these events are purely for fanning
+# that state out to everyone else in the lobby (room = lobby code), and
+# for tracking which participants currently have a live connection.
+# ═══════════════════════════════════════════════════════════════════
+@sio.event
+async def connect(sid, environ):
+    # No lobby association yet — the client already has clientId/code
+    # from its REST create/join call and sends join_lobby right after
+    # connecting. Nothing to do here but accept the connection.
+    pass
+
+
+@sio.on("join_lobby")
+async def socket_join_lobby(sid, data):
+    data = data or {}
+    code = (data.get("code") or "").upper()
+    client_id = data.get("clientId")
     lobby = get_lobby_or_404(code)
+
     if not lobby or client_id not in lobby.participants:
-        return jsonify({"error": "not in lobby"}), 404
+        await sio.emit("join_error", {"error": "not found"}, room=sid)
+        return
 
-    q = asyncio.Queue()
-    lobby.subscribers[client_id] = q
+    await sio.enter_room(sid, code)
+    _sid_registry[sid] = (code, client_id)
+    lobby.sids.setdefault(client_id, set()).add(sid)
 
-    async def gen():
-        try:
-            yield sse_format("state", lobby.public_state()).encode()
-            yield sse_format("participants", lobby.participant_list()).encode()
-            while True:
-                try:
-                    msg = await asyncio.wait_for(q.get(), timeout=15)
-                    yield msg.encode()
-                except asyncio.TimeoutError:
-                    # traceback.print_exc()
-                    yield b": ping\n\n"
-        finally:
-            # Only drop the subscriber queue here — actual participant
-            # removal (host promotion / lobby teardown) is deferred via a
-            # grace period in case this is just a reconnect, not a real
-            # departure. See _schedule_disconnect_check.
-            if lobby.subscribers.get(client_id) is q:
-                lobby.subscribers.pop(client_id, None)
-            asyncio.create_task(_schedule_disconnect_check(lobby, client_id))
+    # Bring this (re)connecting client fully up to date right away rather
+    # than waiting for someone else's next state-changing action.
+    await sio.emit("state", lobby.public_state(), room=sid)
+    await sio.emit("participants", lobby.participant_list(), room=sid)
 
-    return Response(
-        gen(),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+
+@sio.event
+async def disconnect(sid):
+    info = _sid_registry.pop(sid, None)
+    if not info:
+        return
+    code, client_id = info
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return
+    sids = lobby.sids.get(client_id)
+    if sids:
+        sids.discard(sid)
+    # Don't remove the participant yet — this may just be a reconnect
+    # (tab backgrounded, brief network blip, etc). See
+    # _schedule_disconnect_check, which double-checks after a grace
+    # period whether a new sid ever showed up for this client_id.
+    asyncio.create_task(_schedule_disconnect_check(lobby, client_id))
 
 
 @app.route("/api/lobby/<code>/chat", methods=["POST"])
@@ -490,7 +527,7 @@ async def post_chat(code):
     msg = {"id": uuid.uuid4().hex, "name": p.name, "text": str(data.get("text", ""))[:500], "ts": time.time() * 1000}
     lobby.chat.append(msg)
     lobby.chat = lobby.chat[-config.CHAT_HISTORY_LIMIT:]
-    broadcast(lobby, "chat", msg)
+    await broadcast(lobby, "chat", msg)
     return jsonify({"ok": True})
 
 
@@ -511,7 +548,7 @@ async def lobby_play(code):
     lobby.position_anchor_ms = 0
     lobby.anchor_time = time.time()
     state = lobby.public_state()
-    broadcast(lobby, "state", state)
+    await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
 
 
@@ -527,7 +564,7 @@ async def lobby_pause(code):
     lobby.paused = True
     lobby.anchor_time = time.time()
     state = lobby.public_state()
-    broadcast(lobby, "state", state)
+    await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
 
 
@@ -542,7 +579,7 @@ async def lobby_resume(code):
     lobby.paused = False
     lobby.anchor_time = time.time()
     state = lobby.public_state()
-    broadcast(lobby, "state", state)
+    await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
 
 
@@ -557,7 +594,7 @@ async def lobby_seek(code):
     lobby.position_anchor_ms = float(data.get("positionMs", 0))
     lobby.anchor_time = time.time()
     state = lobby.public_state()
-    broadcast(lobby, "state", state)
+    await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
 
 
@@ -578,7 +615,7 @@ async def lobby_skip(code):
         lobby.current_track = None
         lobby.paused = True
     state = lobby.public_state()
-    broadcast(lobby, "state", state)
+    await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
 
 
@@ -594,7 +631,7 @@ async def lobby_filters(code):
     lobby.anchor_time = time.time()
     lobby.filters = data.get("filters", {})
     state = lobby.public_state()
-    broadcast(lobby, "state", state)
+    await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
 
 
@@ -616,7 +653,7 @@ async def lobby_queue_add(code):
     else:
         lobby.queue.append(track)
     state = lobby.public_state()
-    broadcast(lobby, "state", state)
+    await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
 
 
@@ -633,7 +670,7 @@ async def lobby_queue_remove(code):
     if isinstance(idx, int) and 0 <= idx < len(lobby.queue):
         lobby.queue.pop(idx)
     state = lobby.public_state()
-    broadcast(lobby, "state", state)
+    await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
 
 
@@ -695,7 +732,19 @@ async def webrtc_offer(code):
 
 # ═══════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
+    import hypercorn.asyncio
+    from hypercorn.config import Config as HyperConfig
+
     print(f"[NodeLink Lobby Server] NodeLink node: {NL_HOST}")
     print(f"[NodeLink Lobby Server] Voice chat (aiortc): {'enabled' if WEBRTC_AVAILABLE else 'DISABLED — see warning above'}")
+    print(f"[NodeLink Lobby Server] Realtime transport: Socket.IO (WebSocket, long-polling fallback)")
     print(f"[NodeLink Lobby Server] Listening on http://{config.FLASK_HOST}:{config.FLASK_PORT}")
-    app.run(host=config.FLASK_HOST, port=config.FLASK_PORT, debug=config.DEBUG)
+
+    # Quart's own app.run() only serves `app` — the plain Quart/REST
+    # layer. Socket.IO is mounted a level above that (see `asgi_app`
+    # near the top of this file), so it has to be what actually gets
+    # served, or every websocket/polling request 404s.
+    hyper_cfg = HyperConfig()
+    hyper_cfg.bind = [f"{config.FLASK_HOST}:{config.FLASK_PORT}"]
+    hyper_cfg.debug = config.DEBUG
+    asyncio.run(hypercorn.asyncio.serve(asgi_app, hyper_cfg))

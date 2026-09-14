@@ -136,10 +136,6 @@ const LobbyAPI = {
     return res.json();
   },
 
-  eventsUrl(code, clientId) {
-    return `${this.base()}/api/lobby/${code}/events?clientId=${encodeURIComponent(clientId)}`;
-  },
-
   webrtcOfferUrl(code) {
     return `${this.base()}/api/lobby/${code}/webrtc/offer`;
   },

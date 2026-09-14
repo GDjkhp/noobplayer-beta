@@ -2,7 +2,7 @@
 /* ═══════════════════════════════════════════
    Lobby — server mode. Talks to the Flask backend for:
      - lobby create/join/browse (REST)
-     - shared playback state + chat (SSE push)
+     - shared playback state + chat (Socket.IO push)
      - voice chat (WebRTC via aiortc, server-side mixed per listener)
 ═══════════════════════════════════════════ */
 const Lobby = {
@@ -71,28 +71,41 @@ const Lobby = {
     document.getElementById('lobby-code-display').textContent = code;
     document.getElementById('sdot')?.classList.add('ok');
 
-    this._connectSSE(code, clientId);
+    this._connectSocket(code, clientId);
     UI.applyLockState();
     toast(`Joined lobby ${code}${isHost ? ' as host' : ''}`, 'success');
 
     if (initialState) this._applyState(initialState);
   },
 
-  _connectSSE(code, clientId) {
-    if (S.lobby.es) { S.lobby.es.close(); }
-    const es = new EventSource(LobbyAPI.eventsUrl(code, clientId));
-    es.addEventListener('state', e => this._applyState(JSON.parse(e.data)));
-    es.addEventListener('participants', e => this._applyParticipants(JSON.parse(e.data)));
-    es.addEventListener('chat', e => this._applyChat(JSON.parse(e.data)));
-    es.onerror = () => {
-      document.getElementById('sdot')?.classList.remove('ok');
-      document.getElementById('sdot')?.classList.add('err');
-    };
-    es.onopen = () => {
+  _connectSocket(code, clientId) {
+    if (S.lobby.socket) { S.lobby.socket.disconnect(); }
+    const socket = io(Backend.serverUrl, { transports: ['websocket', 'polling'] });
+    S.lobby.socket = socket;
+
+    // 'connect' fires on the first connection AND after every automatic
+    // reconnect (socket.io gives each attempt a fresh sid), so re-sending
+    // join_lobby here is also how we re-associate with our lobby/clientId
+    // after a drop — no separate 'reconnect' handler needed.
+    socket.on('connect', () => {
+      socket.emit('join_lobby', { code, clientId });
       document.getElementById('sdot')?.classList.remove('err');
       document.getElementById('sdot')?.classList.add('ok');
-    };
-    S.lobby.es = es;
+    });
+
+    socket.on('join_error', (payload) => {
+      const msg = payload?.error === 'not found' ? 'Lobby no longer exists' : (payload?.error || 'Failed to rejoin lobby');
+      toast(msg, 'error', 5000);
+    });
+
+    socket.on('state', (state) => this._applyState(state));
+    socket.on('participants', (list) => this._applyParticipants(list));
+    socket.on('chat', (msg) => this._applyChat(msg));
+
+    socket.on('disconnect', () => {
+      document.getElementById('sdot')?.classList.remove('ok');
+      document.getElementById('sdot')?.classList.add('err');
+    });
   },
 
   _applyState(state) {
@@ -112,7 +125,7 @@ const Lobby = {
 
   // Applies a control endpoint's returned state immediately, so the person
   // who just took the action (play/pause/seek/queue-add/etc.) doesn't have
-  // to wait for their own SSE echo to see or hear the result.
+  // to wait for their own socket echo to see or hear the result.
   applyControlResult(result) {
     if (result && result.state) this._applyState(result.state);
   },
@@ -170,8 +183,8 @@ const Lobby = {
   // Best-effort synchronous-ish leave notice fired from a 'pagehide'
   // listener (tab close / navigation / refresh). sendBeacon queues the
   // request with the browser and survives the page unloading, unlike a
-  // normal fetch() which gets cancelled. The server also detects the SSE
-  // connection dropping on its own after a grace period, so this just
+  // normal fetch() which gets cancelled. The server also detects the
+  // socket connection dropping on its own after a grace period, so this just
   // makes teardown near-instant instead of waiting ~12s.
   leaveBeacon() {
     if (S.mode !== 'server' || !S.lobby.active || !S.lobby.code || !S.lobby.clientId) return;
@@ -183,13 +196,13 @@ const Lobby = {
   },
 
   async leave() {
-    if (S.lobby.es) { S.lobby.es.close(); S.lobby.es = null; }
+    if (S.lobby.socket) { S.lobby.socket.disconnect(); S.lobby.socket = null; }
     if (S.lobby.pc) { S.lobby.pc.close(); S.lobby.pc = null; }
     if (S.lobby.micStream) { S.lobby.micStream.getTracks().forEach(t => t.stop()); S.lobby.micStream = null; }
     if (S.lobby.code) await LobbyAPI.leave(S.lobby.code, S.lobby.clientId);
     Engine._stopLocal();
     S.current = null; S.queue = [];
-    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], es:null, pc:null, micStream:null, micEnabled:false, lastServerState:null };
+    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, pc:null, micStream:null, micEnabled:false, lastServerState:null };
     UI.updatePlayerUI(); UI.renderQueue();
     document.getElementById('chat-log').innerHTML = '';
     document.getElementById('app').style.display = 'none';
