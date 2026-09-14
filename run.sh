@@ -1,0 +1,1 @@
+python3 -m hypercorn server:app --bind 0.0.0.0:42069
