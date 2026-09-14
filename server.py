@@ -459,7 +459,7 @@ async def lobby_events(code):
                     msg = await asyncio.wait_for(q.get(), timeout=15)
                     yield msg.encode()
                 except asyncio.TimeoutError:
-                    traceback.print_exc()
+                    # traceback.print_exc()
                     yield b": ping\n\n"
         finally:
             # Only drop the subscriber queue here — actual participant
