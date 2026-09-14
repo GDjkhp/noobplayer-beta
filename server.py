@@ -56,6 +56,7 @@ import random
 import string
 import time
 import uuid
+import traceback
 from pathlib import Path
 
 import aiohttp
@@ -135,6 +136,7 @@ if WEBRTC_AVAILABLE:
                     f = await asyncio.wait_for(t.recv(), timeout=0.06)
                     frames.append(f)
                 except Exception:
+                    traceback.print_exc()
                     pass
 
             if not frames:
@@ -270,6 +272,7 @@ async def _finalize_leave(lobby, client_id):
         try:
             await p.pc.close()
         except Exception:
+            traceback.print_exc()
             pass
 
     was_host = lobby.host_id == client_id
@@ -456,6 +459,7 @@ async def lobby_events(code):
                     msg = await asyncio.wait_for(q.get(), timeout=15)
                     yield msg.encode()
                 except asyncio.TimeoutError:
+                    traceback.print_exc()
                     yield b": ping\n\n"
         finally:
             # Only drop the subscriber queue here — actual participant
@@ -654,6 +658,7 @@ async def webrtc_offer(code):
         try:
             await participant.pc.close()
         except Exception:
+            traceback.print_exc()
             pass
 
     ice_servers = [RTCIceServer(urls=u) for u in config.ICE_SERVERS]
@@ -682,6 +687,7 @@ async def webrtc_offer(code):
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
     except Exception as e:
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
     return jsonify({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
