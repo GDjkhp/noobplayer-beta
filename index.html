@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NodeLink Client</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<audio id="voice-audio" autoplay style="display:none"></audio>
+
+<!-- ═══ MODE SELECT ═══ -->
+<div id="overlay-mode" class="overlay">
+  <div class="overlay-box">
+    <div class="overlay-logo">⬡ NodeLink</div>
+    <div class="overlay-sub">Choose how you want to listen</div>
+    <div class="mode-grid">
+      <button class="mode-card" id="pick-standalone">
+        <div class="mode-icon">🎧</div>
+        <div class="mode-title">Standalone</div>
+        <div class="mode-desc">Listen solo. Bring your own NodeLink server. Nothing leaves your browser.</div>
+      </button>
+      <button class="mode-card" id="pick-server">
+        <div class="mode-icon">🌐</div>
+        <div class="mode-title">Server / Lobby</div>
+        <div class="mode-desc">Join a lobby. Listen, chat, and talk together in real time.</div>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ STANDALONE CONNECT ═══ -->
+<div id="overlay-standalone" class="overlay">
+  <div class="overlay-box">
+    <div class="overlay-logo">⬡ Standalone Mode</div>
+    <div class="overlay-sub">Connect directly to a NodeLink server</div>
+    <div class="overlay-form">
+      <label>Host</label>
+      <input id="sa-host" class="hi full" type="text" placeholder="https://nodelink.example.com" value="https://nodelink.gdjkhp.com:443">
+      <label>Password</label>
+      <input id="sa-pass" class="hi full" type="password" placeholder="Password" value="youshallnotpass">
+      <button id="sa-connect" class="overlay-btn">Connect</button>
+      <button id="sa-back" class="overlay-btn ghost">← Back</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ SERVER SETUP ═══ -->
+<div id="overlay-server-setup" class="overlay">
+  <div class="overlay-box">
+    <div class="overlay-logo">⬡ Server Mode</div>
+    <div class="overlay-sub">Which Flask server should handle lobbies?</div>
+    <div class="overlay-form">
+      <div class="radio-row">
+        <label class="radio-opt"><input type="radio" name="srv" value="default" checked> Use this server <span class="radio-sub">(default)</span></label>
+        <label class="radio-opt"><input type="radio" name="srv" value="custom"> Connect to another server</label>
+      </div>
+      <input id="srv-url" class="hi full" type="text" placeholder="https://your-flask-server.com" style="display:none;margin-top:10px">
+      <button id="srv-continue" class="overlay-btn">Continue</button>
+      <button id="srv-back" class="overlay-btn ghost">← Back</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ LOBBY SELECT ═══ -->
+<div id="overlay-lobby-select" class="overlay">
+  <div class="overlay-box wide">
+    <div class="overlay-logo">⬡ Lobbies</div>
+    <div class="overlay-sub" id="lobby-select-sub">Not connected</div>
+
+    <div class="lobby-tabs">
+      <button class="lobby-tab on" data-ltab="join">Join</button>
+      <button class="lobby-tab" data-ltab="create">Create</button>
+      <button class="lobby-tab" data-ltab="browse">Browse Public</button>
+    </div>
+
+    <div class="lobby-pane on" id="ltab-join">
+      <div class="overlay-form">
+        <label>Display name</label>
+        <input id="join-name" class="hi full" type="text" placeholder="Your name" maxlength="24">
+        <label>Lobby code</label>
+        <input id="join-code" class="hi full mono-lg" type="text" placeholder="ABCXYZ" maxlength="6" style="text-transform:uppercase">
+        <button id="join-go" class="overlay-btn">Join Lobby</button>
+      </div>
+    </div>
+
+    <div class="lobby-pane" id="ltab-create">
+      <div class="overlay-form">
+        <label>Display name</label>
+        <input id="create-name" class="hi full" type="text" placeholder="Your name" maxlength="24">
+        <label>Lobby name</label>
+        <input id="create-lobby-name" class="hi full" type="text" placeholder="Friday Night Mix" maxlength="40">
+        <div class="radio-row">
+          <label class="radio-opt"><input type="radio" name="vis" value="private" checked> Private <span class="radio-sub">(share code only)</span></label>
+          <label class="radio-opt"><input type="radio" name="vis" value="public"> Public <span class="radio-sub">(listed for anyone)</span></label>
+        </div>
+        <button id="create-go" class="overlay-btn">Create Lobby</button>
+      </div>
+    </div>
+
+    <div class="lobby-pane" id="ltab-browse">
+      <div id="public-lobby-list" class="public-list"><div class="empty small"><p>Loading…</p></div></div>
+    </div>
+
+    <button id="lobby-select-back" class="overlay-btn ghost" style="margin-top:14px">← Back</button>
+  </div>
+</div>
+
+<!-- ═══ MAIN APP ═══ -->
+<div id="app" style="display:none">
+
+  <div id="hdr-standalone" class="hdr" style="display:none">
+    <span class="logo">⬡ NodeLink</span>
+    <span class="pcm-badge">PCM · s16le · 48 kHz · 2ch</span>
+    <span class="hdr-fill"></span>
+    <div id="sdot"></div>
+    <span id="stxt">Connected</span>
+    <button id="btn-disconnect-sa" class="hdr-btn danger">Disconnect</button>
+  </div>
+
+  <div id="hdr-lobby" class="hdr" style="display:none">
+    <span class="logo">⬡ NodeLink</span>
+    <span class="lobby-code-badge" id="lobby-code-display">------</span>
+    <button id="btn-copy-code" class="hdr-btn ghost" title="Copy invite code">Copy</button>
+    <span class="hdr-fill"></span>
+    <div id="participants-strip"></div>
+    <button id="btn-mic" class="hdr-btn" title="Toggle microphone">🎤 Off</button>
+    <button id="btn-leave-lobby" class="hdr-btn danger">Leave</button>
+  </div>
+
+  <div id="cors-note">⚠ CORS / connection error — check server settings.</div>
+
+  <div id="main">
+    <!-- LEFT: PLAYER -->
+    <div id="left">
+      <div id="art-wrap">
+        <div id="art-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+            <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
+          </svg>
+          <span>NO TRACK</span>
+        </div>
+        <img id="art-img" alt="">
+        <div id="eq"><div class="eb"></div><div class="eb"></div><div class="eb"></div><div class="eb"></div><div class="eb"></div></div>
+        <div id="buf-ring"></div>
+        <div id="pcm-meter">
+          <div class="pm-bar"><div class="pm-fill" id="pm-l"></div></div>
+          <div class="pm-bar"><div class="pm-fill" id="pm-r"></div></div>
+        </div>
+      </div>
+
+      <div id="info">
+        <div id="info-src">
+          <span id="info-src-txt">— IDLE —</span>
+          <span id="active-filter-badge">FILTER</span>
+          <span id="lock-badge">HOST ONLY</span>
+        </div>
+        <div id="info-title" style="color:var(--muted)">Nothing playing</div>
+        <div id="info-artist">—</div>
+      </div>
+
+      <div id="prog-wrap">
+        <div id="prog-bar">
+          <div id="prog-fill" style="width:0%"></div>
+          <div id="prog-thumb"></div>
+        </div>
+        <div id="prog-times"><span id="t-cur">0:00</span><span id="t-tot">0:00</span></div>
+      </div>
+
+      <div id="chaps-wrap" style="display:none">
+        <div id="chaps-head"><span>Chapters</span><span id="chap-cnt" style="font-size:9px"></span><span id="chap-arr">▸</span></div>
+        <div id="chaps-list"></div>
+      </div>
+
+      <div id="ctrls">
+        <div id="ctrls-main">
+          <button class="cb sm" id="btn-prev" title="Previous (Shift+←)">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+          </button>
+          <button class="cb sm" id="btn-b10" title="Back 10s (←)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
+              <text x="9" y="17" font-size="5.5" fill="currentColor" stroke="none" text-anchor="middle">10</text>
+            </svg>
+          </button>
+          <button class="cb lg" id="btn-play" title="Play/Pause (Space)">
+            <svg id="ico-play" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            <svg id="ico-pause" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          </button>
+          <button class="cb sm" id="btn-f10" title="Forward 10s (→)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>
+              <text x="10" y="17" font-size="5.5" fill="currentColor" stroke="none" text-anchor="middle">10</text>
+            </svg>
+          </button>
+          <button class="cb sm" id="btn-next" title="Skip (Shift+→)">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm8.5-6L23 18V6z"/></svg>
+          </button>
+          <button class="cb sm" id="btn-stop" title="Stop">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>
+          </button>
+        </div>
+        <div id="ctrls-sec">
+          <button class="cb sm" id="loop-btn" title="Loop (L)">OFF</button>
+          <button class="cb sm" id="btn-shuf" title="Shuffle (S)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+          </button>
+          <button class="cb sm" id="btn-meaning" title="Track meaning" style="font-size:13px">ℹ</button>
+          <div class="hsep"></div>
+          <div id="vol-row">
+            <svg class="vol-ico" width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+            <input id="vol-sl" type="range" min="0" max="100" value="80">
+            <span id="vol-lbl">80%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: TABS -->
+    <div id="right">
+      <div id="tabs">
+        <button class="tab on" data-tab="search">Search</button>
+        <button class="tab" data-tab="queue">Queue <span id="q-badge"></span></button>
+        <button class="tab" data-tab="lyrics">Lyrics ✦</button>
+        <button class="tab" data-tab="filters">Filters ⚙</button>
+        <button class="tab" data-tab="chat" id="tab-chat-btn" style="display:none">Chat <span id="chat-badge"></span></button>
+      </div>
+
+      <div class="pane on" id="pane-search">
+        <div id="search-bar">
+          <input id="si" type="text" placeholder="Search songs, URLs, playlists…">
+          <select id="src-sel">
+            <option value="ytmsearch:">YT Music</option>
+            <option value="ytsearch:">YouTube</option>
+            <option value="scsearch:">SoundCloud</option>
+            <option value="spsearch:">Spotify</option>
+            <option value="">Direct URL</option>
+          </select>
+          <button id="btn-srch">Search</button>
+        </div>
+        <div id="sres">
+          <div class="empty">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            <p>Search for tracks</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="pane" id="pane-queue">
+        <div id="q-hdr">
+          <span id="q-info">Queue empty</span>
+          <button class="qa" id="btn-qshuf">Shuffle</button>
+          <button class="qa d" id="btn-qclr">Clear</button>
+        </div>
+        <div id="ql">
+          <div class="empty">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 6h18M3 12h18M3 18h12"/></svg>
+            <p>Queue is empty</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="pane" id="pane-lyrics">
+        <div id="lyr-hdr">
+          <span id="lyr-src-lbl">No lyrics loaded</span>
+          <button id="btn-lyr">Fetch Lyrics</button>
+        </div>
+        <div id="lyr-body">
+          <div class="empty">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+            <p>Play a track and fetch lyrics</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="pane" id="pane-filters">
+        <div id="flt-body">
+          <div id="flt-lock-note">Only the lobby host can change filters. Your player will follow their choice automatically.</div>
+          <div class="flt-section">
+            <span class="flt-label">Active Filter JSON</span>
+            <div id="flt-status">none</div>
+          </div>
+          <div class="flt-section">
+            <span class="flt-label">Presets</span>
+            <div class="preset-grid">
+              <button class="preset-btn active" data-preset="normal">Normal<span class="preset-sub">no filters</span></button>
+              <button class="preset-btn" data-preset="bassBoost">Bass Boost<span class="preset-sub">equalizer</span></button>
+              <button class="preset-btn" data-preset="nightcore">Nightcore<span class="preset-sub">timescale ↑</span></button>
+              <button class="preset-btn" data-preset="vaporwave">Vaporwave<span class="preset-sub">timescale ↓</span></button>
+              <button class="preset-btn" data-preset="8d">8D Audio<span class="preset-sub">rotation</span></button>
+              <button class="preset-btn" data-preset="echo">Echo<span class="preset-sub">delay+feedback</span></button>
+              <button class="preset-btn" data-preset="karaoke">Karaoke<span class="preset-sub">vocal cut</span></button>
+              <button class="preset-btn" data-preset="chipmunk">Chipmunk<span class="preset-sub">pitch ↑↑</span></button>
+            </div>
+          </div>
+          <div class="flt-section">
+            <span class="flt-label">Manual — Timescale</span>
+            <div class="flt-row"><label>Speed</label><input class="flt-slider" type="range" id="f-speed" min="0.5" max="2.0" step="0.05" value="1.0"><span class="flt-val" id="f-speed-v">1.0</span></div>
+            <div class="flt-row"><label>Pitch</label><input class="flt-slider" type="range" id="f-pitch" min="0.5" max="2.0" step="0.05" value="1.0"><span class="flt-val" id="f-pitch-v">1.0</span></div>
+            <div class="flt-row"><label>Rate</label><input class="flt-slider" type="range" id="f-rate" min="0.5" max="2.0" step="0.05" value="1.0"><span class="flt-val" id="f-rate-v">1.0</span></div>
+          </div>
+          <div class="flt-section">
+            <span class="flt-label">Manual — Echo (NodeLink ✦)</span>
+            <div class="flt-row"><label>Delay (ms)</label><input class="flt-slider" type="range" id="f-edel" min="0" max="2000" step="50" value="0"><span class="flt-val" id="f-edel-v">0</span></div>
+            <div class="flt-row"><label>Feedback</label><input class="flt-slider" type="range" id="f-efb" min="0" max="0.9" step="0.05" value="0"><span class="flt-val" id="f-efb-v">0</span></div>
+            <div class="flt-row"><label>Mix</label><input class="flt-slider" type="range" id="f-emix" min="0" max="1.0" step="0.05" value="0"><span class="flt-val" id="f-emix-v">0</span></div>
+          </div>
+          <div class="flt-section">
+            <span class="flt-label">Manual — Rotation (8D)</span>
+            <div class="flt-row"><label>Hz</label><input class="flt-slider" type="range" id="f-rot" min="0" max="2.0" step="0.05" value="0"><span class="flt-val" id="f-rot-v">0</span></div>
+          </div>
+          <button id="btn-apply-flt">⚙ Apply Filters</button>
+        </div>
+      </div>
+
+      <div class="pane" id="pane-chat">
+        <div id="chat-log"></div>
+        <div id="chat-input-row">
+          <input id="chat-input" type="text" placeholder="Message the lobby…" maxlength="500">
+          <button id="chat-send">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="meaning-modal">
+  <div id="meaning-box">
+    <div id="meaning-title"></div>
+    <div id="meaning-sub"></div>
+    <div id="meaning-body"></div>
+    <button id="meaning-close">✕ Close</button>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script src="js/pcm-player.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/state.js"></script>
+<script src="js/api.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/standalone.js"></script>
+<script src="js/lobby.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

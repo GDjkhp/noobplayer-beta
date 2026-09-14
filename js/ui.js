@@ -1,0 +1,462 @@
+'use strict';
+/* ═══════════════════════════════════════════
+   UI — all DOM rendering. Mode-agnostic except where it checks
+   S.mode / S.lobby.isHost to lock host-only controls.
+═══════════════════════════════════════════ */
+const UI = {
+
+  isLocked() { return S.mode === 'server' && !S.lobby.isHost; },
+
+  applyLockState() {
+    const locked = this.isLocked();
+    const ids = ['btn-prev','btn-b10','btn-play','btn-f10','btn-next','btn-stop','btn-apply-flt'];
+    ids.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = locked; });
+    document.querySelectorAll('.preset-btn').forEach(b => b.disabled = locked);
+    document.querySelectorAll('.flt-slider').forEach(s => s.disabled = locked);
+    document.getElementById('prog-bar').classList.toggle('locked', locked);
+    document.getElementById('btn-shuf').disabled = (S.mode === 'server');
+    document.getElementById('loop-btn').disabled = (S.mode === 'server');
+    document.getElementById('btn-qshuf').disabled = (S.mode === 'server');
+    document.getElementById('btn-qclr').disabled = (S.mode === 'server');
+    document.querySelectorAll('.add-btn.pnow').forEach(b => b.disabled = locked);
+    document.getElementById('lock-badge').classList.toggle('show', locked);
+    document.getElementById('flt-lock-note').classList.toggle('show', locked);
+  },
+
+  setBuffering(on) { document.getElementById('buf-ring').classList.toggle('show', on); },
+
+  updatePlayerUI() {
+    const t = S.current;
+    const img = document.getElementById('art-img');
+    const empty = document.getElementById('art-empty');
+
+    if (t) {
+      if (t.info.artworkUrl) {
+        img.src = t.info.artworkUrl;
+        img.onload = () => img.classList.add('vis');
+        img.onerror = () => { img.classList.remove('vis'); empty.style.display = 'flex'; };
+        empty.style.display = 'none';
+      } else { img.classList.remove('vis'); empty.style.display = 'flex'; }
+
+      const srcMap = { youtube:'YOUTUBE', youtubemusic:'YT MUSIC', soundcloud:'SOUNDCLOUD',
+        spotify:'SPOTIFY', deezer:'DEEZER', bandcamp:'BANDCAMP', applemusic:'APPLE MUSIC', yandexmusic:'YANDEX' };
+      const src = (t.info.sourceName || '').toLowerCase();
+      document.getElementById('info-src-txt').textContent = srcMap[src] || src.toUpperCase() || '— PLAYING —';
+      document.getElementById('info-title').textContent = t.info.title;
+      document.getElementById('info-title').style.color = 'var(--text)';
+      document.getElementById('info-artist').textContent = t.info.author;
+      document.getElementById('t-tot').textContent = fmt(t.info.length);
+    } else {
+      img.classList.remove('vis'); empty.style.display = 'flex';
+      document.getElementById('info-src-txt').textContent = '— IDLE —';
+      document.getElementById('info-title').textContent = 'Nothing playing';
+      document.getElementById('info-title').style.color = 'var(--muted)';
+      document.getElementById('info-artist').textContent = '—';
+      document.getElementById('t-cur').textContent = '0:00';
+      document.getElementById('t-tot').textContent = '0:00';
+      document.getElementById('prog-fill').style.width = '0%';
+      document.getElementById('prog-thumb').style.left = '0%';
+      document.getElementById('chaps-wrap').style.display = 'none';
+      document.getElementById('pcm-meter').classList.remove('active');
+      document.getElementById('lyr-body').innerHTML =
+        `<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><p>Play a track and fetch lyrics</p></div>`;
+      document.getElementById('lyr-src-lbl').textContent = 'No lyrics loaded';
+    }
+    this.updatePlayPauseIcons(); this.updateEQ(); this.applyLockState();
+  },
+
+  updateProgress() {
+    if (!S.current || !S.player) return;
+    const posMs = S.player.getPositionMs();
+    const durMs = S.current.info.length;
+    if (!durMs) return;
+    const pct = Math.min((posMs / durMs) * 100, 100);
+    document.getElementById('prog-fill').style.width = pct + '%';
+    document.getElementById('prog-thumb').style.left = pct + '%';
+    document.getElementById('t-cur').textContent = fmt(posMs);
+  },
+
+  updatePlayPauseIcons() {
+    const playing = S.current && S.player && !S.player.isPaused;
+    document.getElementById('ico-play').style.display = playing ? 'none' : 'block';
+    document.getElementById('ico-pause').style.display = playing ? 'block' : 'none';
+  },
+
+  updateEQ() {
+    const playing = S.current && S.player && !S.player.isPaused;
+    document.getElementById('eq').classList.toggle('active', playing);
+    document.getElementById('eq').querySelectorAll('.eb').forEach(b => b.classList.toggle('paused', !playing));
+  },
+
+  updateLevelMeter() {
+    if (!S.player || S.player.isPaused) {
+      document.getElementById('pm-l').style.height = '0%';
+      document.getElementById('pm-r').style.height = '0%';
+      document.getElementById('pcm-meter').classList.remove('active');
+      return;
+    }
+    document.getElementById('pcm-meter').classList.add('active');
+    const [l, r] = S.player.getLevels();
+    document.getElementById('pm-l').style.height = (Math.min(l, 1) * 100) + '%';
+    document.getElementById('pm-r').style.height = (Math.min(r, 1) * 100) + '%';
+  },
+
+  startPosTimer() {
+    if (S.posTimer) clearInterval(S.posTimer);
+    S.posTimer = setInterval(() => {
+      if (!S.current || !S.player) return;
+      UI.updateProgress(); UI.syncLyrics(); UI.syncChapters(); UI.updateLevelMeter();
+    }, 100);
+  },
+
+  renderQueue() {
+    const count = S.queue.length;
+    document.getElementById('q-badge').textContent = count > 0 ? `(${count})` : '';
+    const totalMs = S.queue.reduce((a, t) => a + (t.info.length || 0), 0);
+    document.getElementById('q-info').textContent =
+      count === 0 ? 'Queue empty' : `${count} track${count !== 1 ? 's' : ''} · ${fmt(totalMs)}`;
+
+    const el = document.getElementById('ql');
+    if (count === 0) {
+      el.innerHTML = `<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 6h18M3 12h18M3 18h12"/></svg><p>Queue is empty</p></div>`;
+      return;
+    }
+    const locked = this.isLocked();
+    el.innerHTML = S.queue.map((t, i) => {
+      const thumb = t.info.artworkUrl
+        ? `<img class="qi-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
+        : `<div class="qi-nth">♪</div>`;
+      return `<div class="qi" data-qi="${i}">
+        <span class="qi-n">${i + 1}</span>${thumb}
+        <div class="qi-m">
+          <div class="qi-t">${esc(t.info.title)}</div>
+          <div class="qi-a">${esc(t.info.author)}</div>
+        </div>
+        <span class="qi-d">${fmt(t.info.length)}</span>
+        <div class="qi-bs">
+          <button class="qib" data-qa="play" data-qi="${i}" title="Play now" ${locked?'disabled':''}>▶</button>
+          <button class="qib" data-qa="up"   data-qi="${i}" title="Move up" ${(locked||S.mode==='server')?'disabled':''}>↑</button>
+          <button class="qib" data-qa="dn"   data-qi="${i}" title="Move down" ${(locked||S.mode==='server')?'disabled':''}>↓</button>
+          <button class="qib del" data-qa="rm" data-qi="${i}" title="Remove" ${locked?'disabled':''}>✕</button>
+        </div>
+      </div>`;
+    }).join('');
+
+    el.querySelectorAll('.qib').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const i = parseInt(btn.dataset.qi);
+        const a = btn.dataset.qa;
+        if (a === 'play') {
+          if (S.mode === 'server') { toast('Use Play from Search, or wait for auto-advance', 'info'); return; }
+          if (S.current) S.history.push(S.current);
+          const [tr] = S.queue.splice(i, 1); Engine.playTrack(tr);
+        } else if (a === 'up' && i > 0 && S.mode !== 'server') { const [x]=S.queue.splice(i,1); S.queue.splice(i-1,0,x); UI.renderQueue(); }
+        else if (a === 'dn' && i < S.queue.length - 1 && S.mode !== 'server') { const [x]=S.queue.splice(i,1); S.queue.splice(i+1,0,x); UI.renderQueue(); }
+        else if (a === 'rm') Engine.removeFromQueue(i);
+      });
+    });
+    this.applyLockState();
+  },
+
+  async doSearch() {
+    const raw = document.getElementById('si').value.trim();
+    if (!raw) { toast('Enter a search term or URL', 'warn'); return; }
+
+    const src = document.getElementById('src-sel').value;
+    const isUrl = raw.startsWith('http://') || raw.startsWith('https://');
+    const id = (isUrl || !src) ? raw : src + raw;
+
+    const res = document.getElementById('sres');
+    res.innerHTML = `<div class="empty"><div class="dots"><span></span><span></span><span></span></div><p>Searching…</p></div>`;
+
+    try {
+      const data = await Backend.loadtracks(id);
+      if (!data || data.loadType === 'empty') { res.innerHTML = `<div class="empty"><p>No results found</p></div>`; return; }
+      if (data.loadType === 'error') { res.innerHTML = `<div class="empty"><p>Error: ${esc(data.data?.message || 'Unknown')}</p></div>`; return; }
+
+      let tracks = [];
+      let banner = '';
+      if (data.loadType === 'playlist') {
+        tracks = data.data.tracks;
+        banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
+          <span style="color:var(--text);font-weight:600">${esc(data.data.info?.name || 'Playlist')}</span>
+          <span>${tracks.length} tracks</span>
+          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto">+ Add All</button>
+        </div>`;
+      } else if (data.loadType === 'search') {
+        tracks = data.data;
+      } else if (data.loadType === 'track') {
+        tracks = [data.data];
+      }
+
+      S.searchResults = tracks;
+      if (!tracks.length) { res.innerHTML = `<div class="empty"><p>No results</p></div>`; return; }
+
+      const locked = this.isLocked();
+      let html = banner;
+      tracks.forEach((t, i) => {
+        const thumb = t.info.artworkUrl
+          ? `<img class="si-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
+          : `<div class="si-nth">♪</div>`;
+        html += `<div class="si" data-i="${i}">${thumb}
+          <div class="si-meta">
+            <div class="si-t">${esc(t.info.title)}</div>
+            <div class="si-a">${esc(t.info.author)}</div>
+          </div>
+          <span class="si-d">${fmt(t.info.length)}</span>
+          <div class="si-acts">
+            <button class="add-btn pnow" data-a="play" data-i="${i}" ${locked?'disabled':''}>▶ Play</button>
+            <button class="add-btn" data-a="q" data-i="${i}">+ Queue</button>
+          </div>
+        </div>`;
+      });
+      res.innerHTML = html;
+
+      res.querySelectorAll('.add-btn[data-a]').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const t = S.searchResults[parseInt(btn.dataset.i)];
+          if (!t) return;
+          if (btn.dataset.a === 'play') {
+            if (S.mode === 'standalone') { S.queue = []; if (S.current) S.history.push(S.current); }
+            Engine.playTrack(t); UI.switchTab('queue');
+          } else {
+            Engine.addToQueue(t);
+          }
+        });
+      });
+
+      const addAll = document.getElementById('btn-add-all');
+      if (addAll) addAll.addEventListener('click', async () => {
+        for (const t of tracks) await Engine.addToQueue(t);
+        toast(`Added ${tracks.length} tracks`, 'success');
+        UI.switchTab('queue');
+      });
+    } catch (e) {
+      res.innerHTML = `<div class="empty"><p>Error: ${esc(e.message)}</p></div>`;
+      console.error('Search error:', e);
+    }
+  },
+
+  async fetchLyrics() {
+    if (!S.current) { toast('Play a track first', 'warn'); return; }
+    document.getElementById('lyr-src-lbl').textContent = 'Loading…';
+    document.getElementById('lyr-body').innerHTML = `<div class="empty"><div class="dots"><span></span><span></span><span></span></div><p>Fetching lyrics…</p></div>`;
+    try {
+      const data = await Backend.loadlyrics(S.current.encoded);
+      if (!data || data.loadType === 'empty' || !data.data) {
+        S.lyrics = null; S.lyricsType = null;
+        document.getElementById('lyr-src-lbl').textContent = 'No lyrics found';
+        document.getElementById('lyr-body').innerHTML = `<div class="empty"><p>No lyrics available</p></div>`;
+        return;
+      }
+      const d = data.data;
+      document.getElementById('lyr-src-lbl').textContent = `Source: ${d.source || '?'}`;
+      if (Array.isArray(d.lines) && d.lines.length > 0) {
+        S.lyricsType = 'synced';
+        S.lyrics = d.lines.map(l => ({ t: typeof l.startTime === 'number' ? l.startTime : parseFloat(l.startTime || 0), txt: l.line || l.text || '' }));
+        document.getElementById('lyr-body').innerHTML =
+          S.lyrics.map((l, i) => `<div class="ll" data-i="${i}" data-t="${l.t}">${esc(l.txt) || '♩'}</div>`).join('');
+        document.querySelectorAll('.ll').forEach(el => {
+          el.addEventListener('click', () => Engine.seekTo(parseFloat(el.dataset.t)));
+        });
+      } else if (d.text || d.lyrics) {
+        S.lyricsType = 'plain'; S.lyrics = d.text || d.lyrics;
+        document.getElementById('lyr-body').innerHTML = `<div class="lp">${esc(S.lyrics)}</div>`;
+      } else {
+        S.lyrics = null; S.lyricsType = null;
+        document.getElementById('lyr-src-lbl').textContent = 'No lyrics found';
+        document.getElementById('lyr-body').innerHTML = `<div class="empty"><p>No lyrics available</p></div>`;
+      }
+    } catch (e) {
+      document.getElementById('lyr-src-lbl').textContent = `Error`;
+      document.getElementById('lyr-body').innerHTML = `<div class="empty"><p>${esc(e.message)}</p></div>`;
+    }
+  },
+
+  syncLyrics() {
+    if (S.lyricsType !== 'synced' || !S.lyrics || !S.player) return;
+    const nowMs = S.player.getPositionMs();
+    let idx = -1;
+    for (let i = 0; i < S.lyrics.length; i++) { if (S.lyrics[i].t <= nowMs) idx = i; else break; }
+    if (idx === S._lyrLastIdx) return;
+    S._lyrLastIdx = idx;
+    document.querySelectorAll('.ll').forEach((el, i) => el.classList.toggle('active', i === idx));
+    if (idx >= 0) {
+      const active = document.querySelector(`.ll[data-i="${idx}"]`);
+      if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  },
+
+  async fetchChapters(encodedTrack) {
+    try {
+      const data = await Backend.loadchapters(encodedTrack);
+      if (!data || data.loadType === 'empty' || !data.data?.chapters?.length) {
+        document.getElementById('chaps-wrap').style.display = 'none'; S.chapters = []; return;
+      }
+      S.chapters = data.data.chapters.map(c => ({ t: c.start, title: c.title || 'Chapter' }));
+      document.getElementById('chaps-wrap').style.display = 'block';
+      document.getElementById('chap-cnt').textContent = `(${S.chapters.length})`;
+      document.getElementById('chaps-list').innerHTML = S.chapters.map((c, i) =>
+        `<div class="chap-item" data-i="${i}" data-t="${c.t}">
+          <span class="chap-ts">${fmt(c.t * 1000)}</span>
+          <span class="chap-title">${esc(c.title)}</span>
+        </div>`
+      ).join('');
+      document.querySelectorAll('.chap-item').forEach(el => {
+        el.addEventListener('click', () => Engine.seekTo(parseFloat(el.dataset.t) * 1000));
+      });
+    } catch (_) {
+      document.getElementById('chaps-wrap').style.display = 'none'; S.chapters = [];
+    }
+  },
+
+  syncChapters() {
+    if (!S.chapters.length || !S.player) return;
+    const nowSec = S.player.getPositionMs() / 1000;
+    let idx = -1;
+    for (let i = 0; i < S.chapters.length; i++) { if (S.chapters[i].t <= nowSec) idx = i; else break; }
+    document.querySelectorAll('.chap-item').forEach((el, i) => el.classList.toggle('active', i === idx));
+  },
+
+  async fetchMeaning() {
+    if (!S.current) { toast('Play a track first', 'warn'); return; }
+    const modal = document.getElementById('meaning-modal');
+    modal.classList.add('show');
+    document.getElementById('meaning-title').textContent = S.current.info.title;
+    document.getElementById('meaning-sub').textContent = 'Loading…';
+    document.getElementById('meaning-body').innerHTML = '';
+    try {
+      const data = await Backend.meaning(S.current.encoded);
+      if (!data || data.loadType === 'empty' || !data.data) {
+        document.getElementById('meaning-sub').textContent = 'No information found'; return;
+      }
+      const d = data.data;
+      document.getElementById('meaning-title').textContent = d.title || S.current.info.title;
+      document.getElementById('meaning-sub').textContent = `${d.description || ''} · via ${d.provider || '?'}`;
+      const paras = Array.isArray(d.paragraphs) ? d.paragraphs : (d.text ? [d.text] : []);
+      document.getElementById('meaning-body').innerHTML = paras.map(p => `<p>${esc(p)}</p>`).join('') || '<p>No content available.</p>';
+    } catch (e) {
+      document.getElementById('meaning-sub').textContent = `Error: ${e.message}`;
+    }
+  },
+
+  syncSliderLabel(sliderId, labelId) {
+    const v = parseFloat(document.getElementById(sliderId).value);
+    document.getElementById(labelId).textContent = Number.isInteger(v) ? v : v.toFixed(2);
+  },
+
+  updateFilterStatus() {
+    const el = document.getElementById('flt-status');
+    const badge = document.getElementById('active-filter-badge');
+    const keys = Object.keys(S.filters);
+    if (keys.length === 0) {
+      el.textContent = 'none'; badge.textContent = ''; badge.classList.remove('show');
+    } else {
+      el.textContent = JSON.stringify(S.filters, null, 2);
+      badge.textContent = keys.join('+').toUpperCase(); badge.classList.add('show');
+    }
+  },
+
+  buildFiltersFromUI() {
+    const filters = {};
+    const speed = parseFloat(document.getElementById('f-speed').value);
+    const pitch = parseFloat(document.getElementById('f-pitch').value);
+    const rate  = parseFloat(document.getElementById('f-rate').value);
+    if (speed !== 1.0 || pitch !== 1.0 || rate !== 1.0) {
+      filters.timescale = {};
+      if (speed !== 1.0) filters.timescale.speed = speed;
+      if (pitch !== 1.0) filters.timescale.pitch = pitch;
+      if (rate  !== 1.0) filters.timescale.rate = rate;
+    }
+    const edel = parseFloat(document.getElementById('f-edel').value);
+    const efb  = parseFloat(document.getElementById('f-efb').value);
+    const emix = parseFloat(document.getElementById('f-emix').value);
+    if (edel > 0 || efb > 0 || emix > 0) filters.echo = { delay: edel, feedback: efb, mix: emix };
+    const rot = parseFloat(document.getElementById('f-rot').value);
+    if (rot > 0) filters.rotation = { rotationHz: rot };
+    return filters;
+  },
+
+  applyPreset(name) {
+    const preset = PRESETS[name];
+    if (!preset) return;
+    S.activePreset = name;
+
+    const ts = preset.timescale || {};
+    document.getElementById('f-speed').value = ts.speed || 1.0;
+    document.getElementById('f-pitch').value = ts.pitch || 1.0;
+    document.getElementById('f-rate').value  = ts.rate  || 1.0;
+    this.syncSliderLabel('f-speed', 'f-speed-v');
+    this.syncSliderLabel('f-pitch', 'f-pitch-v');
+    this.syncSliderLabel('f-rate',  'f-rate-v');
+
+    const echo = preset.echo || {};
+    document.getElementById('f-edel').value = echo.delay    || 0;
+    document.getElementById('f-efb').value  = echo.feedback || 0;
+    document.getElementById('f-emix').value = echo.mix      || 0;
+    this.syncSliderLabel('f-edel', 'f-edel-v');
+    this.syncSliderLabel('f-efb',  'f-efb-v');
+    this.syncSliderLabel('f-emix', 'f-emix-v');
+
+    const rot = preset.rotation?.rotationHz || 0;
+    document.getElementById('f-rot').value = rot;
+    this.syncSliderLabel('f-rot', 'f-rot-v');
+
+    document.querySelectorAll('.preset-btn').forEach(b => b.classList.toggle('active', b.dataset.preset === name));
+  },
+
+  switchTab(name) {
+    S.activeTab = name;
+    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+    document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + name));
+  },
+
+  setupProgressBar() {
+    const bar = document.getElementById('prog-bar');
+    function msFromEvent(e) {
+      const r = bar.getBoundingClientRect();
+      const x = Math.max(0, Math.min(e.clientX - r.left, r.width));
+      const dur = S.current?.info.length || 0;
+      return (x / r.width) * dur;
+    }
+    bar.addEventListener('mousedown', e => {
+      if (!S.current || UI.isLocked()) return;
+      S.progDrag = true;
+      const ms = msFromEvent(e);
+      const pct = Math.min((ms / (S.current.info.length || 1)) * 100, 100);
+      document.getElementById('prog-fill').style.width = pct + '%';
+      document.getElementById('prog-thumb').style.left = pct + '%';
+      document.getElementById('t-cur').textContent = fmt(ms);
+    });
+    document.addEventListener('mousemove', e => {
+      if (!S.progDrag || !S.current) return;
+      const ms = msFromEvent(e);
+      const pct = Math.min((ms / (S.current.info.length || 1)) * 100, 100);
+      document.getElementById('prog-fill').style.width = pct + '%';
+      document.getElementById('prog-thumb').style.left = pct + '%';
+      document.getElementById('t-cur').textContent = fmt(ms);
+    });
+    document.addEventListener('mouseup', e => {
+      if (!S.progDrag) return;
+      S.progDrag = false;
+      if (S.current) Engine.seekTo(msFromEvent(e));
+    });
+    bar.addEventListener('click', e => {
+      if (!S.current || UI.isLocked()) return;
+      Engine.seekTo(msFromEvent(e));
+    });
+  },
+};
+
+const PRESETS = {
+  normal: {},
+  bassBoost: { equalizer: [{band:0,gain:0.6},{band:1,gain:0.67},{band:2,gain:0.67},{band:3,gain:0.4},{band:4,gain:0.2},{band:5,gain:0.1}] },
+  nightcore: { timescale: { speed: 1.3, pitch: 1.3, rate: 1.0 } },
+  vaporwave:  { timescale: { speed: 0.8, pitch: 0.8, rate: 1.0 } },
+  '8d':       { rotation:  { rotationHz: 0.2 } },
+  echo:       { echo: { delay: 500, feedback: 0.35, mix: 0.5 } },
+  karaoke:    { karaoke: { level: 1.0, monoLevel: 1.0, filterBand: 220.0, filterWidth: 100.0 } },
+  chipmunk:   { timescale: { speed: 1.05, pitch: 1.35, rate: 1.25 } },
+};
