@@ -29,4 +29,11 @@ CHAT_HISTORY_LIMIT = 100
 # the participant is treated as having actually left. Covers EventSource's
 # own auto-retry and brief network blips without wrongly evicting someone
 # or handing off the host mid-session over a hiccup.
-DISCONNECT_GRACE_SECONDS = 12
+#
+# Kept generous (not just a few seconds) because mobile browsers throttle
+# or fully suspend background-tab network connections on screen lock /
+# app switch, and won't reconnect until the tab is foregrounded again.
+# A short grace period here tears the whole lobby down under completely
+# normal usage (someone locks their phone for a bit) the moment the last
+# active participant's stream drops.
+DISCONNECT_GRACE_SECONDS = 120
