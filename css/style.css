@@ -22,7 +22,7 @@ html, body { height: 100%; }
 body {
   background: var(--bg); color: var(--text);
   font-family: var(--fn); font-size: 14px;
-  display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  display: flex; flex-direction: column; height: 100vh;
 }
 body::after {
   content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 500;
