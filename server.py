@@ -229,7 +229,7 @@ PCM_CHANNELS = 2
 PCM_FRAME_SAMPLES = 960                                    # 20ms @ 48kHz
 PCM_FRAME_BYTES = PCM_FRAME_SAMPLES * PCM_CHANNELS * 2      # s16le
 OPUS_BITRATE = 96000
-LISTENER_QUEUE_MAX = 8   # chunks; a slow client gets old ones dropped, not a backlog
+LISTENER_QUEUE_MAX = 16   # chunks; a slow client gets old ones dropped, not a backlog
 
 
 class _CallbackIO:
@@ -823,12 +823,14 @@ async def lobby_live(code):
         finally:
             lobby.relay.remove_listener(key)
 
-    return Response(
+    r = Response(
         gen(),
         mimetype="audio/ogg",
-        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
     )
+    r.timeout = None # remove 60 sec limit timeout
 
+    return r
 
 @app.route("/api/lobby/<code>/play", methods=["POST"])
 async def lobby_play(code):
