@@ -2,11 +2,17 @@
 /* ═══════════════════════════════════════════
    Engine — playback control.
 
-   Standalone mode: public methods act directly on the local player.
+   Standalone mode: public methods act directly on the local PCMPlayer,
+   fed by this client's own PCM fetch from NodeLink.
+
    Server mode: public methods (for the host) send REST control calls to
-   the lobby; the actual local audio is driven uniformly for EVERYONE
-   (host included) by Lobby.onState() calling Engine._localSync(), so
-   there is a single source of truth and no double-triggering.
+   the lobby; actual audio comes from ONE server-side Opus/Ogg relay per
+   lobby (see server.py's LobbyRelay), and every client — host included —
+   is just an <audio> element pointed at it (see AudioElPlayer). There's
+   no local PCM stream, no drift correction, and no per-client NodeLink
+   fetch: Lobby.onState() calling Engine._lobbySync() just keeps that
+   <audio> element (and the reused PCMPlayer-shaped UI hooks) in sync
+   with the server's authoritative state.
 ═══════════════════════════════════════════ */
 const Engine = {
 
@@ -94,13 +100,10 @@ const Engine = {
   },
 
   _onTrackEnd() {
-    if (S.mode === 'server') {
-      // Only the host's client reports track-end to the server, which
-      // then advances the authoritative queue and broadcasts the new state.
-      if (S.lobby.isHost) Lobby.reportTrackEnd();
-      return;
-    }
-    // Standalone: handle locally
+    // Lobby (server) mode never reaches this — it doesn't run a local PCM
+    // stream anymore (see _lobbySync below), so nothing calls _onTrackEnd
+    // for it. Track-end there is detected server-side by the relay itself
+    // and auto-advances the queue without any client's involvement.
     if (S.loopMode === 'track' && S.current) { this._localPlay(S.current, 0, S.filters); return; }
     if (S.loopMode === 'queue' && S.current) S.queue.push(S.current);
     if (S.current) { if (S.history.length > 80) S.history.shift(); S.history.push(S.current); }
@@ -281,54 +284,63 @@ const Engine = {
     UI.startPosTimer();
   },
 
-  /* ───────── called by Lobby.onState() to sync local audio to server-authoritative state ───────── */
-  async _localSync(remoteTrack, remotePaused, remotePositionMs, remoteFilters) {
-    const sameTrack = S.current && remoteTrack && S.current.encoded === remoteTrack.encoded;
-    const filtersChanged = JSON.stringify(remoteFilters || {}) !== JSON.stringify(S.filters || {});
-    S.filters = remoteFilters || {};
+  /* ───────── called by Lobby.onState() to drive the shared <audio> element off server-authoritative state ─────────
+     Lobby mode no longer runs a local PCM stream at all — the server
+     transcodes the track to Opus/Ogg once and relays it to everyone, so
+     the client here is just pointing an <audio> element at that relay
+     and reflecting play/pause. There's no drift correction because
+     there's nothing to drift: the server IS the single source of the
+     actual audio bytes, not just a position number every client has to
+     independently chase with its own PCM fetch. */
+  async _lobbySync(state) {
+    const audio = document.getElementById('lobby-audio');
+    if (!S.player) S.player = new AudioElPlayer(audio);
+
+    S.filters = state.filters || {};
     UI.updateFilterStatus();
 
-    if (!remoteTrack) {
-      if (S.current) { this._stopLocal(); S.current = null; UI.updatePlayerUI(); }
+    const trackChanged = !S.current || !state.currentTrack || S.current.encoded !== state.currentTrack.encoded;
+    const genChanged = S.lobby.relayGen !== state.relayGen;
+    S.lobby.relayGen = state.relayGen;
+
+    if (!state.currentTrack) {
+      S.current = null;
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+      if (S.posTimer) { clearInterval(S.posTimer); S.posTimer = null; }
+      UI.updatePlayerUI();
       return;
     }
 
-    if (!sameTrack) {
-      S.current = remoteTrack;
-      await this._localPlay(remoteTrack, remotePositionMs, S.filters);
-      if (remotePaused && S.player) S.player.pause();
-      UI.updatePlayPauseIcons(); UI.updateEQ();
-      return;
+    if (trackChanged) {
+      S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
+      S.chapters = [];
+      UI.fetchChapters(state.currentTrack.encoded);
+    }
+    S.current = state.currentTrack;
+
+    if (genChanged) {
+      // A fresh encode session started server-side (new track, seek, or
+      // filter change) — old connection would only serve stale/ended
+      // bytes, so point the element at a new one. This is the only time
+      // lobby playback "reconnects"; pause/resume never do.
+      UI.setBuffering(true);
+      audio.src = LobbyAPI.liveUrl(S.lobby.code, state.relayGen);
+      audio.load();
+      const cleanup = () => { audio.removeEventListener('playing', onReady); audio.removeEventListener('error', onError); };
+      const onReady = () => { UI.setBuffering(false); cleanup(); };
+      const onError = () => { UI.setBuffering(false); cleanup(); toast('Playback stream error — will retry on the next update', 'warn', 4000); };
+      audio.addEventListener('playing', onReady);
+      audio.addEventListener('error', onError);
     }
 
-    if (filtersChanged) {
-      await this._startPCMStream(remoteTrack.encoded, remotePositionMs, S.filters);
-      UI.startPosTimer();
-      if (remotePaused && S.player) S.player.pause();
-      UI.updatePlayPauseIcons(); UI.updateEQ();
-      return;
-    }
+    S.player.setAnchor(state.positionMs, state.paused);
+    if (state.paused) S.player.pause();
+    else { try { await S.player.resume(); } catch (_) {} }
 
-    // Same track, same filters — reconcile pause state and drift
-    if (S.player) {
-      const localPaused = S.player.isPaused;
-      if (remotePaused && !localPaused) S.player.pause();
-      if (!remotePaused && localPaused) {
-        await S.player.resume();
-        // Re-anchor to remote position to correct any drift accumulated while paused
-        const localMs = S.player.getPositionMs();
-        if (Math.abs(localMs - remotePositionMs) > 1500) {
-          await this._startPCMStream(remoteTrack.encoded, remotePositionMs, S.filters);
-          UI.startPosTimer();
-        }
-      } else if (!remotePaused && !localPaused) {
-        const localMs = S.player.getPositionMs();
-        if (Math.abs(localMs - remotePositionMs) > 2500) {
-          await this._startPCMStream(remoteTrack.encoded, remotePositionMs, S.filters);
-          UI.startPosTimer();
-        }
-      }
-    }
-    UI.updatePlayPauseIcons(); UI.updateEQ();
+    UI.updatePlayerUI();
+    if (trackChanged) UI.renderQueue();
+    UI.startPosTimer();
   },
 };

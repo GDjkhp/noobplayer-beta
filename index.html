@@ -10,6 +10,7 @@
 <body>
 
 <audio id="voice-audio" autoplay style="display:none"></audio>
+<audio id="lobby-audio" autoplay style="display:none"></audio>
 
 <!-- ═══ MODE SELECT ═══ -->
 <div id="overlay-mode" class="overlay">
@@ -38,9 +39,9 @@
     <div class="overlay-sub">Connect directly to a NodeLink server</div>
     <div class="overlay-form">
       <label>Host</label>
-      <input id="sa-host" class="hi full" type="text" placeholder="https://nodelink.example.com" value="https://nodelink.gdjkhp.com:443">
+      <input id="sa-host" class="hi full" type="text" placeholder="https://nodelink.example.com">
       <label>Password</label>
-      <input id="sa-pass" class="hi full" type="password" placeholder="Password" value="youshallnotpass">
+      <input id="sa-pass" class="hi full" type="password" placeholder="Password">
       <button id="sa-connect" class="overlay-btn">Connect</button>
       <button id="sa-back" class="overlay-btn ghost">← Back</button>
     </div>
@@ -340,6 +341,7 @@
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script src="js/pcm-player.js"></script>
+<script src="js/audio-el-player.js"></script>
 <script src="js/utils.js"></script>
 <script src="js/state.js"></script>
 <script src="js/api.js"></script>

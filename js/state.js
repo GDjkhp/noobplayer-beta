@@ -45,5 +45,6 @@ const S = {
     micStream: null,
     micEnabled: false,
     lastServerState: null,
+    relayGen: 0,        // last-seen LobbyRelay generation — bump means the server started a fresh Opus/Ogg session
   },
 };

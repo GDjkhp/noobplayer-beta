@@ -20,11 +20,18 @@ Architecture
 ------------
 - Music playback: the server holds *authoritative* playback state per lobby
   (current track, paused/playing, a position anchor + server timestamp,
-  active filters, queue). It does NOT relay audio bytes for music — each
-  connected client independently streams identical PCM from NodeLink via
-  the /api/nodelink/loadstream proxy below, computing the correct start
-  position from the broadcast anchor so everyone stays in sync. Bandwidth
-  stays flat regardless of listener count.
+  active filters, queue) AND now owns the actual audio pipeline too. For
+  each lobby, ONE background task (LobbyRelay, below) pulls raw PCM from
+  NodeLink, transcodes it to Opus/Ogg in real time, and fans the encoded
+  bytes out to every connected listener over plain HTTP (GET
+  /api/lobby/<code>/live). Clients are dumb — an <audio> element pointed
+  at that URL, no local PCM decode/scheduling/drift-correction. A slow
+  listener's queue just drops old frames (graceful degradation) instead
+  of the whole track getting cut short or skipped, and a track's actual
+  progress no longer depends on any one client's network. Bandwidth is
+  ~12x lower than the old raw-PCM-per-client design (Opus @ ~96kbps vs
+  PCM @ ~1.5Mbps) AND flat regardless of listener count (NodeLink is only
+  fetched once per track, not once per client).
 
 - State sync + chat: pushed to clients over Socket.IO (WebSocket, with
   automatic long-polling fallback and automatic client-side reconnection).
@@ -33,6 +40,10 @@ Architecture
   each Lobby tracks which sockets are currently live for a participant,
   which drives the same disconnect-grace-period logic that used to key
   off the old SSE connection (see _schedule_disconnect_check below).
+  `public_state()` includes `relayGen`, which bumps every time the relay
+  starts a fresh Opus/Ogg encode session (new track, seek, or filter
+  change) — the frontend watches this to know when to point its <audio>
+  element at a fresh /live connection vs. just leave it playing.
 
 - Voice chat: real audio, so it goes over WebRTC (aiortc). Each client
   opens ONE RTCPeerConnection to the server carrying their mic (send) and
@@ -66,6 +77,7 @@ import traceback
 from pathlib import Path
 
 import aiohttp
+import av
 import numpy as np
 import socketio
 from quart import Quart, Response, jsonify, request, send_from_directory
@@ -74,13 +86,12 @@ from quart_cors import cors
 import config
 
 try:
-    import av
     from aiortc import MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
     from aiortc.contrib.media import MediaRelay
     WEBRTC_AVAILABLE = True
 except ImportError:
     WEBRTC_AVAILABLE = False
-    print("[!] aiortc/av not installed — voice chat will be disabled. Run: pip install aiortc av numpy")
+    print("[!] aiortc not installed — voice chat will be disabled. Run: pip install aiortc")
 
 # ═══════════════════════════════════════════════════════════════════
 # App setup
@@ -187,6 +198,257 @@ if WEBRTC_AVAILABLE:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Live music relay — one continuous Opus/Ogg encode per lobby, fanned
+# out to every listener over plain HTTP. Replaces the old design where
+# each client independently pulled raw PCM from NodeLink and paced it
+# against a wall-clock anchor: a client whose network couldn't sustain
+# ~1.5 Mbps of raw PCM would fall behind, get forcibly reseeked back onto
+# the anchor by the old client-side drift correction (cutting out
+# whatever audio it hadn't caught up on yet), and could get skipped to
+# the next track entirely once the host's own (unaffected) stream
+# reached the end.
+#
+# Now the server does exactly ONE NodeLink fetch per track (not one per
+# listener), transcodes it to Opus (~12x smaller than raw PCM, so far
+# more connections can keep up), and fans the encoded bytes out. A slow
+# listener just has old frames dropped from their own queue — nobody
+# else, and the track's own progress, are affected at all.
+#
+# Ogg/Opus specifically (rather than e.g. raw Opus packets) because it's
+# natively supported by <audio> elements in every modern browser with
+# zero client-side code, and a late-joining listener can be brought up
+# to speed just by replaying the two small cached header pages (Opus ID
+# + comment) ahead of the live tail — exactly how Icecast-style internet
+# radio relays work. Verified empirically: PyAV's ogg muxer emits those
+# two header pages as the very first writes, and a decoder fed only
+# [headers + an arbitrary later page] decodes fine, skipping cleanly to
+# wherever the live edge currently is.
+# ═══════════════════════════════════════════════════════════════════
+PCM_RATE = 48000
+PCM_CHANNELS = 2
+PCM_FRAME_SAMPLES = 960                                    # 20ms @ 48kHz
+PCM_FRAME_BYTES = PCM_FRAME_SAMPLES * PCM_CHANNELS * 2      # s16le
+OPUS_BITRATE = 96000
+LISTENER_QUEUE_MAX = 8   # chunks; a slow client gets old ones dropped, not a backlog
+
+
+class _CallbackIO:
+    """Minimal writable file-like object PyAV can mux an Ogg container
+    into — forwards every write straight to a callback instead of
+    buffering to a real file."""
+    def __init__(self, write_cb):
+        self._write_cb = write_cb
+
+    def write(self, data):
+        self._write_cb(data)
+        return len(data)
+
+
+class _Listener:
+    __slots__ = ("queue",)
+    def __init__(self):
+        self.queue = asyncio.Queue(maxsize=LISTENER_QUEUE_MAX)
+
+
+class LobbyRelay:
+    """Owns the single live NodeLink -> Opus/Ogg pipeline for one lobby."""
+
+    def __init__(self, lobby):
+        self.lobby = lobby
+        self.generation = 0          # bumped on every fresh encode session
+        self.listeners = {}          # opaque key -> _Listener
+        self._task = None
+        self._resume_event = asyncio.Event()
+        self._resume_event.set()     # not paused by default
+        self._header_chunks = []     # cached Ogg header pages for the CURRENT generation
+        self._header_chunks_done = False
+
+    # ---- listener management ----------------------------------------
+    def add_listener(self):
+        key = object()
+        listener = _Listener()
+        self.listeners[key] = listener
+        # Replay this generation's cached header pages immediately, so a
+        # mid-track joiner's decoder has the Opus ID/comment pages before
+        # any audio data — then everything after is just the live tail,
+        # same as every other listener gets.
+        for chunk in self._header_chunks:
+            self._push(listener, chunk)
+        return key, listener.queue
+
+    def remove_listener(self, key):
+        self.listeners.pop(key, None)
+
+    def _push(self, listener, data):
+        q = listener.queue
+        if q.full():
+            try:
+                q.get_nowait()  # drop the oldest chunk to make room — never block the relay for one slow listener
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            q.put_nowait(data)
+        except asyncio.QueueFull:
+            pass
+
+    def _broadcast_bytes(self, data):
+        for listener in list(self.listeners.values()):
+            self._push(listener, data)
+
+    def _close_all_listeners(self):
+        """Push the end-of-response sentinel to every currently attached
+        listener so their HTTP connection ends immediately — used when a
+        new encode session starts, since old listeners must reconnect to
+        get valid Ogg headers for the new session rather than receiving
+        a second logical stream chained onto their existing connection
+        (technically legal Ogg, but unreliably supported by browsers)."""
+        for listener in list(self.listeners.values()):
+            while not listener.queue.empty():
+                try:
+                    listener.queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            try:
+                listener.queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+
+    # ---- session control ----------------------------------------------
+    async def start_track(self, track, position_ms, filters):
+        """(Re)start the encode session for `track` at `position_ms` with
+        `filters`. Bumps `generation`, which the frontend watches (via
+        state.relayGen) to know when to point its <audio> element at a
+        fresh /live connection."""
+        self._cancel_task()
+        self.generation += 1
+        self._header_chunks = []
+        self._header_chunks_done = False
+        self._close_all_listeners()
+        self._resume_event.set()
+        if track is None:
+            return
+        self._task = asyncio.create_task(self._run(track, position_ms, filters, self.generation))
+
+    async def reseek(self, position_ms, filters=None):
+        track = self.lobby.current_track
+        if track is None:
+            return
+        await self.start_track(track, position_ms, filters if filters is not None else self.lobby.filters)
+
+    def set_paused(self, paused):
+        # Freezes the relay's own real-time pacing loop in place (no
+        # re-fetch, no reseek) — sample-accurate, and resuming just
+        # continues exactly where it left off.
+        if paused:
+            self._resume_event.clear()
+        else:
+            self._resume_event.set()
+
+    def _cancel_task(self):
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._task = None
+
+    async def stop(self):
+        self._cancel_task()
+        self.generation += 1
+        self._header_chunks = []
+        self._header_chunks_done = False
+        self._close_all_listeners()
+
+    # ---- the actual pipeline ----------------------------------------------
+    async def _run(self, track, position_ms, filters, my_generation):
+        body = {"encodedTrack": track.get("encoded"), "position": round(position_ms)}
+        if filters:
+            body["filters"] = filters
+
+        container = stream = None
+
+        def sink_write(data):
+            if self.generation != my_generation:
+                return
+            data = bytes(data)
+            if not self._header_chunks_done:
+                self._header_chunks.append(data)
+            self._broadcast_bytes(data)
+
+        try:
+            container = av.open(_CallbackIO(sink_write), mode="w", format="ogg")
+            stream = container.add_stream("libopus", rate=PCM_RATE)
+            stream.layout = "stereo"
+            stream.bit_rate = OPUS_BITRATE
+
+            async with http_session.post(f"{NL_HOST}/v4/loadstream", json=body,
+                                          headers={"Authorization": NL_PASS}) as r:
+                if r.status != 200:
+                    print(f"[relay {self.lobby.code}] NodeLink loadstream {r.status}: {await r.text()}")
+                    return
+
+                pcm_buf = bytearray()
+                async for chunk in r.content.iter_chunked(8192):
+                    if self.generation != my_generation:
+                        return
+                    await self._resume_event.wait()   # blocks here while paused, resumes exactly in place
+                    if self.generation != my_generation:
+                        return
+
+                    pcm_buf.extend(chunk)
+                    while len(pcm_buf) >= PCM_FRAME_BYTES:
+                        frame_bytes = bytes(pcm_buf[:PCM_FRAME_BYTES])
+                        del pcm_buf[:PCM_FRAME_BYTES]
+                        frame = self._pcm_to_frame(frame_bytes)
+                        for pkt in stream.encode(frame):
+                            container.mux(pkt)
+                        self._header_chunks_done = True
+                        # Real-time pacing: ~one 20ms frame per 20ms of
+                        # wall clock, so CPU/bandwidth stay flat and
+                        # listeners' buffers fill at a natural rate
+                        # instead of the whole track being transcoded
+                        # and pushed as fast as NodeLink can send it.
+                        await asyncio.sleep(PCM_FRAME_SAMPLES / PCM_RATE)
+
+            # NodeLink stream ended naturally — flush the encoder and advance the queue.
+            if self.generation == my_generation:
+                for pkt in stream.encode(None):
+                    container.mux(pkt)
+                await self._advance_after_track_end(my_generation)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            traceback.print_exc()
+        finally:
+            if container is not None:
+                try:
+                    container.close()
+                except Exception:
+                    traceback.print_exc()
+
+    @staticmethod
+    def _pcm_to_frame(raw):
+        # Packed/interleaved s16 wants a single plane shaped (1, samples*channels).
+        arr = np.frombuffer(raw, dtype="<i2").reshape(1, -1)
+        frame = av.AudioFrame.from_ndarray(arr, format="s16", layout="stereo")
+        frame.sample_rate = PCM_RATE
+        return frame
+
+    async def _advance_after_track_end(self, my_generation):
+        if self.generation != my_generation:
+            return  # something else already changed the session; don't double-advance
+        lobby = self.lobby
+        if lobby.queue:
+            lobby.current_track = lobby.queue.pop(0)
+            lobby.position_anchor_ms = 0
+            lobby.anchor_time = time.time()
+            lobby.paused = False
+            await self.start_track(lobby.current_track, 0, lobby.filters)
+        else:
+            lobby.current_track = None
+            lobby.paused = True
+            await self.stop()
+        await broadcast(lobby, "state", lobby.public_state())
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Lobby data model (in-memory)
 #
 # Everything here runs on a single asyncio event loop (Quart's), so plain
@@ -217,6 +479,7 @@ class Lobby:
         self.filters = {}
         self.chat = []
         self.created_at = time.time()
+        self.relay = LobbyRelay(self)
 
     def current_position_ms(self):
         if self.paused or not self.current_track:
@@ -235,6 +498,7 @@ class Lobby:
             "positionMs": self.current_position_ms(),
             "queue": self.queue,
             "filters": self.filters,
+            "relayGen": self.relay.generation,
         }
 
     def participant_list(self):
@@ -300,6 +564,7 @@ async def _finalize_leave(lobby, client_id):
         lobby.host_id = next(iter(lobby.participants))
 
     if not lobby.participants:
+        await lobby.relay.stop()
         LOBBIES.pop(lobby.code, None)
         return  # lobby is gone, nobody left to notify
 
@@ -535,6 +800,36 @@ def _require_host(lobby, client_id):
     return lobby.host_id == client_id
 
 
+@app.route("/api/lobby/<code>/live")
+async def lobby_live(code):
+    """Listener endpoint — one Opus/Ogg byte stream, shared across every
+    connected client via LobbyRelay. Plain chunked HTTP so a browser
+    <audio src="..."> just works with zero client-side decode logic."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+
+    key, queue = lobby.relay.add_listener()
+
+    async def gen():
+        try:
+            while True:
+                data = await queue.get()
+                if data is None:  # relay started a new session — end this response, client reconnects fresh
+                    return
+                yield data
+        except asyncio.CancelledError:
+            pass
+        finally:
+            lobby.relay.remove_listener(key)
+
+    return Response(
+        gen(),
+        mimetype="audio/ogg",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.route("/api/lobby/<code>/play", methods=["POST"])
 async def lobby_play(code):
     lobby = get_lobby_or_404(code)
@@ -547,6 +842,7 @@ async def lobby_play(code):
     lobby.paused = False
     lobby.position_anchor_ms = 0
     lobby.anchor_time = time.time()
+    await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
@@ -563,6 +859,7 @@ async def lobby_pause(code):
     lobby.position_anchor_ms = lobby.current_position_ms()
     lobby.paused = True
     lobby.anchor_time = time.time()
+    lobby.relay.set_paused(True)
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
@@ -578,6 +875,7 @@ async def lobby_resume(code):
         return jsonify({"error": "host only"}), 403
     lobby.paused = False
     lobby.anchor_time = time.time()
+    lobby.relay.set_paused(False)
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
@@ -593,6 +891,7 @@ async def lobby_seek(code):
         return jsonify({"error": "host only"}), 403
     lobby.position_anchor_ms = float(data.get("positionMs", 0))
     lobby.anchor_time = time.time()
+    await lobby.relay.reseek(lobby.position_anchor_ms)
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
@@ -611,9 +910,11 @@ async def lobby_skip(code):
         lobby.position_anchor_ms = 0
         lobby.anchor_time = time.time()
         lobby.paused = False
+        await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
     else:
         lobby.current_track = None
         lobby.paused = True
+        await lobby.relay.stop()
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
@@ -630,6 +931,7 @@ async def lobby_filters(code):
     lobby.position_anchor_ms = lobby.current_position_ms()
     lobby.anchor_time = time.time()
     lobby.filters = data.get("filters", {})
+    await lobby.relay.reseek(lobby.position_anchor_ms, filters=lobby.filters)
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
@@ -650,6 +952,7 @@ async def lobby_queue_add(code):
         lobby.paused = False
         lobby.position_anchor_ms = 0
         lobby.anchor_time = time.time()
+        await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
     else:
         lobby.queue.append(track)
     state = lobby.public_state()

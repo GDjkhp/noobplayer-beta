@@ -120,7 +120,7 @@ const Lobby = {
     S.queue = state.queue || [];
     UI.renderQueue();
 
-    Engine._localSync(state.currentTrack, state.paused, state.positionMs, state.filters || {});
+    Engine._lobbySync(state);
   },
 
   // Applies a control endpoint's returned state immediately, so the person
@@ -170,11 +170,6 @@ const Lobby = {
     catch (e) { toast(`Chat failed: ${e.message}`, 'error'); }
   },
 
-  reportTrackEnd() {
-    // Host's client tells the server to advance the queue when the local stream drains.
-    LobbyAPI.control(S.lobby.code, 'skip', { clientId: S.lobby.clientId }).catch(() => {});
-  },
-
   copyCode() {
     navigator.clipboard?.writeText(S.lobby.code).then(() => toast('Code copied', 'success', 1500))
       .catch(() => toast(S.lobby.code, 'info'));
@@ -202,7 +197,7 @@ const Lobby = {
     if (S.lobby.code) await LobbyAPI.leave(S.lobby.code, S.lobby.clientId);
     Engine._stopLocal();
     S.current = null; S.queue = [];
-    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, pc:null, micStream:null, micEnabled:false, lastServerState:null };
+    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, pc:null, micStream:null, micEnabled:false, lastServerState:null, relayGen:0 };
     UI.updatePlayerUI(); UI.renderQueue();
     document.getElementById('chat-log').innerHTML = '';
     document.getElementById('app').style.display = 'none';
