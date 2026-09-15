@@ -226,7 +226,7 @@ if WEBRTC_AVAILABLE:
 # ═══════════════════════════════════════════════════════════════════
 PCM_RATE = 48000
 PCM_CHANNELS = 2
-PCM_FRAME_SAMPLES = 960                                    # 20ms @ 48kHz
+PCM_FRAME_SAMPLES = 3840                                    # 60ms @ 48kHz
 PCM_FRAME_BYTES = PCM_FRAME_SAMPLES * PCM_CHANNELS * 2      # s16le
 OPUS_BITRATE = 96000
 LISTENER_QUEUE_MAX = 8   # chunks; a slow client gets old ones dropped, not a backlog
