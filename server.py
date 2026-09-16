@@ -242,6 +242,8 @@ PCM_FRAME_SAMPLES = 48000                                    # 1000ms @ 48kHz
 PCM_FRAME_BYTES = PCM_FRAME_SAMPLES * PCM_CHANNELS * 2      # s16le
 OPUS_BITRATE = 96000
 LISTENER_QUEUE_MAX = 8   # chunks; a slow client gets old ones dropped, not a backlog
+IDLE_KEEPALIVE_SECONDS = 15   # silence frame cadence while the queue is empty — must stay
+                              # comfortably under any reverse-proxy idle-read timeout in front
 
 
 class _CallbackIO:
@@ -285,6 +287,20 @@ class LobbyRelay:
         # dead air and no listener reconnect (relayGen doesn't bump).
         # Shape: {"track": dict, "chunks": [bytes], "done": bool, "task": Task}
         self._preload = None
+
+        # ---- idle keep-alive ----------------------------------------
+        # When the queue naturally runs dry, _run used to flush the Opus
+        # stream and return, ending the task entirely — which meant every
+        # listener's <audio> connection went dead, AND whatever played
+        # next had to open a brand new one (see resume_or_start below).
+        # Now _run instead parks itself in an idle wait right where it is:
+        # same task, same still-open Ogg container, same /live connection
+        # every listener is already attached to. A silence frame every
+        # IDLE_KEEPALIVE_SECONDS keeps that connection warm through any
+        # reverse-proxy idle-read timeout in front of this server.
+        self._idle = False               # True while parked in the idle wait below
+        self._idle_event = asyncio.Event()
+        self._pending = None             # (track, position_ms, filters) waiting to resume with
 
     # ---- listener management ----------------------------------------
     def add_listener(self):
@@ -399,9 +415,13 @@ class LobbyRelay:
         fresh /live connection. This is for explicit, deliberate track
         changes (play/skip/seek/filters) — a NATURAL end-of-track advance
         does NOT go through here; see _run's internal loop, which stitches
-        the next track into the same session instead (gapless)."""
+        the next track into the same session instead (gapless), and
+        resume_or_start below, which does the same across an idle gap."""
         self._cancel_task()
         self._cancel_preload()
+        self._idle = False
+        self._idle_event.clear()
+        self._pending = None
         self.generation += 1
         self._header_chunks = []
         self._header_chunks_done = False
@@ -416,6 +436,23 @@ class LobbyRelay:
         if track is None:
             return
         await self.start_track(track, position_ms, filters if filters is not None else self.lobby.filters)
+
+    async def resume_or_start(self, track, position_ms=0, filters=None):
+        """Cheap path back from silence. If the pipeline is still alive and
+        sitting in the idle wait (queue ran dry but nothing tore the
+        session down — see _run), hand it this track and wake it up: same
+        generation, same still-open Ogg container, same /live connection
+        every listener is already attached to, so nobody reconnects.
+        Falls back to a full start_track() (new generation, forced
+        reconnect) whenever that shortcut doesn't apply — most commonly
+        the very first track ever played in a fresh lobby, where there's
+        no pipeline running yet to resume."""
+        if self._task is not None and not self._task.done() and self._idle:
+            self._pending = (track, position_ms, filters if filters is not None else self.lobby.filters)
+            self._idle = False
+            self._idle_event.set()
+            return
+        await self.start_track(track, position_ms, filters)
 
     def set_paused(self, paused):
         # Freezes the relay's own real-time pacing loop in place (no
@@ -434,6 +471,9 @@ class LobbyRelay:
     async def stop(self):
         self._cancel_task()
         self._cancel_preload()
+        self._idle = False
+        self._idle_event.clear()
+        self._pending = None
         self.generation += 1
         self._header_chunks = []
         self._header_chunks_done = False
@@ -470,6 +510,7 @@ class LobbyRelay:
             while True:
                 if self.generation != my_generation:
                     return
+                self._idle = False
                 # Keep prefetching whatever's now predicted to play after
                 # cur_track — this refreshes on every loop iteration so it
                 # always reflects the current queue head.
@@ -511,11 +552,44 @@ class LobbyRelay:
 
                 retry_count = 0  # that track segment streamed cleanly
                 nxt = await self._advance_for_gapless(my_generation)
-                if nxt is None:
-                    for pkt in stream.encode(None):
-                        container.mux(pkt)
+                if self.generation != my_generation:
                     return
-                cur_track, cur_pos, cur_filters = nxt, 0, self.lobby.filters
+                if nxt is not None:
+                    cur_track, cur_pos, cur_filters = nxt, 0, self.lobby.filters
+                    continue
+
+                # Queue (and autoplay) are genuinely empty. The OLD behaviour
+                # here flushed the Opus stream and returned, which finalized
+                # the Ogg logical bitstream and ended this task — every
+                # listener's <audio> connection died right then, mid- (or
+                # right at the very end of) whatever was still sitting in
+                # their own playback buffer, which is what made the last
+                # track of a queue (or a lobby's only track) cut off abruptly
+                # a moment before it actually finished.
+                #
+                # Instead: stay right here. Container stays open, task stays
+                # alive, generation doesn't change, nobody reconnects. A
+                # silence frame every IDLE_KEEPALIVE_SECONDS keeps the Ogg
+                # bitstream continuous and the connection warm through any
+                # reverse-proxy idle-read timeout. resume_or_start() is what
+                # wakes this back up — see lobby_play / queue/add.
+                self._idle = True
+                self._cancel_preload()  # nothing to predict past — re-established on resume
+                self._idle_event.clear()
+                while True:
+                    if self.generation != my_generation:
+                        return
+                    try:
+                        await asyncio.wait_for(self._idle_event.wait(), timeout=IDLE_KEEPALIVE_SECONDS)
+                        break  # woken by resume_or_start with a real track queued in self._pending
+                    except asyncio.TimeoutError:
+                        if self.generation != my_generation:
+                            return
+                        self._feed_silence(container, stream)
+                if self.generation != my_generation:
+                    return
+                cur_track, cur_pos, cur_filters = self._pending
+                self._pending = None
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -620,6 +694,18 @@ class LobbyRelay:
         frame = av.AudioFrame.from_ndarray(arr, format="s16", layout="stereo")
         frame.sample_rate = PCM_RATE
         return frame
+
+    def _feed_silence(self, container, stream):
+        """One frame of digital silence, muxed exactly like real audio. Used
+        only during the idle wait (see _run) so the gap actually sounds
+        like silence instead of the connection just stalling, AND so the
+        Ogg logical bitstream stays continuous — when a real track resumes
+        it's muxed into this same still-open stream with no break, same as
+        any other gapless transition."""
+        frame = self._pcm_to_frame(bytes(PCM_FRAME_BYTES))  # zero-filled s16 = silence
+        for pkt in stream.encode(frame):
+            container.mux(pkt)
+        self._header_chunks_done = True
 
     async def _advance_for_gapless(self, my_generation):
         """A track's audio source just ended naturally. Pop the next one
@@ -1297,6 +1383,11 @@ async def lobby_play(code):
     client_id = data.get("clientId")
     if not _require_host(lobby, client_id):
         return jsonify({"error": "host only"}), 403
+    # Resuming from true silence (nothing currently playing) reuses the
+    # existing /live connection if the relay is still parked idle-alive;
+    # interrupting a track that's actively playing still needs a hard
+    # restart, since there's a live NodeLink fetch to abandon mid-stream.
+    was_idle = lobby.current_track is None
     if lobby.current_track:
         lobby.history.append(lobby.current_track)
         del lobby.history[:-HISTORY_LIMIT]
@@ -1304,7 +1395,10 @@ async def lobby_play(code):
     lobby.paused = False
     lobby.position_anchor_ms = 0
     lobby.anchor_time = time.time()
-    await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
+    if was_idle:
+        await lobby.relay.resume_or_start(lobby.current_track, 0, lobby.filters)
+    else:
+        await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
     await populate_recommendations(lobby)
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
@@ -1403,11 +1497,15 @@ async def lobby_prev(code):
     prev = lobby.previous_track()
     if prev is None:
         return jsonify({"error": "no previous track"}), 400
+    was_idle = lobby.current_track is None
     lobby.current_track = prev
     lobby.position_anchor_ms = 0
     lobby.anchor_time = time.time()
     lobby.paused = False
-    await lobby.relay.start_track(prev, 0, lobby.filters)
+    if was_idle:
+        await lobby.relay.resume_or_start(prev, 0, lobby.filters)
+    else:
+        await lobby.relay.start_track(prev, 0, lobby.filters)
     await populate_recommendations(lobby)
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
@@ -1538,7 +1636,7 @@ async def lobby_queue_add(code):
         lobby.paused = False
         lobby.position_anchor_ms = 0
         lobby.anchor_time = time.time()
-        await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
+        await lobby.relay.resume_or_start(lobby.current_track, 0, lobby.filters)
         await populate_recommendations(lobby)
     else:
         lobby.queue.append(track)

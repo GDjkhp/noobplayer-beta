@@ -809,10 +809,22 @@ const Engine = {
     S.lobby.relayGen = state.relayGen;
 
     if (!state.currentTrack) {
+      // Nothing queued right now — but the relay deliberately keeps this
+      // SAME /live connection alive rather than tearing the session down
+      // (it feeds silence frames instead; see the idle wait in server.py's
+      // LobbyRelay._run). So don't touch audio.src here.
+      //
+      // Killing it used to be exactly what caused a queue's last track (or
+      // a lobby's only track) to cut off abruptly a moment before it
+      // actually finished: whatever audio the element still had sitting in
+      // its own playback buffer got thrown away the instant this update
+      // arrived, rather than being allowed to finish playing out. Leaving
+      // the element alone lets that buffered tail play through, then it
+      // just keeps quietly consuming silence until resume_or_start() (a
+      // play, queue add, or "previous" on the server) hands it real audio
+      // again — same connection, no reconnect either way.
       S.current = null;
-      audio.pause();
-      audio.removeAttribute('src');
-      audio.load();
+      S.player.setAnchor(state.positionMs, true);  // freeze position reporting; don't touch audio.paused
       if (S.posTimer) { clearInterval(S.posTimer); S.posTimer = null; }
       UI.updatePlayerUI();
       return;
