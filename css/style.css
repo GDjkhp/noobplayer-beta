@@ -89,7 +89,7 @@ body::after {
 }
 .overlay-btn.ghost:hover { border-color: var(--muted); color: var(--text); }
 
-.radio-row { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.radio-row { display: flex; flex-direction: column; gap: 8px; }
 .radio-opt {
   display: flex; align-items: center; gap: 8px; font-size: 13px;
   cursor: pointer; padding: 8px 10px; border: 1px solid var(--brd2); transition: border-color .15s;
@@ -406,7 +406,7 @@ body::after {
 
 /* ═══════════════ Config tab ═══════════════ */
 #pane-config { overflow-y: auto; scrollbar-width: thin; }
-#cfg-body { padding: 18px; display: flex; flex-direction: column; gap: 20px; max-width: 480px; }
+#cfg-body { padding: 18px; display: flex; flex-direction: column; gap: 20px; }
 .cfg-mode-row { display: flex; gap: 8px; }
 .cfg-mode-btn {
   flex: 1; background: var(--surf2); border: 1px solid var(--brd2); color: var(--muted);
@@ -419,8 +419,7 @@ body::after {
 .cfg-section.on { display: flex; }
 .cfg-block { display: flex; flex-direction: column; gap: 6px; padding: 16px; background: var(--surf); border: 1px solid var(--brd); }
 .cfg-block .overlay-form { gap: 6px; }
-.cfg-block label { font-family: var(--fm); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 10px; }
-.cfg-block label:first-of-type { margin-top: 0; }
+.cfg-block label { font-family: var(--fm); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .cfg-label { font-family: var(--fn); font-weight: 700; font-size: 12px; color: var(--text); margin-bottom: 4px; }
 .cfg-row { display: flex; align-items: center; gap: 10px; }
 .cfg-row label { margin-top: 0; }
