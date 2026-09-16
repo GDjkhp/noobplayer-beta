@@ -43,7 +43,10 @@ const Lobby = {
     try {
       const r = await LobbyAPI.create(name || 'Untitled Lobby', isPublic, displayName || 'Guest');
       this._enterLobby(r.code, r.clientId, r.token, true, displayName || 'Guest', r.state);
-    } catch (e) { toast(`Failed to create lobby: ${e.message}`, 'error'); }
+    } catch (e) {
+      toast(`Failed to create lobby: ${e.message}`, 'error');
+      UI.switchTab('config'); UI.renderConfigTab();
+    }
   },
 
   async join(code, displayName) {
@@ -63,6 +66,7 @@ const Lobby = {
     S.lobby.token = token;
     S.lobby.isHost = isHost;
     S.lobby.displayName = displayName;
+    localStorage.setItem('nl_display_name', displayName);
 
     Main.enterApp();
     document.getElementById('hdr-standalone').style.display = 'none';
@@ -73,6 +77,7 @@ const Lobby = {
 
     this._connectSocket(code, clientId);
     UI.applyLockState();
+    UI.renderConfigTab();
     toast(`Joined lobby ${code}${isHost ? ' as host' : ''}`, 'success');
 
     if (initialState) this._applyState(initialState);
@@ -119,6 +124,7 @@ const Lobby = {
 
     S.queue = state.queue || [];
     UI.renderQueue();
+    UI.renderCurrentLobbyConfig();
 
     Engine._lobbySync(state);
   },
@@ -130,6 +136,27 @@ const Lobby = {
     if (result && result.state) this._applyState(result.state);
   },
 
+  // Host-only: rename the lobby and/or flip public/private visibility —
+  // used by the Config tab. Returns true/false so callers can decide
+  // whether to show an overall success toast.
+  async updateSettings(patch) {
+    try {
+      const r = await LobbyAPI.updateSettings(S.lobby.code, S.lobby.clientId, patch);
+      this._applyState(r.state);
+      return true;
+    } catch (e) { toast(`Error: ${e.message}`, 'error'); return false; }
+  },
+
+  // Anyone can rename THEMSELVES at any time from the Config tab.
+  async rename(displayName) {
+    try {
+      const r = await LobbyAPI.rename(S.lobby.code, S.lobby.clientId, displayName);
+      S.lobby.displayName = r.displayName;
+      localStorage.setItem('nl_display_name', r.displayName);
+      return true;
+    } catch (e) { toast(`Error: ${e.message}`, 'error'); return false; }
+  },
+
   _applyParticipants(list) {
     S.lobby.participants = list;
     const strip = document.getElementById('participants-strip');
@@ -137,6 +164,7 @@ const Lobby = {
       const initial = (p.name || '?').trim().charAt(0).toUpperCase() || '?';
       return `<div class="pchip ${p.isHost ? 'is-host' : ''}" title="${esc(p.name)}${p.isHost ? ' (host)' : ''}">${esc(initial)}<span class="mic-dot"></span></div>`;
     }).join('');
+    UI.renderChatUsers(list);
   },
 
   _applyChat(msg) {
@@ -197,11 +225,16 @@ const Lobby = {
     if (S.lobby.code) await LobbyAPI.leave(S.lobby.code, S.lobby.clientId);
     Engine._stopLocal();
     S.current = null; S.queue = [];
+    S.mode = null;
     S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, pc:null, micStream:null, micEnabled:false, lastServerState:null, relayGen:0 };
-    UI.updatePlayerUI(); UI.renderQueue();
+    document.getElementById('hdr-lobby').style.display = 'none';
+    document.getElementById('tab-chat-btn').style.display = 'none';
     document.getElementById('chat-log').innerHTML = '';
-    document.getElementById('app').style.display = 'none';
-    showOverlay('overlay-lobby-select');
+    document.getElementById('chat-users-list').innerHTML = '';
+    document.getElementById('chat-users-count').textContent = '';
+    UI.updatePlayerUI(); UI.renderQueue();
+    UI.switchTab('config');
+    UI.renderConfigTab();
   },
 
   /* ───────── WebRTC voice (aiortc relay/mixer on the server) ───────── */

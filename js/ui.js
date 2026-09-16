@@ -453,6 +453,132 @@ const UI = {
     document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + name));
   },
 
+  /* ═══════════════════ Chat: participant list ═══════════════════
+     Renders the same participant list the header strip shows, but as a
+     full list with names — the header strip only has room for a few
+     avatar chips. */
+  renderChatUsers(list) {
+    const wrap = document.getElementById('chat-users-list');
+    const count = document.getElementById('chat-users-count');
+    if (!wrap) return;
+    list = list || [];
+    count.textContent = list.length ? `(${list.length})` : '';
+    if (!list.length) { wrap.innerHTML = `<div class="cu-empty">No one here yet</div>`; return; }
+    wrap.innerHTML = list.map(p => {
+      const initial = (p.name || '?').trim().charAt(0).toUpperCase() || '?';
+      return `<div class="cu-item">
+        <div class="cu-avatar ${p.isHost ? 'is-host' : ''}">${esc(initial)}</div>
+        <div class="cu-meta">
+          <div class="cu-name" title="${esc(p.name)}">${esc(p.name)}</div>
+          ${p.isHost ? '<div class="cu-tag">HOST</div>' : ''}
+        </div>
+      </div>`;
+    }).join('');
+  },
+
+  /* ═══════════════════ Config tab ═══════════════════
+     Merges what used to be the mode-select / standalone-connect /
+     server-setup / lobby-select onboarding overlays into one in-app tab,
+     since the app now always boots straight into a fresh default lobby
+     (see Main.autoStart in main.js) instead of asking up front. */
+  _cfgMode: null,
+
+  setConfigMode(mode) {
+    this._cfgMode = mode;
+    document.querySelectorAll('.cfg-mode-btn').forEach(b => b.classList.toggle('on', b.dataset.cfgmode === mode));
+    document.getElementById('cfg-lobby').classList.toggle('on', mode === 'lobby');
+    document.getElementById('cfg-standalone').classList.toggle('on', mode === 'standalone');
+  },
+
+  renderConfigTab() {
+    if (!this._cfgMode) this.setConfigMode(S.mode === 'standalone' ? 'standalone' : 'lobby');
+    this.updateServerUrlDisplay();
+    this.renderCurrentLobbyConfig();
+    document.getElementById('sa-disconnect-cfg').style.display = (S.mode === 'standalone') ? 'inline-block' : 'none';
+  },
+
+  updateServerUrlDisplay() {
+    const el = document.getElementById('cfg-server-url');
+    if (el) el.textContent = Backend.serverUrl || window.location.origin;
+  },
+
+  renderCurrentLobbyConfig() {
+    const inLobby = S.mode === 'server' && S.lobby.active;
+    document.getElementById('cfg-no-lobby').style.display = inLobby ? 'flex' : 'none';
+    document.getElementById('cfg-lobby-form').style.display = inLobby ? 'block' : 'none';
+    if (!inLobby) return;
+
+    document.getElementById('cfg-lobby-code').textContent = S.lobby.code;
+
+    const cur = S.lobby.lastServerState || {};
+    const nameInput = document.getElementById('cfg-lobby-name');
+    const dispInput = document.getElementById('cfg-display-name');
+    // Don't clobber a field the person is actively typing into — this
+    // fires on every server state push, which can happen mid-edit.
+    if (document.activeElement !== nameInput) nameInput.value = cur.name || '';
+    if (document.activeElement !== dispInput) dispInput.value = S.lobby.displayName || '';
+
+    document.querySelectorAll('input[name="cfg-vis"]').forEach(r => {
+      r.checked = (r.value === 'public') === !!cur.isPublic;
+      r.disabled = !S.lobby.isHost;
+    });
+    nameInput.disabled = !S.lobby.isHost;
+  },
+
+  async saveConfigLobby() {
+    if (!(S.mode === 'server' && S.lobby.active)) return;
+    let changed = false, ok = true;
+
+    const newDisplayName = document.getElementById('cfg-display-name').value.trim();
+    if (newDisplayName && newDisplayName !== S.lobby.displayName) {
+      changed = true;
+      ok = (await Lobby.rename(newDisplayName)) && ok;
+    }
+
+    if (S.lobby.isHost) {
+      const cur = S.lobby.lastServerState || {};
+      const newName = document.getElementById('cfg-lobby-name').value.trim();
+      const isPublic = document.querySelector('input[name="cfg-vis"]:checked').value === 'public';
+      const patch = {};
+      if (newName && newName !== cur.name) patch.name = newName;
+      if (isPublic !== !!cur.isPublic) patch.isPublic = isPublic;
+      if (Object.keys(patch).length) {
+        changed = true;
+        ok = (await Lobby.updateSettings(patch)) && ok;
+      }
+    }
+
+    if (changed && ok) toast('Settings saved', 'success', 1500);
+    else if (!changed) toast('Nothing to save', 'info', 1500);
+  },
+
+  // Points the app at a different Flask server entirely — leaves the
+  // current lobby (or disconnects standalone) first since a different
+  // server means a wholly different set of lobbies, then boots a fresh
+  // default lobby on it, same as first load.
+  async switchFlaskServer() {
+    const mode = document.querySelector('input[name="cfg-srv"]:checked').value;
+    let url;
+    if (mode === 'custom') {
+      url = document.getElementById('cfg-srv-url').value.trim();
+      if (!url) { toast('Enter a server URL', 'warn'); return; }
+    }
+
+    if (S.mode === 'server' && S.lobby.active) {
+      await Lobby.leave();
+    } else if (S.mode === 'standalone') {
+      Standalone.disconnect();
+    }
+
+    if (mode === 'default') Lobby.chooseDefaultServer(); else Lobby.chooseCustomServer(url);
+    this.updateServerUrlDisplay();
+
+    const displayName = localStorage.getItem('nl_display_name') || 'Guest';
+    await Lobby.create('New Lobby', false, displayName);
+    this.setConfigMode('lobby');
+    this.renderConfigTab();
+  },
+
   setupProgressBar() {
     const bar = document.getElementById('prog-bar');
     function msFromEvent(e) {

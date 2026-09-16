@@ -2,12 +2,21 @@
 /* ═══════════════════════════════════════════
    Standalone mode — direct browser-to-NodeLink connection.
    No server, no lobby. Bring your own NodeLink host+password.
+   Reachable any time from the Config tab (no onboarding screen) — see
+   main.js's Main.autoStart(), which defaults the app to a fresh lobby on
+   load, and UI.setConfigMode(), which switches Config between this and
+   the lobby settings.
 ═══════════════════════════════════════════ */
 const Standalone = {
   async connect() {
     const host = document.getElementById('sa-host').value.trim();
     const pass = document.getElementById('sa-pass').value.trim();
     if (!host || !pass) { toast('Enter host and password', 'warn'); return; }
+
+    // Switching into standalone mode from an active lobby means leaving
+    // it properly (socket disconnect, REST leave, voice teardown) rather
+    // than just abandoning it client-side.
+    if (S.mode === 'server' && S.lobby.active) await Lobby.leave();
 
     Backend.setStandalone(host, pass);
     try {
@@ -17,9 +26,11 @@ const Standalone = {
       document.getElementById('hdr-standalone').style.display = 'flex';
       document.getElementById('hdr-lobby').style.display = 'none';
       document.getElementById('tab-chat-btn').style.display = 'none';
+      document.getElementById('sa-disconnect-cfg').style.display = 'inline-block';
       this.setStatus('connected', info);
       document.getElementById('cors-note').classList.remove('show');
       UI.applyLockState();
+      toast('Connected to NodeLink', 'success', 2000);
     } catch (e) {
       this.setStatus('error');
       const isCors = e.message.includes('Failed to fetch') || e.message.includes('NetworkError');
@@ -35,9 +46,12 @@ const Standalone = {
   disconnect() {
     Engine._stopLocal();
     S.current = null; S.queue = []; S.history = [];
+    S.mode = null;
+    document.getElementById('hdr-standalone').style.display = 'none';
+    document.getElementById('sa-disconnect-cfg').style.display = 'none';
     UI.updatePlayerUI(); UI.renderQueue();
-    showOverlay('overlay-mode');
-    document.getElementById('app').style.display = 'none';
+    UI.switchTab('config');
+    UI.renderConfigTab();
   },
 
   setStatus(s, info) {

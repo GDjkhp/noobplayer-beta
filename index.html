@@ -12,105 +12,8 @@
 <audio id="voice-audio" autoplay style="display:none"></audio>
 <audio id="lobby-audio" autoplay style="display:none"></audio>
 
-<!-- ═══ MODE SELECT ═══ -->
-<div id="overlay-mode" class="overlay">
-  <div class="overlay-box">
-    <div class="overlay-logo">⬡ NodeLink</div>
-    <div class="overlay-sub">Choose how you want to listen</div>
-    <div class="mode-grid">
-      <button class="mode-card" id="pick-standalone">
-        <div class="mode-icon">🎧</div>
-        <div class="mode-title">Standalone</div>
-        <div class="mode-desc">Listen solo. Bring your own NodeLink server. Nothing leaves your browser.</div>
-      </button>
-      <button class="mode-card" id="pick-server">
-        <div class="mode-icon">🌐</div>
-        <div class="mode-title">Server / Lobby</div>
-        <div class="mode-desc">Join a lobby. Listen, chat, and talk together in real time.</div>
-      </button>
-    </div>
-  </div>
-</div>
-
-<!-- ═══ STANDALONE CONNECT ═══ -->
-<div id="overlay-standalone" class="overlay">
-  <div class="overlay-box">
-    <div class="overlay-logo">⬡ Standalone Mode</div>
-    <div class="overlay-sub">Connect directly to a NodeLink server</div>
-    <div class="overlay-form">
-      <label>Host</label>
-      <input id="sa-host" class="hi full" type="text" placeholder="https://nodelink.example.com">
-      <label>Password</label>
-      <input id="sa-pass" class="hi full" type="password" placeholder="Password">
-      <button id="sa-connect" class="overlay-btn">Connect</button>
-      <button id="sa-back" class="overlay-btn ghost">← Back</button>
-    </div>
-  </div>
-</div>
-
-<!-- ═══ SERVER SETUP ═══ -->
-<div id="overlay-server-setup" class="overlay">
-  <div class="overlay-box">
-    <div class="overlay-logo">⬡ Server Mode</div>
-    <div class="overlay-sub">Which Flask server should handle lobbies?</div>
-    <div class="overlay-form">
-      <div class="radio-row">
-        <label class="radio-opt"><input type="radio" name="srv" value="default" checked> Use this server <span class="radio-sub">(default)</span></label>
-        <label class="radio-opt"><input type="radio" name="srv" value="custom"> Connect to another server</label>
-      </div>
-      <input id="srv-url" class="hi full" type="text" placeholder="https://your-flask-server.com" style="display:none;margin-top:10px">
-      <button id="srv-continue" class="overlay-btn">Continue</button>
-      <button id="srv-back" class="overlay-btn ghost">← Back</button>
-    </div>
-  </div>
-</div>
-
-<!-- ═══ LOBBY SELECT ═══ -->
-<div id="overlay-lobby-select" class="overlay">
-  <div class="overlay-box wide">
-    <div class="overlay-logo">⬡ Lobbies</div>
-    <div class="overlay-sub" id="lobby-select-sub">Not connected</div>
-
-    <div class="lobby-tabs">
-      <button class="lobby-tab on" data-ltab="join">Join</button>
-      <button class="lobby-tab" data-ltab="create">Create</button>
-      <button class="lobby-tab" data-ltab="browse">Browse Public</button>
-    </div>
-
-    <div class="lobby-pane on" id="ltab-join">
-      <div class="overlay-form">
-        <label>Display name</label>
-        <input id="join-name" class="hi full" type="text" placeholder="Your name" maxlength="24">
-        <label>Lobby code</label>
-        <input id="join-code" class="hi full mono-lg" type="text" placeholder="ABCXYZ" maxlength="6" style="text-transform:uppercase">
-        <button id="join-go" class="overlay-btn">Join Lobby</button>
-      </div>
-    </div>
-
-    <div class="lobby-pane" id="ltab-create">
-      <div class="overlay-form">
-        <label>Display name</label>
-        <input id="create-name" class="hi full" type="text" placeholder="Your name" maxlength="24">
-        <label>Lobby name</label>
-        <input id="create-lobby-name" class="hi full" type="text" placeholder="Friday Night Mix" maxlength="40">
-        <div class="radio-row">
-          <label class="radio-opt"><input type="radio" name="vis" value="private" checked> Private <span class="radio-sub">(share code only)</span></label>
-          <label class="radio-opt"><input type="radio" name="vis" value="public"> Public <span class="radio-sub">(listed for anyone)</span></label>
-        </div>
-        <button id="create-go" class="overlay-btn">Create Lobby</button>
-      </div>
-    </div>
-
-    <div class="lobby-pane" id="ltab-browse">
-      <div id="public-lobby-list" class="public-list"><div class="empty small"><p>Loading…</p></div></div>
-    </div>
-
-    <button id="lobby-select-back" class="overlay-btn ghost" style="margin-top:14px">← Back</button>
-  </div>
-</div>
-
 <!-- ═══ MAIN APP ═══ -->
-<div id="app" style="display:none">
+<div id="app" style="display:block">
 
   <div id="hdr-standalone" class="hdr" style="display:none">
     <span class="logo">⬡ NodeLink</span>
@@ -228,6 +131,7 @@
         <button class="tab" data-tab="lyrics">Lyrics ✦</button>
         <button class="tab" data-tab="filters">Filters ⚙</button>
         <button class="tab" data-tab="chat" id="tab-chat-btn" style="display:none">Chat <span id="chat-badge"></span></button>
+        <button class="tab" data-tab="config">Config ⚙</button>
       </div>
 
       <div class="pane on" id="pane-search">
@@ -318,10 +222,117 @@
       </div>
 
       <div class="pane" id="pane-chat">
-        <div id="chat-log"></div>
-        <div id="chat-input-row">
-          <input id="chat-input" type="text" placeholder="Message the lobby…" maxlength="500">
-          <button id="chat-send">Send</button>
+        <div id="chat-main">
+          <div id="chat-log"></div>
+          <div id="chat-input-row">
+            <input id="chat-input" type="text" placeholder="Message the lobby…" maxlength="500">
+            <button id="chat-send">Send</button>
+          </div>
+        </div>
+        <div id="chat-users">
+          <div id="chat-users-hdr">In this lobby <span id="chat-users-count"></span></div>
+          <div id="chat-users-list"></div>
+        </div>
+      </div>
+
+      <div class="pane" id="pane-config">
+        <div id="cfg-body">
+
+          <div class="cfg-mode-row">
+            <button class="cfg-mode-btn" data-cfgmode="lobby">🌐 Lobby</button>
+            <button class="cfg-mode-btn" data-cfgmode="standalone">🎧 Standalone</button>
+          </div>
+
+          <!-- ───────── Lobby mode settings ───────── -->
+          <div class="cfg-section" id="cfg-lobby">
+
+            <div class="cfg-block" id="cfg-current-lobby">
+              <span class="cfg-label">Current Lobby</span>
+              <div id="cfg-no-lobby" class="empty small"><p>Not currently in a lobby — create or join one below</p></div>
+              <div id="cfg-lobby-form" style="display:none">
+                <div class="cfg-row">
+                  <label>Code</label>
+                  <span id="cfg-lobby-code" class="mono-lg sm">------</span>
+                  <button id="cfg-copy-code" class="qa">Copy</button>
+                </div>
+                <label>Lobby name</label>
+                <input id="cfg-lobby-name" class="hi full" type="text" maxlength="40">
+                <label>Visibility</label>
+                <div class="radio-row inline">
+                  <label class="radio-opt"><input type="radio" name="cfg-vis" value="private"> Private <span class="radio-sub">(share code only)</span></label>
+                  <label class="radio-opt"><input type="radio" name="cfg-vis" value="public"> Public <span class="radio-sub">(listed for anyone)</span></label>
+                </div>
+                <label>Your display name</label>
+                <input id="cfg-display-name" class="hi full" type="text" maxlength="24">
+                <button id="cfg-save-lobby" class="overlay-btn">Save Changes</button>
+                <button id="cfg-leave-lobby" class="overlay-btn ghost">Leave Lobby</button>
+              </div>
+            </div>
+
+            <div class="cfg-block">
+              <span class="cfg-label">Switch Lobby</span>
+              <div class="lobby-tabs">
+                <button class="lobby-tab on" data-ltab="join">Join</button>
+                <button class="lobby-tab" data-ltab="create">Create New</button>
+                <button class="lobby-tab" data-ltab="browse">Browse Public</button>
+              </div>
+
+              <div class="lobby-pane on" id="ltab-join">
+                <div class="overlay-form">
+                  <label>Display name</label>
+                  <input id="join-name" class="hi full" type="text" placeholder="Your name" maxlength="24">
+                  <label>Lobby code</label>
+                  <input id="join-code" class="hi full mono-lg" type="text" placeholder="ABCXYZ" maxlength="6" style="text-transform:uppercase">
+                  <button id="join-go" class="overlay-btn">Join Lobby</button>
+                </div>
+              </div>
+
+              <div class="lobby-pane" id="ltab-create">
+                <div class="overlay-form">
+                  <label>Display name</label>
+                  <input id="create-name" class="hi full" type="text" placeholder="Your name" maxlength="24">
+                  <label>Lobby name</label>
+                  <input id="create-lobby-name" class="hi full" type="text" placeholder="Friday Night Mix" maxlength="40">
+                  <div class="radio-row">
+                    <label class="radio-opt"><input type="radio" name="vis" value="private" checked> Private <span class="radio-sub">(share code only)</span></label>
+                    <label class="radio-opt"><input type="radio" name="vis" value="public"> Public <span class="radio-sub">(listed for anyone)</span></label>
+                  </div>
+                  <button id="create-go" class="overlay-btn">Create Lobby</button>
+                </div>
+              </div>
+
+              <div class="lobby-pane" id="ltab-browse">
+                <div id="public-lobby-list" class="public-list"><div class="empty small"><p>Loading…</p></div></div>
+              </div>
+            </div>
+
+            <div class="cfg-block">
+              <span class="cfg-label">Flask Server</span>
+              <div class="cfg-row"><label>Currently using</label><span id="cfg-server-url" class="mono-sm"></span></div>
+              <div class="radio-row inline">
+                <label class="radio-opt"><input type="radio" name="cfg-srv" value="default" checked> This server <span class="radio-sub">(default)</span></label>
+                <label class="radio-opt"><input type="radio" name="cfg-srv" value="custom"> Custom server</label>
+              </div>
+              <input id="cfg-srv-url" class="hi full" type="text" placeholder="https://your-flask-server.com" style="display:none;margin-top:10px">
+              <button id="cfg-srv-switch" class="overlay-btn ghost">Switch Server</button>
+            </div>
+          </div>
+
+          <!-- ───────── Standalone mode settings ───────── -->
+          <div class="cfg-section" id="cfg-standalone">
+            <div class="cfg-block">
+              <span class="cfg-label">NodeLink Connection</span>
+              <div class="overlay-form">
+                <label>Host</label>
+                <input id="sa-host" class="hi full" type="text" placeholder="https://nodelink.example.com">
+                <label>Password</label>
+                <input id="sa-pass" class="hi full" type="password" placeholder="Password">
+                <button id="sa-connect" class="overlay-btn">Connect</button>
+                <button id="sa-disconnect-cfg" class="overlay-btn ghost" style="display:none">Disconnect</button>
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
     </div>

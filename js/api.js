@@ -140,6 +140,27 @@ const LobbyAPI = {
     return res.json();
   },
 
+  // Host-only: rename the lobby and/or flip public/private. `patch` is
+  // whichever of { name, isPublic } changed — omitted keys are left as-is.
+  async updateSettings(code, clientId, patch) {
+    const res = await fetch(`${this.base()}/api/lobby/${code}/settings`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientId, ...patch }),
+    });
+    if (!res.ok) { const t = await res.json().catch(() => ({})); throw new Error(t.error || `HTTP ${res.status}`); }
+    return res.json();
+  },
+
+  // Anyone can rename THEMSELVES — not host-gated.
+  async rename(code, clientId, displayName) {
+    const res = await fetch(`${this.base()}/api/lobby/${code}/rename`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientId, displayName }),
+    });
+    if (!res.ok) { const t = await res.json().catch(() => ({})); throw new Error(t.error || `HTTP ${res.status}`); }
+    return res.json();
+  },
+
   liveUrl(code, relayGen) {
     return `${this.base()}/api/lobby/${code}/live?g=${relayGen}`;
   },

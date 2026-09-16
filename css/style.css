@@ -383,6 +383,53 @@ body::after {
 #chat-send { background: var(--accent); color: #05050f; border: none; font-family: var(--fn); font-weight: 800; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; padding: 8px 16px; cursor: pointer; transition: opacity .2s; }
 #chat-send:hover { opacity: .85; }
 
+/* ═══════════════ Chat pane: log + input (left) / user list (right) ═══════════════ */
+#pane-chat { flex-direction: row; }
+#chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--brd); }
+#chat-main #chat-log { flex: 1; }
+#chat-users { width: 168px; flex-shrink: 0; overflow-y: auto; padding: 14px 10px; scrollbar-width: thin; }
+#chat-users-hdr { font-family: var(--fm); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 0 6px 10px; }
+#chat-users-hdr span { color: var(--muted2); }
+.cu-item { display: flex; align-items: center; gap: 8px; padding: 6px; border-radius: 2px; transition: background .15s; }
+.cu-item:hover { background: var(--surf2); }
+.cu-avatar {
+  width: 24px; height: 24px; flex-shrink: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surf3); border: 1px solid var(--brd2);
+  font-family: var(--fm); font-weight: 700; font-size: 11px; color: var(--muted);
+}
+.cu-avatar.is-host { border-color: var(--accent); color: var(--accent); }
+.cu-meta { min-width: 0; }
+.cu-name { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cu-tag { font-family: var(--fm); font-size: 9px; color: var(--accent); letter-spacing: .05em; }
+.cu-empty { padding: 10px 6px; font-family: var(--fm); font-size: 11px; color: var(--muted); }
+
+/* ═══════════════ Config tab ═══════════════ */
+#pane-config { overflow-y: auto; scrollbar-width: thin; }
+#cfg-body { padding: 18px; display: flex; flex-direction: column; gap: 20px; max-width: 480px; }
+.cfg-mode-row { display: flex; gap: 8px; }
+.cfg-mode-btn {
+  flex: 1; background: var(--surf2); border: 1px solid var(--brd2); color: var(--muted);
+  font-family: var(--fn); font-weight: 700; font-size: 12px; padding: 10px; cursor: pointer;
+  transition: all .15s;
+}
+.cfg-mode-btn:hover { border-color: var(--accent); color: var(--text); }
+.cfg-mode-btn.on { border-color: var(--accent); color: var(--accent); background: rgba(91,156,246,.08); }
+.cfg-section { display: none; flex-direction: column; gap: 20px; }
+.cfg-section.on { display: flex; }
+.cfg-block { display: flex; flex-direction: column; gap: 6px; padding: 16px; background: var(--surf); border: 1px solid var(--brd); }
+.cfg-block .overlay-form { gap: 6px; }
+.cfg-block label { font-family: var(--fm); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 10px; }
+.cfg-block label:first-of-type { margin-top: 0; }
+.cfg-label { font-family: var(--fn); font-weight: 700; font-size: 12px; color: var(--text); margin-bottom: 4px; }
+.cfg-row { display: flex; align-items: center; gap: 10px; }
+.cfg-row label { margin-top: 0; }
+.mono-sm, .mono-lg.sm { font-family: var(--fm); font-size: 13px; letter-spacing: .1em; color: var(--accent); }
+.radio-row.inline { flex-direction: row; }
+.radio-row.inline .radio-opt { flex: 1; }
+#cfg-lobby-name:disabled, #cfg-display-name:disabled { opacity: .5; cursor: not-allowed; }
+.radio-row.inline input:disabled { cursor: not-allowed; }
+
 /* EMPTY / LOADING */
 .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 48px 20px; color: var(--muted); text-align: center; flex: 1; }
 .empty svg { opacity: .3; }

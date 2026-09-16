@@ -1,69 +1,37 @@
 'use strict';
 /* ═══════════════════════════════════════════
-   Main — mode-select flow + global event wiring
+   Main — boot flow + global event wiring.
+
+   The app used to open on a "Standalone vs Server" mode-select screen
+   that blocked everything else until you picked one. It now boots
+   straight into a freshly-created private lobby on this page's own
+   origin (see autoStart below) and shows the normal player UI
+   immediately — switching to standalone mode, renaming/reconfiguring
+   the lobby, or joining/creating a different one all now live in the
+   Config tab (see ui.js's renderConfigTab/setConfigMode) instead of a
+   blocking overlay.
 ═══════════════════════════════════════════ */
 const Main = {
   enterApp() {
-    showOverlay(null);
-    document.getElementById('app').style.display = 'block';
     UI.updatePlayerUI();
     UI.renderQueue();
     UI.updateFilterStatus();
+  },
+
+  async autoStart() {
+    Lobby.chooseDefaultServer();
+    UI.updateServerUrlDisplay();
+    let displayName = localStorage.getItem('nl_display_name');
+    if (!displayName) {
+      displayName = `Guest${Math.floor(1000 + Math.random() * 9000)}`;
+      localStorage.setItem('nl_display_name', displayName);
+    }
+    await Lobby.create('New Lobby', false, displayName);
   },
 };
 
 document.addEventListener('DOMContentLoaded', () => {
   UI.setupProgressBar();
-
-  /* ───────── Mode select screen ───────── */
-  document.getElementById('pick-standalone').addEventListener('click', () => showOverlay('overlay-standalone'));
-  document.getElementById('pick-server').addEventListener('click', () => showOverlay('overlay-server-setup'));
-
-  /* ───────── Standalone connect ───────── */
-  document.getElementById('sa-back').addEventListener('click', () => showOverlay('overlay-mode'));
-  document.getElementById('sa-connect').addEventListener('click', () => Standalone.connect());
-  ['sa-host','sa-pass'].forEach(id => {
-    document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') Standalone.connect(); });
-  });
-
-  /* ───────── Server setup ───────── */
-  document.getElementById('srv-back').addEventListener('click', () => showOverlay('overlay-mode'));
-  document.querySelectorAll('input[name="srv"]').forEach(r => {
-    r.addEventListener('change', () => {
-      document.getElementById('srv-url').style.display = (r.value === 'custom' && r.checked) ? 'block' : 'none';
-    });
-  });
-  document.getElementById('srv-continue').addEventListener('click', () => {
-    const mode = document.querySelector('input[name="srv"]:checked').value;
-    if (mode === 'default') {
-      Lobby.chooseDefaultServer();
-    } else {
-      const url = document.getElementById('srv-url').value.trim();
-      if (!url) { toast('Enter a server URL', 'warn'); return; }
-      Lobby.chooseCustomServer(url);
-    }
-    document.getElementById('lobby-select-sub').textContent = `Server: ${Backend.serverUrl}`;
-    showOverlay('overlay-lobby-select');
-    Lobby.refreshPublicList();
-  });
-
-  /* ───────── Lobby select (create / join / browse) ───────── */
-  document.getElementById('lobby-select-back').addEventListener('click', () => showOverlay('overlay-server-setup'));
-  document.querySelectorAll('.lobby-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.lobby-tab').forEach(t => t.classList.toggle('on', t === tab));
-      document.querySelectorAll('.lobby-pane').forEach(p => p.classList.toggle('on', p.id === 'ltab-' + tab.dataset.ltab));
-      if (tab.dataset.ltab === 'browse') Lobby.refreshPublicList();
-    });
-  });
-  document.getElementById('join-go').addEventListener('click', () => {
-    Lobby.join(document.getElementById('join-code').value, document.getElementById('join-name').value.trim());
-  });
-  document.getElementById('join-code').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('join-go').click(); });
-  document.getElementById('create-go').addEventListener('click', () => {
-    const isPublic = document.querySelector('input[name="vis"]:checked').value === 'public';
-    Lobby.create(document.getElementById('create-lobby-name').value.trim(), isPublic, document.getElementById('create-name').value.trim());
-  });
 
   /* ───────── App header (standalone) ───────── */
   document.getElementById('btn-disconnect-sa').addEventListener('click', () => Standalone.disconnect());
@@ -107,6 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => {
     UI.switchTab(b.dataset.tab);
     if (b.dataset.tab === 'chat') document.getElementById('chat-badge').textContent = '';
+    if (b.dataset.tab === 'config') UI.renderConfigTab();
   }));
 
   /* ───────── Lyrics ───────── */
@@ -144,11 +113,52 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('chat-send').addEventListener('click', () => Lobby.sendChat());
   document.getElementById('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') Lobby.sendChat(); });
 
+  /* ───────── Config: mode toggle (Lobby / Standalone) ───────── */
+  document.querySelectorAll('.cfg-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => UI.setConfigMode(btn.dataset.cfgmode));
+  });
+
+  /* ───────── Config: standalone connection ───────── */
+  document.getElementById('sa-connect').addEventListener('click', () => Standalone.connect());
+  ['sa-host','sa-pass'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') Standalone.connect(); });
+  });
+  document.getElementById('sa-disconnect-cfg').addEventListener('click', () => Standalone.disconnect());
+
+  /* ───────── Config: current lobby settings ───────── */
+  document.getElementById('cfg-copy-code').addEventListener('click', () => Lobby.copyCode());
+  document.getElementById('cfg-save-lobby').addEventListener('click', () => UI.saveConfigLobby());
+  document.getElementById('cfg-leave-lobby').addEventListener('click', () => Lobby.leave());
+
+  /* ───────── Config: switch to a different lobby (join / create / browse) ───────── */
+  document.querySelectorAll('.lobby-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.lobby-tab').forEach(t => t.classList.toggle('on', t === tab));
+      document.querySelectorAll('.lobby-pane').forEach(p => p.classList.toggle('on', p.id === 'ltab-' + tab.dataset.ltab));
+      if (tab.dataset.ltab === 'browse') Lobby.refreshPublicList();
+    });
+  });
+  document.getElementById('join-go').addEventListener('click', () => {
+    Lobby.join(document.getElementById('join-code').value, document.getElementById('join-name').value.trim());
+  });
+  document.getElementById('join-code').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('join-go').click(); });
+  document.getElementById('create-go').addEventListener('click', () => {
+    const isPublic = document.querySelector('input[name="vis"]:checked').value === 'public';
+    Lobby.create(document.getElementById('create-lobby-name').value.trim(), isPublic, document.getElementById('create-name').value.trim());
+  });
+
+  /* ───────── Config: Flask server ───────── */
+  document.querySelectorAll('input[name="cfg-srv"]').forEach(r => {
+    r.addEventListener('change', () => {
+      document.getElementById('cfg-srv-url').style.display = (r.value === 'custom' && r.checked) ? 'block' : 'none';
+    });
+  });
+  document.getElementById('cfg-srv-switch').addEventListener('click', () => UI.switchFlaskServer());
+
   /* ───────── Keyboard shortcuts ───────── */
   document.addEventListener('keydown', e => {
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-    if (document.getElementById('app').style.display === 'none') return;
 
     const posMs = () => S.player ? S.player.getPositionMs() : 0;
     switch (e.code) {
@@ -165,7 +175,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  showOverlay('overlay-mode');
+  Main.autoStart();
 
   /* ───────── Leave-on-close ─────────
      Tab close / refresh / navigation don't run normal JS to completion, so

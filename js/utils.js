@@ -25,8 +25,3 @@ function toast(msg, type = 'info', dur = 3500) {
 function uid() {
   return 'xxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16));
 }
-
-function showOverlay(id) {
-  document.querySelectorAll('.overlay').forEach(o => o.classList.remove('show'));
-  if (id) document.getElementById(id).classList.add('show');
-}
