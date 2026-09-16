@@ -39,6 +39,9 @@ const Engine = {
     UI.renderQueue();
     UI.fetchChapters(track.encoded);
     this._ensurePreload();
+    // Fire-and-forget: keeps the recommendation pool topped up off whatever
+    // is playing now, the way the bot's queue_on_start() calls get_rekt().
+    this._populateRecommendations(track);
   },
 
   async _startPCMStream(encodedTrack, positionMs, filters) {
@@ -121,7 +124,7 @@ const Engine = {
     if (S.loopMode === 'track' && S.current) return S.current;
     if (S.queue.length > 0) return S.queue[0];
     if (S.loopMode === 'queue' && S.current) return S.current; // wraps to itself once the queue drains
-    return null;
+    return this._nextAutoTrack();
   },
 
   // Shared by both the gapless splice and the (fallback) hard-cut path —
@@ -129,15 +132,145 @@ const Engine = {
   // finished, and returns whatever should play next (or null if nothing
   // should). Keeping this as one function means the two paths can never
   // disagree about what "next" means.
-  _advanceQueueState(finishedTrack) {
-    if (S.loopMode === 'track') return finishedTrack;
+  _advanceQueueState(finishedTrack, { skipTrackLoop = false } = {}) {
+    // The `finishedTrack` guard matters: with repeat-one set but nothing
+    // currently playing (first track of a session, or right after a stop),
+    // there is nothing to repeat — falling through to the queue is what
+    // _computeNextTrack predicts, and the two have to agree or the gapless
+    // preload buffers a track that never plays. Lobby.advance_track() in
+    // server.py carries the same guard for the same reason.
+    if (S.loopMode === 'track' && finishedTrack && !skipTrackLoop) return finishedTrack;
     if (finishedTrack) {
       if (S.history.length > 80) S.history.shift();
       S.history.push(finishedTrack);
     }
     if (S.loopMode === 'queue' && finishedTrack) S.queue.push(finishedTrack);
+    if (S.queue.length === 0) this._drainAutoQueue();
     if (S.queue.length > 0) return S.queue.shift();
     return null;
+  },
+
+  /* ───────── recommendations / autoplay (standalone) ─────────
+     Lobby mode's equivalent lives server-side (populate_recommendations /
+     Lobby.drain_auto_queue in server.py) so every client sees the same
+     picks; this is the same algorithm run locally for standalone mode.
+
+     Both are ports of the Discord bot's get_rekt(): when a track starts,
+     ask the node for tracks like it, drop anything already played or
+     queued, shuffle, and park the rest in a side pool. Autoplay drains
+     that pool when the queue runs dry; Smart Shuffle empties it into the
+     queue on demand. */
+
+  _trackId(t) {
+    if (!t) return null;
+    return t.info?.identifier || t.encoded || null;
+  },
+
+  _selfRequester() {
+    const name = (S.mode === 'server' && S.lobby.displayName)
+      || localStorage.getItem('nl_display_name') || 'You';
+    return { id: S.lobby.clientId || 'local', name };
+  },
+
+  _playedIds() { return new Set(S.history.map(t => this._trackId(t)).filter(Boolean)); },
+  _queuedIds() {
+    const ids = S.queue.map(t => this._trackId(t));
+    ids.push(this._trackId(S.current));
+    return new Set(ids.filter(Boolean));
+  },
+
+  // Non-mutating counterpart of _drainAutoQueue — _computeNextTrack needs
+  // to know what autoplay WOULD pick without actually picking it.
+  _nextAutoTrack() {
+    if (S.autoplay !== 'enabled' || !S.autoQueue.length) return null;
+    const played = this._playedIds(), queued = this._queuedIds();
+    return S.autoQueue.find(t => {
+      const id = this._trackId(t);
+      return !played.has(id) && !queued.has(id);
+    }) || null;
+  },
+
+  _drainAutoQueue() {
+    if (S.autoplay !== 'enabled' || !S.autoQueue.length) return 0;
+    const played = this._playedIds();
+    const queued = this._queuedIds();
+    let moved = 0;
+    for (const t of S.autoQueue) {
+      const id = this._trackId(t);
+      if (id && (played.has(id) || queued.has(id))) continue;
+      queued.add(id);
+      S.queue.push(t);
+      moved++;
+    }
+    S.autoQueue = [];
+    S.autoQueueCount = 0;
+    return moved;
+  },
+
+  // The identifier to hand loadtracks to get tracks like this one, or null
+  // if the source has no recommendation support. Mirrors lava-lyra's
+  // Node.get_recommendations(): YouTube uses its RD… radio playlist, the
+  // rest use their plugin's *rec: search prefix.
+  _recommendationQuery(track) {
+    const info = track?.info || {};
+    const source = (info.sourceName || '').toLowerCase().replace(/\s/g, '');
+    const id = info.identifier;
+    if (!id) return null;
+    if (['youtube', 'youtubemusic', 'ytmusic', 'youtube_music'].includes(source)) {
+      return `https://www.youtube.com/watch?v=${id}&list=RD${id}`;
+    }
+    const prefix = { spotify: 'sprec', deezer: 'dzrec', tidal: 'tdrec', jiosaavn: 'jsrec' }[source];
+    if (prefix) return `${prefix}:${id}`;
+    // SoundCloud/Bandcamp/direct URLs have no recommendation API — searching
+    // the artist keeps autoplay alive, just with looser picks.
+    if (info.author) return `ytmsearch:${info.author}`;
+    return null;
+  },
+
+  async _populateRecommendations(seedTrack) {
+    if (S.mode === 'server') return 0;   // the server owns this in lobby mode
+    if (S.autoplay === 'disabled' || S.recPending) return 0;
+    const seed = seedTrack || S.current;
+    const query = this._recommendationQuery(seed);
+    if (!query) return 0;
+
+    S.recPending = true;
+    UI.updateQueueHeader();
+    try {
+      const data = await Backend.loadtracks(query);
+      let tracks = [];
+      if (data?.loadType === 'playlist') tracks = data.data?.tracks || [];
+      else if (data?.loadType === 'search') tracks = data.data || [];
+      else if (data?.loadType === 'track') tracks = data.data ? [data.data] : [];
+      tracks = tracks.filter(t => t && t.encoded);
+
+      for (let i = tracks.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [tracks[i], tracks[j]] = [tracks[j], tracks[i]];
+      }
+
+      const played = this._playedIds(), queued = this._queuedIds();
+      const have = new Set(S.autoQueue.map(t => this._trackId(t)));
+      let added = 0;
+      for (const t of tracks) {
+        if (S.autoQueue.length >= 60) break;
+        const id = this._trackId(t);
+        if (played.has(id) || queued.has(id) || have.has(id)) continue;
+        have.add(id);
+        t.requester = t.requester || { id: '__auto__', name: 'Autoplay' };
+        S.autoQueue.push(t);
+        added++;
+      }
+      S.autoQueueCount = S.autoQueue.length;
+      this._ensurePreload();   // autoplay may have just gained a "next track"
+      return added;
+    } catch (e) {
+      console.warn('recommendation fetch failed:', e.message);
+      return 0;
+    } finally {
+      S.recPending = false;
+      UI.updateQueueHeader();
+    }
   },
 
   // Call after ANY change that could affect what plays next: queue add /
@@ -343,14 +476,24 @@ const Engine = {
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
-    if (S.queue.length === 0) { if (S.current) this.stop(); else toast('Queue is empty', 'warn'); return; }
-    if (S.current) S.history.push(S.current);
-    const next = S.queue.shift();
+    // Route through the same advance rule the natural track end uses, so
+    // "repeat all" still re-queues the skipped track and autoplay still
+    // tops up an empty queue. skipTrackLoop: pressing next under "repeat
+    // one" should move on rather than replay forever.
+    const next = this._advanceQueueState(S.current, { skipTrackLoop: true });
+    if (!next) { if (S.current) this.stop(); else toast('Queue is empty', 'warn'); return; }
     await this._localPlay(next, 0, S.filters);
   },
 
   async prev() {
-    if (S.mode === 'server') { toast('Previous track is not available in lobby mode', 'warn'); return; }
+    if (S.mode === 'server') {
+      if (!S.lobby.isHost) { toast('Only the host can change tracks', 'warn'); return; }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'prev', { clientId: S.lobby.clientId });
+        Lobby.applyControlResult(r);
+      } catch (e) { toast(e.message === 'no previous track' ? 'No previous track' : `Error: ${e.message}`, 'warn'); }
+      return;
+    }
     if (S.history.length === 0) { toast('No previous track', 'warn'); return; }
     if (S.current) S.queue.unshift(S.current);
     const prev = S.history.pop();
@@ -395,6 +538,7 @@ const Engine = {
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
+    track.requester = track.requester || this._selfRequester();
     S.queue.push(track);
     if (!S.current) { const t = S.queue.shift(); this.playTrack(t); }
     else { UI.renderQueue(); toast(`+ ${track.info.title}`, 'success', 2000); this._ensurePreload(); }
@@ -433,7 +577,16 @@ const Engine = {
   },
 
   async shuffleQueue() {
-    if (S.mode === 'server') { toast('Shuffle is a standalone-only feature for now', 'warn'); return; }
+    if (S.mode === 'server') {
+      if (!S.lobby.isHost) { toast('Only the host can shuffle the queue', 'warn'); return; }
+      if (!S.queue.length) { toast('Queue is empty', 'warn'); return; }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'queue/shuffle', { clientId: S.lobby.clientId });
+        Lobby.applyControlResult(r);
+        toast('🔀 Queue shuffled', 'info', 1500);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      return;
+    }
     for (let i = S.queue.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [S.queue[i], S.queue[j]] = [S.queue[j], S.queue[i]];
@@ -442,22 +595,152 @@ const Engine = {
     this._ensurePreload();
   },
 
+  // Smart Shuffle — pull recommendations based on what's playing into the
+  // queue, then shuffle the whole thing so they interleave with what people
+  // actually picked instead of piling up at the end. Same command the bot
+  // exposes as `smart`.
+  async smartShuffle(count = 20) {
+    if (S.mode === 'server') {
+      if (!S.lobby.isHost) { toast('Only the host can run Smart Shuffle', 'warn'); return; }
+      if (!S.current) { toast('Play something first — recommendations come from the current track', 'warn'); return; }
+      toast('Finding tracks like this one…', 'info', 2000);
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'queue/smart', { clientId: S.lobby.clientId, count });
+        Lobby.applyControlResult(r);
+        toast(r.added ? `🔀 Smart Shuffle · +${r.added} tracks` : 'No new recommendations found', r.added ? 'success' : 'warn', 2500);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      return;
+    }
+
+    if (!S.current) { toast('Play something first — recommendations come from the current track', 'warn'); return; }
+    if (S.autoQueue.length < count) {
+      toast('Finding tracks like this one…', 'info', 2000);
+      await this._populateRecommendations();
+    }
+
+    const played = this._playedIds(), queued = this._queuedIds();
+    const added = [], leftover = [];
+    for (const t of S.autoQueue) {
+      const id = this._trackId(t);
+      if (added.length < count && !played.has(id) && !queued.has(id)) { queued.add(id); added.push(t); }
+      else leftover.push(t);
+    }
+    S.autoQueue = leftover;
+    S.autoQueueCount = leftover.length;
+    S.queue.push(...added);
+    for (let i = S.queue.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [S.queue[i], S.queue[j]] = [S.queue[j], S.queue[i]];
+    }
+    UI.renderQueue();
+    this._ensurePreload();
+    toast(added.length ? `🔀 Smart Shuffle · +${added.length} tracks` : 'No new recommendations found',
+          added.length ? 'success' : 'warn', 2500);
+  },
+
+  // Fair Queue — round-robin the queue between whoever added each track so
+  // one person's 40-track playlist doesn't bury everyone else. The rotation
+  // deliberately starts on someone OTHER than whoever's track is playing.
+  async fairQueue() {
+    if (S.mode === 'server') {
+      if (!S.lobby.isHost) { toast('Only the host can rebalance the queue', 'warn'); return; }
+      if (!S.queue.length) { toast('Queue is empty', 'warn'); return; }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'queue/fair', { clientId: S.lobby.clientId });
+        Lobby.applyControlResult(r);
+        toast(r.changed ? '⚖️ Queue rebalanced' : 'Queue is already fair — only one person has tracks in it',
+              r.changed ? 'success' : 'info', 2500);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      return;
+    }
+
+    // Standalone has a single requester by definition, so there's nothing to
+    // alternate between. Say so plainly rather than pretending it did work.
+    if (!S.queue.length) { toast('Queue is empty', 'warn'); return; }
+    const keys = [...new Set(S.queue.map(t => t.requester?.id || '__unknown__'))];
+    if (keys.length <= 1) { toast('Fair Queue needs tracks from more than one person — join a lobby to use it', 'info', 4000); return; }
+
+    const byRequester = new Map();
+    const order = [];
+    for (const t of S.queue) {
+      const k = t.requester?.id || '__unknown__';
+      if (!byRequester.has(k)) { byRequester.set(k, []); order.push(k); }
+      byRequester.get(k).push(t);
+    }
+    const currentKey = S.current?.requester?.id || '__unknown__';
+    if (order.includes(currentKey)) { order.splice(order.indexOf(currentKey), 1); order.push(currentKey); }
+
+    const out = [];
+    const rounds = Math.max(...[...byRequester.values()].map(v => v.length));
+    for (let r = 0; r < rounds; r++) {
+      for (const k of order) {
+        const list = byRequester.get(k);
+        if (r < list.length) out.push(list[r]);
+      }
+    }
+    S.queue = out;
+    UI.renderQueue();
+    this._ensurePreload();
+    toast('⚖️ Queue rebalanced', 'success', 2000);
+  },
+
   async clearQueue() {
-    if (S.mode === 'server') { toast('Clearing the shared queue isn\u2019t available yet — remove tracks individually', 'warn'); return; }
+    if (S.mode === 'server') {
+      if (!S.lobby.isHost) { toast('Only the host can clear the queue', 'warn'); return; }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'queue/clear', { clientId: S.lobby.clientId });
+        Lobby.applyControlResult(r);
+        toast(`Queue cleared (${r.removed} removed)`, 'info', 1500);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      return;
+    }
     S.queue = []; UI.renderQueue(); toast('Queue cleared', 'info', 1500);
     this._ensurePreload();
   },
 
-  cycleLoop() {
-    if (S.mode === 'server') { toast('Loop mode is a standalone-only feature for now', 'warn'); return; }
-    const modes = ['none', 'track', 'queue'], lbls = ['OFF', '🔂 ONE', '🔁 ALL'];
-    const i = modes.indexOf(S.loopMode);
-    S.loopMode = modes[(i + 1) % 3];
-    const btn = document.getElementById('loop-btn');
-    btn.textContent = lbls[(i + 1) % 3];
-    btn.classList.toggle('on', S.loopMode !== 'none');
-    toast(`Loop: ${S.loopMode.toUpperCase()}`, 'info', 1500);
+  async cycleLoop() {
+    const modes = ['none', 'track', 'queue'];
+    const next = modes[(modes.indexOf(S.loopMode) + 1) % 3];
+
+    if (S.mode === 'server') {
+      if (!S.lobby.isHost) { toast('Only the host can change loop mode', 'warn'); return; }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'loop', { clientId: S.lobby.clientId, mode: next });
+        Lobby.applyControlResult(r);   // loopMode comes back in the state, UI follows
+        toast(`Loop: ${next.toUpperCase()}`, 'info', 1500);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      return;
+    }
+
+    S.loopMode = next;
+    UI.updateLoopButton();
+    toast(`Loop: ${next.toUpperCase()}`, 'info', 1500);
     this._ensurePreload();
+  },
+
+  // Autoplay: 'enabled' keeps the queue topped up with recommendations when
+  // it runs dry, 'partial' still collects them (so Smart Shuffle works) but
+  // never auto-queues, 'disabled' does neither.
+  async cycleAutoplay() {
+    const modes = ['enabled', 'partial', 'disabled'];
+    const next = modes[(modes.indexOf(S.autoplay) + 1) % 3];
+
+    if (S.mode === 'server') {
+      if (!S.lobby.isHost) { toast('Only the host can change autoplay', 'warn'); return; }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'autoplay', { clientId: S.lobby.clientId, mode: next });
+        Lobby.applyControlResult(r);
+        toast(`Autoplay: ${next}`, 'info', 1500);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      return;
+    }
+
+    S.autoplay = next;
+    if (next === 'disabled') { S.autoQueue = []; S.autoQueueCount = 0; }
+    else this._populateRecommendations();
+    UI.updateQueueHeader();
+    this._ensurePreload();
+    toast(`Autoplay: ${next}`, 'info', 1500);
   },
 
   async applyFilters(filters) {
@@ -510,6 +793,16 @@ const Engine = {
 
     S.filters = state.filters || {};
     UI.updateFilterStatus();
+
+    // Loop mode, autoplay and the recommendation pool are the SERVER's in
+    // lobby mode — the host mutates them through the control endpoints and
+    // every client just mirrors whatever comes back, so the loop button and
+    // autoplay chip read the same on every screen in the room.
+    S.loopMode = state.loopMode || 'none';
+    S.autoplay = state.autoplay || 'enabled';
+    S.autoQueueCount = state.autoQueueCount || 0;
+    UI.updateLoopButton();
+    UI.updateQueueHeader();
 
     const trackChanged = !S.current || !state.currentTrack || S.current.encoded !== state.currentTrack.encoded;
     const genChanged = S.lobby.relayGen !== state.relayGen;

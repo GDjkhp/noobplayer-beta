@@ -14,13 +14,53 @@ const UI = {
     document.querySelectorAll('.preset-btn').forEach(b => b.disabled = locked);
     document.querySelectorAll('.flt-slider').forEach(s => s.disabled = locked);
     document.getElementById('prog-bar').classList.toggle('locked', locked);
-    document.getElementById('btn-shuf').disabled = (S.mode === 'server');
-    document.getElementById('loop-btn').disabled = (S.mode === 'server');
-    document.getElementById('btn-qshuf').disabled = (S.mode === 'server');
-    document.getElementById('btn-qclr').disabled = (S.mode === 'server');
+
+    // These used to be disabled for the whole of server mode because the
+    // lobby had no server-side notion of loop/shuffle/clear at all. It does
+    // now (see Lobby.peek_next_track / advance_track in server.py), so they
+    // follow the same host rule as every other playback control rather than
+    // being switched off for everyone including the host.
+    ['btn-shuf','loop-btn','btn-qshuf','btn-qclr','btn-qsmart','btn-qfair','btn-autoplay']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.disabled = locked; });
+
     document.querySelectorAll('.add-btn.pnow').forEach(b => b.disabled = locked);
     document.getElementById('lock-badge').classList.toggle('show', locked);
     document.getElementById('flt-lock-note').classList.toggle('show', locked);
+  },
+
+  // Loop and autoplay are mirrored from the server in lobby mode and owned
+  // locally in standalone, so both buttons render off S.* either way and
+  // whoever changed it doesn't matter to the rendering.
+  updateLoopButton() {
+    const btn = document.getElementById('loop-btn');
+    if (!btn) return;
+    const lbls = { none: 'OFF', track: '🔂 ONE', queue: '🔁 ALL' };
+    btn.textContent = lbls[S.loopMode] || 'OFF';
+    btn.classList.toggle('on', S.loopMode !== 'none');
+  },
+
+  updateQueueHeader() {
+    const count = S.queue.length;
+    const totalMs = S.queue.reduce((a, t) => a + (t.info?.length || 0), 0);
+    const info = document.getElementById('q-info');
+    if (info) {
+      info.textContent = count === 0
+        ? 'Queue empty'
+        : `${count} track${count !== 1 ? 's' : ''} · ${fmt(totalMs)}`;
+    }
+
+    const ap = document.getElementById('btn-autoplay');
+    if (ap) {
+      const pool = S.autoQueueCount || 0;
+      const lbls = { enabled: 'AUTO ON', partial: 'AUTO ½', disabled: 'AUTO OFF' };
+      ap.textContent = S.recPending ? 'AUTO …' : lbls[S.autoplay] || 'AUTO';
+      ap.classList.toggle('on', S.autoplay === 'enabled');
+      ap.title = {
+        enabled:  'Autoplay: keeps the queue going with recommendations when it runs dry',
+        partial:  'Autoplay: collecting recommendations for Smart Shuffle, but not auto-queueing them',
+        disabled: 'Autoplay: off',
+      }[S.autoplay] + (pool ? ` · ${pool} in the pool` : '');
+    }
   },
 
   setBuffering(on) { document.getElementById('buf-ring').classList.toggle('show', on); },
@@ -112,33 +152,44 @@ const UI = {
   renderQueue() {
     const count = S.queue.length;
     document.getElementById('q-badge').textContent = count > 0 ? `(${count})` : '';
-    const totalMs = S.queue.reduce((a, t) => a + (t.info.length || 0), 0);
-    document.getElementById('q-info').textContent =
-      count === 0 ? 'Queue empty' : `${count} track${count !== 1 ? 's' : ''} · ${fmt(totalMs)}`;
+    this.updateQueueHeader();
+    this.updateLoopButton();
 
     const el = document.getElementById('ql');
     if (count === 0) {
       el.innerHTML = `<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 6h18M3 12h18M3 18h12"/></svg><p>Queue is empty</p></div>`;
+      this.applyLockState();
       return;
     }
     const locked = this.isLocked();
+    const me = S.lobby.clientId;
     el.innerHTML = S.queue.map((t, i) => {
       const thumb = t.info.artworkUrl
         ? `<img class="qi-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
         : `<div class="qi-nth">♪</div>`;
+      // Anyone can pull a track they added themselves; only the host can
+      // pull someone else's. Same rule the server enforces on
+      // /queue/remove — this just stops the button lying about it.
+      const req = t.requester || null;
+      const mine = req && me && req.id === me;
+      const auto = req && req.id === '__auto__';
+      const canRemove = !locked || mine;
+      const chip = req
+        ? `<span class="qi-req ${auto ? 'auto' : ''} ${mine ? 'mine' : ''}" title="Added by ${esc(req.name)}">${esc(auto ? '✦ auto' : req.name)}</span>`
+        : '';
       return `<div class="qi" data-qi="${i}" draggable="${locked ? 'false' : 'true'}">
         <span class="qi-drag" title="Drag to reorder">⠿</span>
         <span class="qi-n">${i + 1}</span>${thumb}
         <div class="qi-m">
           <div class="qi-t">${esc(t.info.title)}</div>
-          <div class="qi-a">${esc(t.info.author)}</div>
+          <div class="qi-a">${esc(t.info.author)}${chip}</div>
         </div>
         <span class="qi-d">${fmt(t.info.length)}</span>
         <div class="qi-bs">
           <button class="qib" data-qa="play" data-qi="${i}" title="Play now" ${locked?'disabled':''}>▶</button>
           <button class="qib" data-qa="up"   data-qi="${i}" title="Move up" ${(locked||i===0)?'disabled':''}>↑</button>
           <button class="qib" data-qa="dn"   data-qi="${i}" title="Move down" ${(locked||i===S.queue.length-1)?'disabled':''}>↓</button>
-          <button class="qib del" data-qa="rm" data-qi="${i}" title="Remove" ${locked?'disabled':''}>✕</button>
+          <button class="qib del" data-qa="rm" data-qi="${i}" title="${canRemove ? 'Remove' : 'Only the host can remove other people\u2019s tracks'}" ${canRemove?'':'disabled'}>✕</button>
         </div>
       </div>`;
     }).join('');
@@ -149,9 +200,18 @@ const UI = {
         const i = parseInt(btn.dataset.qi);
         const a = btn.dataset.qa;
         if (a === 'play') {
-          if (S.mode === 'server') { toast('Use Play from Search, or wait for auto-advance', 'info'); return; }
+          // Lobby mode: jumping the queue means telling the server to drop
+          // that track from the shared queue and play it. Don't splice
+          // locally first — the next state broadcast would overwrite it
+          // anyway, and a mismatched index would remove the wrong track.
+          if (S.mode === 'server') {
+            const tr = S.queue[i];
+            Engine.removeFromQueue(i).then(() => Engine.playTrack(tr));
+            return;
+          }
           if (S.current) S.history.push(S.current);
-          const [tr] = S.queue.splice(i, 1); Engine.playTrack(tr);
+          const [tr] = S.queue.splice(i, 1);
+          Engine.playTrack(tr);
         } else if (a === 'up' && i > 0) { Engine.moveQueueItem(i, i - 1); }
         else if (a === 'dn' && i < S.queue.length - 1) { Engine.moveQueueItem(i, i + 1); }
         else if (a === 'rm') Engine.removeFromQueue(i);

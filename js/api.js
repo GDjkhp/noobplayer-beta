@@ -169,3 +169,58 @@ const LobbyAPI = {
     return `${this.base()}/api/lobby/${code}/webrtc/offer`;
   },
 };
+
+/* ═══════════════════════════════════════════
+   SkinAPI — the public skin gallery.
+
+   Unlike LobbyAPI this works in standalone mode too: the gallery is a
+   plain feature of whichever Noobplayer server you're pointed at, not
+   part of any lobby. Backend.serverUrl is set on boot (Main.autoStart)
+   and survives switching to standalone, so browsing/publishing keeps
+   working after you disconnect from a lobby. If someone starts the page
+   from a file:// URL with no server at all, base() is empty and every
+   call here fails fast — skins.js catches that and just shows local
+   skins.
+═══════════════════════════════════════════ */
+const SkinAPI = {
+  base() { return Backend.serverUrl || ''; },
+  available() { return !!this.base(); },
+
+  async list(sort = 'new') {
+    const res = await fetch(`${this.base()}/api/skins?sort=${encodeURIComponent(sort)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async get(id) {
+    const res = await fetch(`${this.base()}/api/skins/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  // Publishing the same id again with its edit token updates in place
+  // instead of creating a duplicate.
+  async publish(skin, id, editToken) {
+    const res = await fetch(`${this.base()}/api/skins`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skin, id, editToken }),
+    });
+    if (!res.ok) { const t = await res.json().catch(() => ({})); throw new Error(t.error || `HTTP ${res.status}`); }
+    return res.json();
+  },
+
+  async remove(id, editToken) {
+    const res = await fetch(`${this.base()}/api/skins/${encodeURIComponent(id)}/delete`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editToken }),
+    });
+    if (!res.ok) { const t = await res.json().catch(() => ({})); throw new Error(t.error || `HTTP ${res.status}`); }
+    return res.json();
+  },
+
+  async countInstall(id) {
+    try {
+      await fetch(`${this.base()}/api/skins/${encodeURIComponent(id)}/install`, { method: 'POST' });
+    } catch (_) {}
+  },
+};

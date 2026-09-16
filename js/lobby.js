@@ -225,6 +225,13 @@ const Lobby = {
     if (S.lobby.code) await LobbyAPI.leave(S.lobby.code, S.lobby.clientId);
     Engine._stopLocal();
     S.current = null; S.queue = [];
+    // loopMode/autoplay/autoQueue were MIRRORS of the lobby's server-side
+    // values while we were in it. Leaving hands ownership back to this
+    // client, so start from defaults rather than inheriting whatever the
+    // old host happened to have set.
+    S.loopMode = 'none'; S.autoplay = 'enabled';
+    S.autoQueue = []; S.autoQueueCount = 0;
+    S.history = [];
     S.mode = null;
     S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, pc:null, micStream:null, micEnabled:false, lastServerState:null, relayGen:0 };
     document.getElementById('hdr-lobby').style.display = 'none';
@@ -233,6 +240,7 @@ const Lobby = {
     document.getElementById('chat-users-list').innerHTML = '';
     document.getElementById('chat-users-count').textContent = '';
     UI.updatePlayerUI(); UI.renderQueue();
+    UI.updateLoopButton(); UI.updateQueueHeader();
     UI.switchTab('config');
     UI.renderConfigTab();
   },

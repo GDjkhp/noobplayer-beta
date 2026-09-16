@@ -69,7 +69,9 @@ with zero extra configuration.
 
 import asyncio
 import fractions
+import json
 import random
+import re
 import string
 import time
 import uuid
@@ -336,13 +338,13 @@ class LobbyRelay:
 
     # ---- gapless preload ------------------------------------------------
     def _predict_next_track(self):
-        """Whatever should play right after the current one — mirrors the
-        client's own prediction (Engine._computeNextTrack in engine.js).
-        Lobby mode doesn't support loop modes (yet), so this is just the
-        queue head."""
-        if self.lobby.queue:
-            return self.lobby.queue[0]
-        return None
+        """Whatever should play right after the current one. Delegates to
+        Lobby.peek_next_track() so loop modes, autoplay and the plain queue
+        head are all decided in exactly one place — the same place
+        _advance_for_gapless() consumes from, which is what stops the
+        prefetch from ever buffering a track that isn't the one that
+        actually plays."""
+        return self.lobby.peek_next_track()
 
     def ensure_preload(self):
         """Call whenever the queue changes (add/remove/move) or a track
@@ -629,20 +631,160 @@ class LobbyRelay:
         if self.generation != my_generation:
             return None
         lobby = self.lobby
-        if lobby.queue:
-            nxt = lobby.queue.pop(0)
+        nxt = lobby.advance_track()
+        if nxt is not None:
             lobby.current_track = nxt
             lobby.position_anchor_ms = 0
             lobby.anchor_time = time.time()
             lobby.paused = False
             await broadcast(lobby, "state", lobby.public_state())
             self.ensure_preload()
+            await populate_recommendations(lobby)
             return nxt
         else:
             lobby.current_track = None
             lobby.paused = True
             await broadcast(lobby, "state", lobby.public_state())
             return None
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Track helpers + the recommendation populator
+#
+# This is the server-side port of `get_rekt()` from the Discord bot
+# (music_lyra.py): when a track starts playing, ask the node for tracks
+# like it, drop anything already played or queued, shuffle, and park the
+# rest in `lobby.auto_queue`. Autoplay and Smart Shuffle both feed off
+# that pool — autoplay drains it when the queue runs dry, Smart Shuffle
+# dumps it into the queue on demand.
+#
+# lava-lyra's Node.get_recommendations() builds these queries; since we
+# talk to NodeLink over plain REST here, the same query strings are built
+# directly instead of going through the library.
+# ═══════════════════════════════════════════════════════════════════
+HISTORY_LIMIT = 100
+AUTO_QUEUE_LIMIT = 60
+
+# source name (as NodeLink reports it) -> recommendation search prefix
+REC_PREFIXES = {
+    "spotify": "sprec",
+    "deezer": "dzrec",
+    "tidal": "tdrec",
+    "jiosaavn": "jsrec",
+}
+YOUTUBE_SOURCES = {"youtube", "youtubemusic", "ytmusic", "youtube_music"}
+
+
+def track_id(track):
+    """Stable per-track identity. `identifier` is the source's own id (video
+    id, Spotify id, …) and is what the bot dedupes on; fall back to the
+    encoded blob for sources that don't report one."""
+    if not track:
+        return None
+    info = track.get("info") or {}
+    return info.get("identifier") or track.get("encoded")
+
+
+def stamp_requester(track, participant):
+    """Tag a track with who added it. Fair Queue needs this to know whose
+    turn it is, and the queue list shows it as a small chip."""
+    if not isinstance(track, dict):
+        return track
+    if participant:
+        track["requester"] = {"id": participant.id, "name": participant.name}
+    return track
+
+
+def requester_key(track):
+    req = (track or {}).get("requester") or {}
+    return req.get("id") or "__unknown__"
+
+
+def recommendation_query(track):
+    """The identifier to hand /v4/loadtracks to get tracks like this one,
+    or None if the source doesn't support recommendations."""
+    info = (track or {}).get("info") or {}
+    source = (info.get("sourceName") or "").lower().replace(" ", "")
+    identifier = info.get("identifier")
+    if not identifier:
+        return None
+    if source in YOUTUBE_SOURCES:
+        # YouTube has no rec endpoint — its "radio" playlist (RD + video id)
+        # is the equivalent, and loads as a normal playlist.
+        return f"https://www.youtube.com/watch?v={identifier}&list=RD{identifier}"
+    prefix = REC_PREFIXES.get(source)
+    if prefix:
+        return f"{prefix}:{identifier}"
+    if config.RECOMMEND_FALLBACK_SEARCH and info.get("author"):
+        # SoundCloud, Bandcamp, direct URLs, … have no recommendation
+        # support at all. Searching the artist is a rough stand-in; it's
+        # opt-out via config for anyone who'd rather autoplay just stop.
+        return f"ytmsearch:{info['author']}"
+    return None
+
+
+async def fetch_recommendations(track):
+    """Returns a list of track dicts similar to `track` (possibly empty)."""
+    query = recommendation_query(track)
+    if not query:
+        return []
+    try:
+        async with http_session.get(f"{NL_HOST}/v4/loadtracks", params={"identifier": query},
+                                     headers={"Authorization": NL_PASS}) as r:
+            if r.status != 200:
+                return []
+            data = await r.json(content_type=None)
+    except (asyncio.TimeoutError, aiohttp.ClientError):
+        return []
+    except Exception:
+        traceback.print_exc()
+        return []
+
+    load_type = (data or {}).get("loadType")
+    payload = (data or {}).get("data")
+    if load_type == "playlist":
+        tracks = (payload or {}).get("tracks") or []
+    elif load_type == "search":
+        tracks = payload or []
+    elif load_type == "track":
+        tracks = [payload] if payload else []
+    else:
+        tracks = []
+    return [t for t in tracks if isinstance(t, dict) and t.get("encoded")]
+
+
+async def populate_recommendations(lobby, seed=None, broadcast_state=True):
+    """Refill `lobby.auto_queue` from whatever is playing. Safe to call on
+    every track change — it's a no-op while a fetch is already in flight."""
+    if lobby.autoplay == "disabled":
+        return 0
+    if lobby.rec_task and not lobby.rec_task.done():
+        return 0
+    seed = seed or lobby.current_track
+    if not seed:
+        return 0
+
+    async def run():
+        recs = await fetch_recommendations(seed)
+        if not recs:
+            return
+        random.shuffle(recs)
+        played, queued = lobby._played_ids(), lobby._queued_ids()
+        have = {track_id(t) for t in lobby.auto_queue}
+        for t in recs:
+            if len(lobby.auto_queue) >= AUTO_QUEUE_LIMIT:
+                break
+            tid = track_id(t)
+            if tid in played or tid in queued or tid in have:
+                continue
+            have.add(tid)
+            t.setdefault("requester", {"id": "__auto__", "name": "Autoplay"})
+            lobby.auto_queue.append(t)
+        if broadcast_state and lobby.code in LOBBIES:
+            await broadcast(lobby, "state", lobby.public_state())
+
+    lobby.rec_task = asyncio.create_task(run())
+    return 1
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -676,6 +818,16 @@ class Lobby:
         self.filters = {}
         self.chat = []
         self.created_at = time.time()
+
+        # ---- queue behaviour (mirrors the standalone client's own S.loopMode
+        # / S.autoplay / S.history / S.autoQueue, and the bot's Queue +
+        # auto_queue + history_queue triple in music_lyra.py) --------------
+        self.loop_mode = "none"        # 'none' | 'track' | 'queue'
+        self.autoplay = "enabled"      # 'enabled' | 'partial' | 'disabled'
+        self.history = []              # tracks that already played, newest last
+        self.auto_queue = []           # recommendation pool (get_rekt equivalent)
+        self.rec_task = None           # in-flight recommendation fetch
+
         self.relay = LobbyRelay(self)
 
     def current_position_ms(self):
@@ -683,6 +835,89 @@ class Lobby:
             return self.position_anchor_ms
         elapsed = (time.time() - self.anchor_time) * 1000
         return self.position_anchor_ms + elapsed
+
+    # ---- queue rules ---------------------------------------------------
+    # peek_next_track() and advance_track() are a matched pair: the first
+    # answers "what plays after this one" without touching anything (used by
+    # the relay's gapless prefetch), the second actually performs that move.
+    # They MUST agree, which is why they're one place instead of scattered
+    # through the endpoints — same reason engine.js keeps _computeNextTrack
+    # and _advanceQueueState side by side for standalone mode.
+    def _played_ids(self):
+        ids = {track_id(t) for t in self.history}
+        ids.discard(None)
+        return ids
+
+    def _queued_ids(self):
+        ids = {track_id(t) for t in self.queue}
+        ids.add(track_id(self.current_track))
+        ids.discard(None)
+        return ids
+
+    def next_auto_track(self):
+        """First recommendation that isn't already played or queued — the
+        non-mutating counterpart of drain_auto_queue()."""
+        if self.autoplay != "enabled":
+            return None
+        played, queued = self._played_ids(), self._queued_ids()
+        for t in self.auto_queue:
+            tid = track_id(t)
+            if tid not in played and tid not in queued:
+                return t
+        return None
+
+    def drain_auto_queue(self):
+        """Move every still-eligible recommendation into the real queue and
+        empty the pool — same shape as queue_on_end()'s autoplay branch in
+        youtubeplayer_lyra.py."""
+        if self.autoplay != "enabled" or not self.auto_queue:
+            return 0
+        played = self._played_ids()
+        moved = 0
+        for t in self.auto_queue:
+            tid = track_id(t)
+            if tid is None or (tid not in played and tid not in self._queued_ids()):
+                self.queue.append(t)
+                moved += 1
+        self.auto_queue = []
+        return moved
+
+    def peek_next_track(self):
+        if self.loop_mode == "track" and self.current_track:
+            return self.current_track
+        if self.queue:
+            return self.queue[0]
+        if self.loop_mode == "queue" and self.current_track:
+            return self.current_track  # wraps to itself once the queue drains
+        return self.next_auto_track()
+
+    def advance_track(self, *, skip_track_loop=False):
+        """Consume whatever should play next and return it (or None if the
+        lobby should go idle). `skip_track_loop` is for an explicit skip —
+        "repeat one" shouldn't trap a user who deliberately pressed next."""
+        finished = self.current_track
+        if self.loop_mode == "track" and finished and not skip_track_loop:
+            return finished
+        if finished:
+            self.history.append(finished)
+            del self.history[:-HISTORY_LIMIT]
+        if self.loop_mode == "queue" and finished:
+            self.queue.append(finished)
+        if not self.queue:
+            self.drain_auto_queue()
+        if self.queue:
+            return self.queue.pop(0)
+        return None
+
+    def previous_track(self):
+        """Step backwards through history, pushing the current track back to
+        the front of the queue so nothing is lost."""
+        if not self.history:
+            return None
+        prev = self.history.pop()
+        if self.current_track:
+            self.queue.insert(0, self.current_track)
+        return prev
 
     def public_state(self):
         return {
@@ -696,6 +931,10 @@ class Lobby:
             "queue": self.queue,
             "filters": self.filters,
             "relayGen": self.relay.generation,
+            "loopMode": self.loop_mode,
+            "autoplay": self.autoplay,
+            "autoQueueCount": len(self.auto_queue),
+            "historyCount": len(self.history),
         }
 
     def participant_list(self):
@@ -798,9 +1037,28 @@ async def index():
     return await send_from_directory(STATIC_DIR, "index.html")
 
 
+# The catch-all below serves the frontend out of the project root, which is
+# also where the server's own files live — so it would happily hand out
+# config.py (containing NODELINK_PASSWORD) and skins.json (containing every
+# author's edit token) to anyone who asked for them by name. Only the
+# directories and file types the browser actually needs get through.
+STATIC_ALLOWED_DIRS = ("css/", "js/", "assets/", "img/", "fonts/")
+STATIC_ALLOWED_SUFFIXES = (".css", ".js", ".map", ".png", ".jpg", ".jpeg", ".gif",
+                           ".svg", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".html")
+
+
 @app.route("/<path:path>")
 async def static_files(path):
-    return await send_from_directory(STATIC_DIR, path)
+    norm = path.replace("\\", "/").lstrip("/")
+    if ".." in norm:
+        return jsonify({"error": "not found"}), 404
+    in_allowed_dir = norm.startswith(STATIC_ALLOWED_DIRS)
+    allowed_suffix = norm.lower().endswith(STATIC_ALLOWED_SUFFIXES)
+    if not (in_allowed_dir and allowed_suffix) and not (
+        "/" not in norm and allowed_suffix
+    ):
+        return jsonify({"error": "not found"}), 404
+    return await send_from_directory(STATIC_DIR, norm)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1036,13 +1294,18 @@ async def lobby_play(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
+    client_id = data.get("clientId")
+    if not _require_host(lobby, client_id):
         return jsonify({"error": "host only"}), 403
-    lobby.current_track = data.get("track")
+    if lobby.current_track:
+        lobby.history.append(lobby.current_track)
+        del lobby.history[:-HISTORY_LIMIT]
+    lobby.current_track = stamp_requester(data.get("track"), lobby.participants.get(client_id))
     lobby.paused = False
     lobby.position_anchor_ms = 0
     lobby.anchor_time = time.time()
     await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
+    await populate_recommendations(lobby)
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
@@ -1105,16 +1368,93 @@ async def lobby_skip(code):
     data = await request.get_json(force=True, silent=True) or {}
     if not _require_host(lobby, data.get("clientId")):
         return jsonify({"error": "host only"}), 403
-    if lobby.queue:
-        lobby.current_track = lobby.queue.pop(0)
+    # skip_track_loop: pressing next under "repeat one" should move on, not
+    # replay the same track forever. Everything else (repeat all re-queuing
+    # the finished track, autoplay topping up an empty queue) applies here
+    # exactly as it does on a natural track end.
+    nxt = lobby.advance_track(skip_track_loop=True)
+    if nxt is not None:
+        lobby.current_track = nxt
         lobby.position_anchor_ms = 0
         lobby.anchor_time = time.time()
         lobby.paused = False
         await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
+        await populate_recommendations(lobby)
     else:
         lobby.current_track = None
         lobby.paused = True
         await lobby.relay.stop()
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
+
+
+@app.route("/api/lobby/<code>/prev", methods=["POST"])
+async def lobby_prev(code):
+    """Step back to the previously played track. Lobby mode used to have no
+    history at all, so the client just refused; now the server keeps one and
+    the button works the same way it does standalone."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    prev = lobby.previous_track()
+    if prev is None:
+        return jsonify({"error": "no previous track"}), 400
+    lobby.current_track = prev
+    lobby.position_anchor_ms = 0
+    lobby.anchor_time = time.time()
+    lobby.paused = False
+    await lobby.relay.start_track(prev, 0, lobby.filters)
+    await populate_recommendations(lobby)
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
+
+
+@app.route("/api/lobby/<code>/loop", methods=["POST"])
+async def lobby_loop(code):
+    """Host-only: 'none' | 'track' (repeat one) | 'queue' (repeat all)."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    mode = data.get("mode")
+    if mode not in ("none", "track", "queue"):
+        return jsonify({"error": "bad mode"}), 400
+    lobby.loop_mode = mode
+    # What plays next just changed, so whatever the relay prefetched may be
+    # the wrong track now.
+    lobby.relay.ensure_preload()
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
+
+
+@app.route("/api/lobby/<code>/autoplay", methods=["POST"])
+async def lobby_autoplay(code):
+    """Host-only: 'enabled' (fill the queue with recommendations when it runs
+    dry), 'partial' (keep collecting recommendations but never auto-queue
+    them — Smart Shuffle still works), or 'disabled'."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    mode = data.get("mode")
+    if mode not in ("enabled", "partial", "disabled"):
+        return jsonify({"error": "bad mode"}), 400
+    lobby.autoplay = mode
+    if mode == "disabled":
+        lobby.auto_queue = []
+    else:
+        await populate_recommendations(lobby, broadcast_state=False)
+    lobby.relay.ensure_preload()
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
@@ -1192,13 +1532,14 @@ async def lobby_queue_add(code):
     client_id = data.get("clientId")
     if client_id not in lobby.participants:
         return jsonify({"error": "not in lobby"}), 403
-    track = data.get("track")
+    track = stamp_requester(data.get("track"), lobby.participants.get(client_id))
     if not lobby.current_track:
         lobby.current_track = track
         lobby.paused = False
         lobby.position_anchor_ms = 0
         lobby.anchor_time = time.time()
         await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
+        await populate_recommendations(lobby)
     else:
         lobby.queue.append(track)
         lobby.relay.ensure_preload()  # queue may have just gone from empty -> non-empty
@@ -1217,12 +1558,164 @@ async def lobby_queue_remove(code):
     if client_id not in lobby.participants:
         return jsonify({"error": "not in lobby"}), 403
     idx = data.get("index")
-    if isinstance(idx, int) and 0 <= idx < len(lobby.queue):
-        lobby.queue.pop(idx)
-        lobby.relay.ensure_preload()  # the queue head may have changed
+    if not isinstance(idx, int) or not (0 <= idx < len(lobby.queue)):
+        return jsonify({"error": "bad index"}), 400
+    # The host can remove anything; everyone else can remove tracks they
+    # added themselves. Removing your own mistake shouldn't need the host,
+    # and letting anyone clear anyone's picks makes shared queues miserable.
+    entry = lobby.queue[idx]
+    if not _require_host(lobby, client_id) and requester_key(entry) != client_id:
+        return jsonify({"error": "you can only remove tracks you added"}), 403
+    lobby.queue.pop(idx)
+    lobby.relay.ensure_preload()  # the queue head may have changed
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
+
+
+@app.route("/api/lobby/<code>/queue/shuffle", methods=["POST"])
+async def lobby_queue_shuffle(code):
+    """Host-only: plain Fisher-Yates over the pending queue. The currently
+    playing track is untouched — only what hasn't played yet moves."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    random.shuffle(lobby.queue)
+    lobby.relay.ensure_preload()
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
+
+
+@app.route("/api/lobby/<code>/queue/clear", methods=["POST"])
+async def lobby_queue_clear(code):
+    """Host-only: empty the shared queue. The current track keeps playing —
+    this clears what's lined up behind it, not what's on air."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    removed = len(lobby.queue)
+    lobby.queue = []
+    lobby.relay.ensure_preload()
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "removed": removed, "state": state})
+
+
+@app.route("/api/lobby/<code>/queue/smart", methods=["POST"])
+async def lobby_queue_smart(code):
+    """Host-only Smart Shuffle — the port of the bot's `smart` command.
+    Tops the recommendation pool up if it's thin, moves up to `count` of
+    them into the queue, then shuffles the whole thing so the additions are
+    interleaved with what people actually picked rather than tacked on the
+    end."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    if not lobby.current_track:
+        return jsonify({"error": "nothing playing to base recommendations on"}), 400
+
+    try:
+        count = max(1, min(int(data.get("count", 20)), AUTO_QUEUE_LIMIT))
+    except (TypeError, ValueError):
+        count = 20
+
+    if len(lobby.auto_queue) < count:
+        # Fetch inline rather than firing and forgetting: the person pressed
+        # a button and is waiting for tracks to appear.
+        await populate_recommendations(lobby, broadcast_state=False)
+        if lobby.rec_task:
+            try:
+                await asyncio.wait_for(asyncio.shield(lobby.rec_task), timeout=12)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+
+    played, queued = lobby._played_ids(), lobby._queued_ids()
+    added, leftover = [], []
+    for t in lobby.auto_queue:
+        tid = track_id(t)
+        if len(added) < count and tid not in played and tid not in queued:
+            queued.add(tid)
+            added.append(t)
+        else:
+            leftover.append(t)
+    lobby.auto_queue = leftover
+    lobby.queue.extend(added)
+    random.shuffle(lobby.queue)
+    lobby.relay.ensure_preload()
+
+    if added:
+        await broadcast(lobby, "chat", {
+            "system": True,
+            "text": f"🔀 Smart Shuffle added {len(added)} recommended track{'s' if len(added) != 1 else ''}",
+            "ts": time.time() * 1000,
+        })
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "added": len(added), "state": state})
+
+
+@app.route("/api/lobby/<code>/queue/fair", methods=["POST"])
+async def lobby_queue_fair(code):
+    """Host-only Fair Queue — round-robins the queue between whoever added
+    the tracks, so one person dumping a 40-track playlist doesn't bury
+    everyone else. Mirrors the bot's `fair` command, including starting the
+    rotation on someone OTHER than whoever's track is currently playing."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    if not lobby.queue:
+        return jsonify({"error": "queue is empty"}), 400
+
+    order, by_requester = [], {}
+    for t in lobby.queue:
+        key = requester_key(t)
+        if key not in by_requester:
+            order.append(key)
+            by_requester[key] = []
+        by_requester[key].append(t)
+
+    if len(order) <= 1:
+        return jsonify({"ok": True, "changed": False, "state": lobby.public_state()})
+
+    current_key = requester_key(lobby.current_track)
+    if current_key in order:
+        order.remove(current_key)
+        order.append(current_key)  # their turn comes round last
+
+    new_queue = []
+    for rnd in range(max(len(v) for v in by_requester.values())):
+        for key in order:
+            tracks = by_requester[key]
+            if rnd < len(tracks):
+                new_queue.append(tracks[rnd])
+    lobby.queue = new_queue
+    lobby.relay.ensure_preload()
+
+    names = []
+    for key in order:
+        name = (by_requester[key][0].get("requester") or {}).get("name") or "Unknown"
+        names.append(f"{name} ({len(by_requester[key])})")
+    await broadcast(lobby, "chat", {
+        "system": True,
+        "text": "⚖️ Queue rebalanced · " + " · ".join(names),
+        "ts": time.time() * 1000,
+    })
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "changed": True, "state": state})
 
 
 @app.route("/api/lobby/<code>/queue/move", methods=["POST"])
@@ -1248,6 +1741,180 @@ async def lobby_queue_move(code):
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Skin gallery
+#
+# Skins are just a bag of CSS custom properties plus a few layout knobs,
+# so they're small, safe-ish to share, and apply instantly client-side.
+# Published skins land in skins.json next to this file — flat file rather
+# than a database because the whole payload is a few KB per skin and the
+# lobby state is already in-memory anyway.
+#
+# The `css` field is free-form CSS the author wrote, which is the one
+# genuinely risky part of accepting skins from strangers: CSS can't run
+# JavaScript, but it CAN phone home via url() and it can cover or hide
+# interface elements. _sanitize_css strips the worst of it (@import,
+# url() pointing anywhere but https, javascript:, expression(), and any
+# attempt to break out of the <style> block) and the client re-applies
+# the same filter before injecting. Treat community skins the way you'd
+# treat any user-submitted content — review before featuring one.
+# ═══════════════════════════════════════════════════════════════════
+SKINS_FILE = STATIC_DIR / "skins.json"
+SKIN_FIELD_LIMIT = 4000
+SKINS = {}
+
+_CSS_BANNED = re.compile(
+    r"(@import|javascript\s*:|expression\s*\(|</\s*style|behavior\s*:|-moz-binding)",
+    re.IGNORECASE,
+)
+_CSS_URL = re.compile(r"url\(\s*['\"]?([^)'\"]*)['\"]?\s*\)", re.IGNORECASE)
+
+
+def _sanitize_css(raw):
+    if not raw:
+        return ""
+    css = str(raw)[:SKIN_FIELD_LIMIT]
+    css = _CSS_BANNED.sub("", css)
+
+    def _url_ok(m):
+        target = (m.group(1) or "").strip()
+        if target.startswith("https://") or target.startswith("data:image/"):
+            return m.group(0)
+        return "none"
+
+    return _CSS_URL.sub(_url_ok, css)
+
+
+def _clean_skin(payload):
+    """Normalise whatever the client sent into the shape we store. Unknown
+    keys are dropped rather than passed through."""
+    payload = payload or {}
+    variables = {}
+    for k, v in (payload.get("vars") or {}).items():
+        if not isinstance(k, str) or not re.fullmatch(r"[a-z0-9-]{1,32}", k):
+            continue
+        if isinstance(v, (str, int, float)):
+            variables[k] = str(v)[:120]
+    opts = {}
+    for k, v in (payload.get("opts") or {}).items():
+        if isinstance(k, str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", k):
+            opts[k] = v if isinstance(v, (int, float, bool)) else str(v)[:300]
+    return {
+        "name": (str(payload.get("name") or "Untitled Skin"))[:40],
+        "author": (str(payload.get("author") or "Anonymous"))[:24],
+        "vars": variables,
+        "opts": opts,
+        "css": _sanitize_css(payload.get("css")),
+    }
+
+
+def _load_skins():
+    global SKINS
+    try:
+        if SKINS_FILE.exists():
+            SKINS = json.loads(SKINS_FILE.read_text("utf-8"))
+    except Exception:
+        traceback.print_exc()
+        SKINS = {}
+
+
+def _save_skins():
+    try:
+        SKINS_FILE.write_text(json.dumps(SKINS, indent=2), "utf-8")
+    except Exception:
+        traceback.print_exc()
+
+
+_load_skins()
+
+
+def _skin_summary(sid, skin):
+    return {
+        "id": sid,
+        "name": skin.get("name"),
+        "author": skin.get("author"),
+        "vars": skin.get("vars", {}),
+        "opts": skin.get("opts", {}),
+        "hasCss": bool(skin.get("css")),
+        "installs": skin.get("installs", 0),
+        "createdAt": skin.get("createdAt"),
+    }
+
+
+@app.route("/api/skins")
+async def skins_list():
+    sort = request.args.get("sort", "new")
+    items = [_skin_summary(sid, s) for sid, s in SKINS.items()]
+    if sort == "popular":
+        items.sort(key=lambda s: (-(s["installs"] or 0), -(s["createdAt"] or 0)))
+    else:
+        items.sort(key=lambda s: -(s["createdAt"] or 0))
+    return jsonify(items[:200])
+
+
+@app.route("/api/skins/<sid>")
+async def skin_get(sid):
+    skin = SKINS.get(sid)
+    if not skin:
+        return jsonify({"error": "not found"}), 404
+    out = _skin_summary(sid, skin)
+    out["css"] = skin.get("css", "")
+    return jsonify(out)
+
+
+@app.route("/api/skins", methods=["POST"])
+async def skin_publish():
+    """Publish a skin to the gallery. Returns an edit token the author keeps
+    locally — there are no accounts here, so that token is the only proof of
+    authorship for deleting or updating it later."""
+    data = await request.get_json(force=True, silent=True) or {}
+    skin = _clean_skin(data.get("skin") or data)
+    if not skin["vars"] and not skin["css"]:
+        return jsonify({"error": "skin is empty"}), 400
+
+    sid = (data.get("id") or "").strip()
+    token = (data.get("editToken") or "").strip()
+    if sid and sid in SKINS:
+        if SKINS[sid].get("editToken") != token:
+            return jsonify({"error": "wrong edit token"}), 403
+        skin["editToken"] = SKINS[sid]["editToken"]
+        skin["createdAt"] = SKINS[sid].get("createdAt", time.time() * 1000)
+        skin["installs"] = SKINS[sid].get("installs", 0)
+    else:
+        sid = uuid.uuid4().hex[:10]
+        skin["editToken"] = uuid.uuid4().hex
+        skin["createdAt"] = time.time() * 1000
+        skin["installs"] = 0
+
+    SKINS[sid] = skin
+    _save_skins()
+    return jsonify({"ok": True, "id": sid, "editToken": skin["editToken"]})
+
+
+@app.route("/api/skins/<sid>/delete", methods=["POST"])
+async def skin_delete(sid):
+    data = await request.get_json(force=True, silent=True) or {}
+    skin = SKINS.get(sid)
+    if not skin:
+        return jsonify({"error": "not found"}), 404
+    if skin.get("editToken") != (data.get("editToken") or ""):
+        return jsonify({"error": "wrong edit token"}), 403
+    SKINS.pop(sid, None)
+    _save_skins()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/skins/<sid>/install", methods=["POST"])
+async def skin_install(sid):
+    """Bumps the install counter — that's what the 'popular' sort reads."""
+    skin = SKINS.get(sid)
+    if not skin:
+        return jsonify({"error": "not found"}), 404
+    skin["installs"] = skin.get("installs", 0) + 1
+    _save_skins()
+    return jsonify({"ok": True, "installs": skin["installs"]})
 
 
 # ═══════════════════════════════════════════════════════════════════

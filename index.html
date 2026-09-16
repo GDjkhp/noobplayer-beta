@@ -130,6 +130,7 @@
         <button class="tab" data-tab="queue">Queue <span id="q-badge"></span></button>
         <button class="tab" data-tab="lyrics">Lyrics ✦</button>
         <button class="tab" data-tab="filters">Filters ⚙</button>
+        <button class="tab" data-tab="skins">Skins ◈</button>
         <button class="tab" data-tab="chat" id="tab-chat-btn" style="display:none">Chat <span id="chat-badge"></span></button>
         <button class="tab" data-tab="config">Config ⚙</button>
       </div>
@@ -157,6 +158,9 @@
       <div class="pane" id="pane-queue">
         <div id="q-hdr">
           <span id="q-info">Queue empty</span>
+          <button class="qa" id="btn-autoplay" title="Autoplay">AUTO ON</button>
+          <button class="qa" id="btn-qsmart" title="Smart Shuffle — add tracks like what's playing, then shuffle">Smart</button>
+          <button class="qa" id="btn-qfair" title="Fair Queue — alternate between whoever added each track">Fair</button>
           <button class="qa" id="btn-qshuf">Shuffle</button>
           <button class="qa d" id="btn-qclr">Clear</button>
         </div>
@@ -218,6 +222,103 @@
             <div class="flt-row"><label>Hz</label><input class="flt-slider" type="range" id="f-rot" min="0" max="2.0" step="0.05" value="0"><span class="flt-val" id="f-rot-v">0</span></div>
           </div>
           <button id="btn-apply-flt">⚙ Apply Filters</button>
+        </div>
+      </div>
+
+      <div class="pane" id="pane-skins">
+        <div id="skins-hdr">
+          <div class="skins-tabs">
+            <button class="skin-tab on" data-stab="editor">Editor</button>
+            <button class="skin-tab" data-stab="mine">My Skins <span id="skins-mine-count"></span></button>
+            <button class="skin-tab" data-stab="browse">Browse</button>
+          </div>
+          <button class="qa" id="btn-skin-reset" title="Back to the built-in look">Reset</button>
+        </div>
+
+        <div id="skins-body">
+
+          <!-- ───────── Editor ───────── -->
+          <div class="skin-pane on" id="stab-editor">
+            <div class="skin-section">
+              <span class="flt-label">Identity</span>
+              <div class="skin-row"><label>Skin name</label><input id="skin-name" class="hi" type="text" maxlength="40" placeholder="My Skin"></div>
+              <div class="skin-row"><label>Author</label><input id="skin-author" class="hi" type="text" maxlength="24" placeholder="Your name"></div>
+            </div>
+
+            <div class="skin-section">
+              <span class="flt-label">Start from a preset</span>
+              <div id="skin-presets" class="skin-preset-grid"></div>
+            </div>
+
+            <div class="skin-section">
+              <span class="flt-label">Colours</span>
+              <div id="skin-colors" class="skin-color-grid"></div>
+            </div>
+
+            <div class="skin-section">
+              <span class="flt-label">Typography</span>
+              <div class="skin-row">
+                <label>Display font</label>
+                <select id="skin-font-display" class="hi"></select>
+              </div>
+              <div class="skin-row">
+                <label>Mono font</label>
+                <select id="skin-font-mono" class="hi"></select>
+              </div>
+            </div>
+
+            <div class="skin-section">
+              <span class="flt-label">Shape &amp; texture</span>
+              <div class="flt-row"><label>Corner radius</label><input class="flt-slider" type="range" id="skin-radius" min="0" max="24" step="1" value="0"><span class="flt-val" id="skin-radius-v">0</span></div>
+              <div class="flt-row"><label>Artwork round</label><input class="flt-slider" type="range" id="skin-art-radius" min="0" max="50" step="1" value="0"><span class="flt-val" id="skin-art-radius-v">0</span></div>
+              <div class="flt-row"><label>Film grain</label><input class="flt-slider" type="range" id="skin-noise" min="0" max="10" step="1" value="3"><span class="flt-val" id="skin-noise-v">3</span></div>
+              <div class="flt-row"><label>Accent glow</label><input class="flt-slider" type="range" id="skin-glow" min="0" max="40" step="2" value="0"><span class="flt-val" id="skin-glow-v">0</span></div>
+              <div class="flt-row"><label>Density</label><input class="flt-slider" type="range" id="skin-density" min="0.8" max="1.3" step="0.05" value="1"><span class="flt-val" id="skin-density-v">1</span></div>
+            </div>
+
+            <div class="skin-section">
+              <span class="flt-label">Background image (https only)</span>
+              <div class="skin-row"><label>URL</label><input id="skin-bg-url" class="hi" type="text" placeholder="https://example.com/wallpaper.jpg"></div>
+              <div class="flt-row"><label>Dim</label><input class="flt-slider" type="range" id="skin-bg-dim" min="0" max="100" step="5" value="70"><span class="flt-val" id="skin-bg-dim-v">70</span></div>
+              <div class="flt-row"><label>Blur</label><input class="flt-slider" type="range" id="skin-bg-blur" min="0" max="30" step="1" value="0"><span class="flt-val" id="skin-bg-blur-v">0</span></div>
+            </div>
+
+            <div class="skin-section">
+              <span class="flt-label">Custom CSS <span class="skin-warn">applies to your browser only</span></span>
+              <textarea id="skin-css" class="hi skin-css" spellcheck="false" placeholder="#info-title { letter-spacing: .04em; }"></textarea>
+              <div id="skin-css-note" class="skin-note">
+                Custom CSS from other people is filtered before it runs — no <code>@import</code>, no
+                <code>url()</code> pointing anywhere but https, no breaking out of the style block.
+                It still can't be made completely safe: CSS can fetch remote images and hide interface
+                elements. Review a skin before you install it.
+              </div>
+            </div>
+
+            <div class="skin-actions">
+              <button id="btn-skin-save" class="overlay-btn">Save Skin</button>
+              <button id="btn-skin-publish" class="overlay-btn ghost">Publish to Gallery</button>
+              <button id="btn-skin-export" class="overlay-btn ghost">Export JSON</button>
+              <button id="btn-skin-import" class="overlay-btn ghost">Import JSON</button>
+            </div>
+          </div>
+
+          <!-- ───────── My skins ───────── -->
+          <div class="skin-pane" id="stab-mine">
+            <div id="skin-mine-list" class="skin-list"></div>
+          </div>
+
+          <!-- ───────── Browse ───────── -->
+          <div class="skin-pane" id="stab-browse">
+            <div class="skin-browse-bar">
+              <div class="skin-sort">
+                <button class="qa on" data-ssort="new">Newest</button>
+                <button class="qa" data-ssort="popular">Popular</button>
+              </div>
+              <button class="qa" id="btn-skin-refresh">Refresh</button>
+            </div>
+            <div id="skin-gallery" class="skin-list"></div>
+          </div>
+
         </div>
       </div>
 
@@ -357,6 +458,7 @@
 <script src="js/state.js"></script>
 <script src="js/api.js"></script>
 <script src="js/engine.js"></script>
+<script src="js/skins.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/standalone.js"></script>
 <script src="js/lobby.js"></script>

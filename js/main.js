@@ -31,6 +31,9 @@ const Main = {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Before anything else paints: reapplies whatever skin was active last
+  // session, so there's no flash of the stock theme on load.
+  Skins.init();
   UI.setupProgressBar();
 
   /* ───────── App header (standalone) ───────── */
@@ -56,6 +59,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-shuf').addEventListener('click', () => Engine.shuffleQueue());
 
   document.getElementById('btn-qshuf').addEventListener('click', () => Engine.shuffleQueue());
+  document.getElementById('btn-qsmart').addEventListener('click', () => Engine.smartShuffle());
+  document.getElementById('btn-qfair').addEventListener('click', () => Engine.fairQueue());
+  document.getElementById('btn-autoplay').addEventListener('click', () => Engine.cycleAutoplay());
   document.getElementById('btn-qclr').addEventListener('click', () => {
     if (!S.queue.length) { toast('Queue is already empty', 'warn'); return; }
     Engine.clearQueue();
@@ -76,7 +82,25 @@ document.addEventListener('DOMContentLoaded', () => {
     UI.switchTab(b.dataset.tab);
     if (b.dataset.tab === 'chat') document.getElementById('chat-badge').textContent = '';
     if (b.dataset.tab === 'config') UI.renderConfigTab();
+    if (b.dataset.tab === 'skins') Skins.renderTab();
   }));
+
+  /* ───────── Skins ───────── */
+  document.querySelectorAll('.skin-tab').forEach(t => {
+    t.addEventListener('click', () => Skins._switchSkinTab(t.dataset.stab));
+  });
+  document.getElementById('btn-skin-save').addEventListener('click', () => Skins.saveCurrent());
+  document.getElementById('btn-skin-publish').addEventListener('click', () => Skins.publish());
+  document.getElementById('btn-skin-export').addEventListener('click', () => Skins.exportDraft());
+  document.getElementById('btn-skin-import').addEventListener('click', () => Skins.importSkin());
+  document.getElementById('btn-skin-reset').addEventListener('click', () => Skins.reset());
+  document.getElementById('btn-skin-refresh').addEventListener('click', () => Skins.refreshGallery());
+  document.querySelectorAll('[data-ssort]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-ssort]').forEach(b => b.classList.toggle('on', b === btn));
+      Skins.refreshGallery(btn.dataset.ssort);
+    });
+  });
 
   /* ───────── Lyrics ───────── */
   document.getElementById('btn-lyr').addEventListener('click', () => UI.fetchLyrics());
@@ -168,10 +192,12 @@ document.addEventListener('DOMContentLoaded', () => {
       case 'ArrowUp':    e.preventDefault(); { const sl=document.getElementById('vol-sl'); sl.value=Math.min(100,parseInt(sl.value)+5); sl.dispatchEvent(new Event('input')); } break;
       case 'ArrowDown':  e.preventDefault(); { const sl=document.getElementById('vol-sl'); sl.value=Math.max(0,parseInt(sl.value)-5); sl.dispatchEvent(new Event('input')); } break;
       case 'KeyL': Engine.cycleLoop(); break;
-      case 'KeyS': Engine.shuffleQueue(); break;
+      case 'KeyS': e.shiftKey ? Engine.smartShuffle() : Engine.shuffleQueue(); break;
+      case 'KeyA': Engine.cycleAutoplay(); break;
       case 'KeyF': UI.switchTab('search'); document.getElementById('si').focus(); break;
       case 'KeyQ': UI.switchTab('queue'); break;
       case 'KeyY': UI.switchTab('lyrics'); break;
+      case 'KeyK': UI.switchTab('skins'); Skins.renderTab(); break;
     }
   });
 

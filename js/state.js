@@ -9,7 +9,15 @@ const S = {
   current: null,
   queue: [],
   history: [],
-  loopMode: 'none', // 'none' | 'track' | 'queue'  (standalone only — lobby loop is host-driven client-side too)
+  loopMode: 'none', // 'none' | 'track' | 'queue'
+  // In lobby mode loopMode/autoplay/autoQueueCount are MIRRORS of the
+  // server's authoritative values (see Lobby._applyState) — the host changes
+  // them through the REST control endpoints and everyone's copy follows.
+  // In standalone mode this client owns them outright.
+  autoplay: 'enabled',   // 'enabled' | 'partial' | 'disabled'
+  autoQueue: [],         // recommendation pool (standalone only — lobby keeps its own server-side)
+  autoQueueCount: 0,     // size of that pool, whichever side owns it
+  recPending: false,     // a recommendation fetch is in flight
 
   // PCM engine
   player: null,
@@ -37,6 +45,19 @@ const S = {
 
   // UI
   searchResults: [], activeTab: 'search', progDrag: false,
+
+  // Skins — look-and-feel customisation (see skins.js). `active` is the
+  // skin currently painted onto the page, `mine` are the ones saved in this
+  // browser's localStorage, `gallery` is the last fetched public list.
+  skins: {
+    active: null,
+    activeId: null,
+    draft: null,
+    mine: [],
+    gallery: [],
+    gallerySort: 'new',
+    editingId: null,
+  },
 
   // Lobby (server mode only)
   lobby: {
