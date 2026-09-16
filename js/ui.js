@@ -126,7 +126,8 @@ const UI = {
       const thumb = t.info.artworkUrl
         ? `<img class="qi-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
         : `<div class="qi-nth">♪</div>`;
-      return `<div class="qi" data-qi="${i}">
+      return `<div class="qi" data-qi="${i}" draggable="${locked ? 'false' : 'true'}">
+        <span class="qi-drag" title="Drag to reorder">⠿</span>
         <span class="qi-n">${i + 1}</span>${thumb}
         <div class="qi-m">
           <div class="qi-t">${esc(t.info.title)}</div>
@@ -135,8 +136,8 @@ const UI = {
         <span class="qi-d">${fmt(t.info.length)}</span>
         <div class="qi-bs">
           <button class="qib" data-qa="play" data-qi="${i}" title="Play now" ${locked?'disabled':''}>▶</button>
-          <button class="qib" data-qa="up"   data-qi="${i}" title="Move up" ${(locked||S.mode==='server')?'disabled':''}>↑</button>
-          <button class="qib" data-qa="dn"   data-qi="${i}" title="Move down" ${(locked||S.mode==='server')?'disabled':''}>↓</button>
+          <button class="qib" data-qa="up"   data-qi="${i}" title="Move up" ${(locked||i===0)?'disabled':''}>↑</button>
+          <button class="qib" data-qa="dn"   data-qi="${i}" title="Move down" ${(locked||i===S.queue.length-1)?'disabled':''}>↓</button>
           <button class="qib del" data-qa="rm" data-qi="${i}" title="Remove" ${locked?'disabled':''}>✕</button>
         </div>
       </div>`;
@@ -151,12 +152,51 @@ const UI = {
           if (S.mode === 'server') { toast('Use Play from Search, or wait for auto-advance', 'info'); return; }
           if (S.current) S.history.push(S.current);
           const [tr] = S.queue.splice(i, 1); Engine.playTrack(tr);
-        } else if (a === 'up' && i > 0 && S.mode !== 'server') { const [x]=S.queue.splice(i,1); S.queue.splice(i-1,0,x); UI.renderQueue(); }
-        else if (a === 'dn' && i < S.queue.length - 1 && S.mode !== 'server') { const [x]=S.queue.splice(i,1); S.queue.splice(i+1,0,x); UI.renderQueue(); }
+        } else if (a === 'up' && i > 0) { Engine.moveQueueItem(i, i - 1); }
+        else if (a === 'dn' && i < S.queue.length - 1) { Engine.moveQueueItem(i, i + 1); }
         else if (a === 'rm') Engine.removeFromQueue(i);
       });
     });
+
+    this._wireQueueDragAndDrop(el, locked);
     this.applyLockState();
+  },
+
+  // HTML5 drag-and-drop reordering — dragging a queue item onto another
+  // one's slot moves it there (Engine.moveQueueItem), which also covers
+  // "swapping" two tracks: drag A onto B and A lands where B was.
+  _wireQueueDragAndDrop(el, locked) {
+    if (locked) return;
+    let dragFrom = null;
+
+    el.querySelectorAll('.qi').forEach(item => {
+      item.addEventListener('dragstart', e => {
+        dragFrom = parseInt(item.dataset.qi);
+        item.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', String(dragFrom)); } catch (_) {}
+      });
+      item.addEventListener('dragend', () => {
+        item.classList.remove('dragging');
+        el.querySelectorAll('.qi').forEach(x => x.classList.remove('drag-over'));
+        dragFrom = null;
+      });
+      item.addEventListener('dragover', e => {
+        if (dragFrom === null) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        item.classList.add('drag-over');
+      });
+      item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+      item.addEventListener('drop', e => {
+        e.preventDefault();
+        item.classList.remove('drag-over');
+        const to = parseInt(item.dataset.qi);
+        if (dragFrom === null || isNaN(to) || dragFrom === to) return;
+        Engine.moveQueueItem(dragFrom, to);
+        dragFrom = null;
+      });
+    });
   },
 
   async doSearch() {

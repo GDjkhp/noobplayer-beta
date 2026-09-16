@@ -18,6 +18,13 @@ const S = {
   trackEndTimer: null,
   posTimer: null,
 
+  // Gapless preload (standalone mode only — lobby mode preloads
+  // server-side, see server.py's LobbyRelay). Holds whatever track is
+  // predicted to play next based on the current queue/loop state, plus
+  // however much of its PCM has already been fetched ahead of time.
+  // Shape: { track, filters, chunks:[Uint8Array], reader, done, error, ctrl }
+  preload: null,
+
   // Filters
   filters: {},
   activePreset: 'normal',

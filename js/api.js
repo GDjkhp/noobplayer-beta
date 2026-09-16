@@ -68,8 +68,11 @@ const Backend = {
     return this._get(path);
   },
 
-  // Returns a raw fetch Response with a readable stream body of PCM bytes
-  async openStream(encodedTrack, positionMs, filters) {
+  // Returns a raw fetch Response with a readable stream body of PCM bytes.
+  // `signal` is optional — pass an AbortController's signal so a
+  // background gapless preload can be cancelled if it's no longer needed
+  // (queue reordered, track removed, etc.) without waiting it out.
+  async openStream(encodedTrack, positionMs, filters, signal) {
     const path = this.mode === 'standalone' ? '/v4/loadstream' : '/api/nodelink/loadstream';
     const body = { encodedTrack, position: Math.round(positionMs) };
     if (filters && Object.keys(filters).length) body.filters = filters;
@@ -77,6 +80,7 @@ const Backend = {
       method: 'POST',
       headers: this._headers(),
       body: JSON.stringify(body),
+      signal,
     });
   },
 };

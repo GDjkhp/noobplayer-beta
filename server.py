@@ -263,6 +263,17 @@ class LobbyRelay:
         self._header_chunks = []     # cached Ogg header pages for the CURRENT generation
         self._header_chunks_done = False
 
+        # ---- gapless preload ----------------------------------------
+        # Whatever track is predicted to play next (see
+        # _predict_next_track) gets its NodeLink connection opened and
+        # its raw PCM buffered here WHILE the current track is still
+        # streaming — so when the current track's NodeLink stream ends
+        # naturally, _pump_track can start feeding the next track's audio
+        # into the SAME ongoing Ogg/Opus mux session immediately, with no
+        # dead air and no listener reconnect (relayGen doesn't bump).
+        # Shape: {"track": dict, "chunks": [bytes], "done": bool, "task": Task}
+        self._preload = None
+
     # ---- listener management ----------------------------------------
     def add_listener(self):
         key = object()
@@ -313,13 +324,69 @@ class LobbyRelay:
             except asyncio.QueueFull:
                 pass
 
+    # ---- gapless preload ------------------------------------------------
+    def _predict_next_track(self):
+        """Whatever should play right after the current one — mirrors the
+        client's own prediction (Engine._computeNextTrack in engine.js).
+        Lobby mode doesn't support loop modes (yet), so this is just the
+        queue head."""
+        if self.lobby.queue:
+            return self.lobby.queue[0]
+        return None
+
+    def ensure_preload(self):
+        """Call whenever the queue changes (add/remove/move) or a track
+        starts, so the prefetch always targets whatever will actually
+        play next. Cheap no-op if the prediction hasn't changed."""
+        next_track = self._predict_next_track()
+        want_id = next_track.get("encoded") if next_track else None
+        have_id = self._preload["track"].get("encoded") if self._preload else None
+        if want_id == have_id:
+            return
+        self._cancel_preload()
+        if next_track is None:
+            return
+        pre = {"track": next_track, "chunks": [], "done": False, "task": None}
+        pre["task"] = asyncio.create_task(self._preload_fetch(pre))
+        self._preload = pre
+
+    def _cancel_preload(self):
+        if self._preload and self._preload["task"] and not self._preload["task"].done():
+            self._preload["task"].cancel()
+        self._preload = None
+
+    async def _preload_fetch(self, pre):
+        """Background task: open the NodeLink connection for `pre["track"]`
+        early and keep buffering its raw PCM so it's ready (or at least
+        well underway) by the time the current track ends."""
+        body = {"encodedTrack": pre["track"].get("encoded"), "position": 0}
+        try:
+            async with http_session.post(f"{NL_HOST}/v4/loadstream", json=body,
+                                          headers={"Authorization": NL_PASS}) as r:
+                if r.status != 200:
+                    return
+                async for chunk in r.content.iter_chunked(8192):
+                    if self._preload is not pre:
+                        return  # superseded by a newer prediction
+                    pre["chunks"].append(bytes(chunk))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            traceback.print_exc()
+        finally:
+            pre["done"] = True
+
     # ---- session control ----------------------------------------------
     async def start_track(self, track, position_ms, filters):
         """(Re)start the encode session for `track` at `position_ms` with
         `filters`. Bumps `generation`, which the frontend watches (via
         state.relayGen) to know when to point its <audio> element at a
-        fresh /live connection."""
+        fresh /live connection. This is for explicit, deliberate track
+        changes (play/skip/seek/filters) — a NATURAL end-of-track advance
+        does NOT go through here; see _run's internal loop, which stitches
+        the next track into the same session instead (gapless)."""
         self._cancel_task()
+        self._cancel_preload()
         self.generation += 1
         self._header_chunks = []
         self._header_chunks_done = False
@@ -351,17 +418,22 @@ class LobbyRelay:
 
     async def stop(self):
         self._cancel_task()
+        self._cancel_preload()
         self.generation += 1
         self._header_chunks = []
         self._header_chunks_done = False
         self._close_all_listeners()
 
     # ---- the actual pipeline ----------------------------------------------
+    # Runs for an entire GENERATION, not just one track: as long as tracks
+    # keep advancing naturally (queue autoplay), this stays in ONE av.open
+    # session and just keeps muxing more Opus packets into it — that's
+    # what makes the transition gapless (no new container, no generation
+    # bump, no listener reconnect). It only returns (ending the
+    # generation) when the queue truly runs dry or something external
+    # bumps `generation` out from under it (explicit play/skip/seek/
+    # filters, which go through start_track instead).
     async def _run(self, track, position_ms, filters, my_generation):
-        body = {"encodedTrack": track.get("encoded"), "position": round(position_ms)}
-        if filters:
-            body["filters"] = filters
-
         container = stream = None
 
         def sink_write(data):
@@ -378,40 +450,29 @@ class LobbyRelay:
             stream.layout = "stereo"
             stream.bit_rate = OPUS_BITRATE
 
-            async with http_session.post(f"{NL_HOST}/v4/loadstream", json=body,
-                                          headers={"Authorization": NL_PASS}) as r:
-                if r.status != 200:
-                    print(f"[relay {self.lobby.code}] NodeLink loadstream {r.status}: {await r.text()}")
+            cur_track, cur_pos, cur_filters = track, position_ms, filters
+            while True:
+                if self.generation != my_generation:
                     return
+                # Keep prefetching whatever's now predicted to play after
+                # cur_track — this refreshes on every loop iteration so it
+                # always reflects the current queue head.
+                self.ensure_preload()
 
-                pcm_buf = bytearray()
-                async for chunk in r.content.iter_chunked(8192):
-                    if self.generation != my_generation:
-                        return
-                    await self._resume_event.wait()   # blocks here while paused, resumes exactly in place
-                    if self.generation != my_generation:
-                        return
+                ended_naturally = await self._pump_track(
+                    container, stream, cur_track, cur_pos, cur_filters, my_generation
+                )
+                if self.generation != my_generation:
+                    return
+                if not ended_naturally:
+                    return  # error, or interrupted by an explicit session change
 
-                    pcm_buf.extend(chunk)
-                    while len(pcm_buf) >= PCM_FRAME_BYTES:
-                        frame_bytes = bytes(pcm_buf[:PCM_FRAME_BYTES])
-                        del pcm_buf[:PCM_FRAME_BYTES]
-                        frame = self._pcm_to_frame(frame_bytes)
-                        for pkt in stream.encode(frame):
-                            container.mux(pkt)
-                        self._header_chunks_done = True
-                        # Real-time pacing: ~one 1000ms frame per 1000ms of
-                        # wall clock, so CPU/bandwidth stay flat and
-                        # listeners' buffers fill at a natural rate
-                        # instead of the whole track being transcoded
-                        # and pushed as fast as NodeLink can send it.
-                        await asyncio.sleep(PCM_FRAME_SAMPLES / PCM_RATE)
-
-            # NodeLink stream ended naturally — flush the encoder and advance the queue.
-            if self.generation == my_generation:
-                for pkt in stream.encode(None):
-                    container.mux(pkt)
-                await self._advance_after_track_end(my_generation)
+                nxt = await self._advance_for_gapless(my_generation)
+                if nxt is None:
+                    for pkt in stream.encode(None):
+                        container.mux(pkt)
+                    return
+                cur_track, cur_pos, cur_filters = nxt, 0, self.lobby.filters
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -423,6 +484,79 @@ class LobbyRelay:
                 except Exception:
                     traceback.print_exc()
 
+    async def _pump_track(self, container, stream, track, position_ms, filters, my_generation):
+        """Streams ONE track's PCM into the ongoing Opus/Ogg mux session.
+        Returns True if the track's audio source ended naturally (so the
+        caller should advance to whatever's next), False if it was
+        interrupted (session changed / error) and the caller should stop."""
+        pcm_buf = bytearray()
+
+        async def feed_chunk(chunk):
+            pcm_buf.extend(chunk)
+            while len(pcm_buf) >= PCM_FRAME_BYTES:
+                frame_bytes = bytes(pcm_buf[:PCM_FRAME_BYTES])
+                del pcm_buf[:PCM_FRAME_BYTES]
+                frame = self._pcm_to_frame(frame_bytes)
+                for pkt in stream.encode(frame):
+                    container.mux(pkt)
+                self._header_chunks_done = True
+                # Real-time pacing: ~one 1000ms frame per 1000ms of wall
+                # clock, so CPU/bandwidth stay flat and listeners' buffers
+                # fill at a natural rate instead of the whole track being
+                # transcoded and pushed as fast as NodeLink can send it.
+                await asyncio.sleep(PCM_FRAME_SAMPLES / PCM_RATE)
+
+        # Prefer an already-running preload for this exact track. Only
+        # applies at position 0 — explicit seeks/skips always take the
+        # live-fetch path below since those go through start_track (a
+        # fresh generation), never through this natural-advance loop.
+        pre = self._preload
+        use_preload = (
+            pre is not None and position_ms == 0
+            and pre["track"].get("encoded") == track.get("encoded")
+        )
+
+        if use_preload:
+            self._preload = None  # this track is live now, not "next" anymore
+            idx = 0
+            try:
+                while True:
+                    if self.generation != my_generation:
+                        return False
+                    await self._resume_event.wait()
+                    if self.generation != my_generation:
+                        return False
+                    if idx < len(pre["chunks"]):
+                        await feed_chunk(pre["chunks"][idx])
+                        idx += 1
+                    elif pre["done"]:
+                        break
+                    else:
+                        await asyncio.sleep(0.02)  # preload still catching up to real time
+            except asyncio.CancelledError:
+                raise
+            return True
+
+        # Normal live fetch — first track of a session, or the preload
+        # missed/failed/didn't match (still counts as gapless-attempted,
+        # just falls back to a live fetch instead of buffered bytes).
+        body = {"encodedTrack": track.get("encoded"), "position": round(position_ms)}
+        if filters:
+            body["filters"] = filters
+        async with http_session.post(f"{NL_HOST}/v4/loadstream", json=body,
+                                      headers={"Authorization": NL_PASS}) as r:
+            if r.status != 200:
+                print(f"[relay {self.lobby.code}] NodeLink loadstream {r.status}: {await r.text()}")
+                return False
+            async for chunk in r.content.iter_chunked(8192):
+                if self.generation != my_generation:
+                    return False
+                await self._resume_event.wait()   # blocks here while paused, resumes exactly in place
+                if self.generation != my_generation:
+                    return False
+                await feed_chunk(chunk)
+        return True
+
     @staticmethod
     def _pcm_to_frame(raw):
         # Packed/interleaved s16 wants a single plane shaped (1, samples*channels).
@@ -431,21 +565,30 @@ class LobbyRelay:
         frame.sample_rate = PCM_RATE
         return frame
 
-    async def _advance_after_track_end(self, my_generation):
+    async def _advance_for_gapless(self, my_generation):
+        """A track's audio source just ended naturally. Pop the next one
+        off the queue (if any), update the lobby's authoritative state,
+        and broadcast it — WITHOUT touching `generation`, so listeners'
+        <audio> elements keep playing uninterrupted while the caller
+        (`_run`) starts muxing the new track's audio into the very same
+        Ogg/Opus session."""
         if self.generation != my_generation:
-            return  # something else already changed the session; don't double-advance
+            return None
         lobby = self.lobby
         if lobby.queue:
-            lobby.current_track = lobby.queue.pop(0)
+            nxt = lobby.queue.pop(0)
+            lobby.current_track = nxt
             lobby.position_anchor_ms = 0
             lobby.anchor_time = time.time()
             lobby.paused = False
-            await self.start_track(lobby.current_track, 0, lobby.filters)
+            await broadcast(lobby, "state", lobby.public_state())
+            self.ensure_preload()
+            return nxt
         else:
             lobby.current_track = None
             lobby.paused = True
-            await self.stop()
-        await broadcast(lobby, "state", lobby.public_state())
+            await broadcast(lobby, "state", lobby.public_state())
+            return None
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -957,6 +1100,7 @@ async def lobby_queue_add(code):
         await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
     else:
         lobby.queue.append(track)
+        lobby.relay.ensure_preload()  # queue may have just gone from empty -> non-empty
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
@@ -974,6 +1118,32 @@ async def lobby_queue_remove(code):
     idx = data.get("index")
     if isinstance(idx, int) and 0 <= idx < len(lobby.queue):
         lobby.queue.pop(idx)
+        lobby.relay.ensure_preload()  # the queue head may have changed
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
+
+
+@app.route("/api/lobby/<code>/queue/move", methods=["POST"])
+async def lobby_queue_move(code):
+    """Reorders the shared queue — backs drag-and-drop reordering (and,
+    by extension, "swapping" two tracks by dropping one onto the other's
+    slot) in lobby mode. Host only, like every other queue-mutating
+    control besides add."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    from_idx = data.get("fromIndex")
+    to_idx = data.get("toIndex")
+    if (isinstance(from_idx, int) and isinstance(to_idx, int)
+            and 0 <= from_idx < len(lobby.queue) and 0 <= to_idx < len(lobby.queue)
+            and from_idx != to_idx):
+        item = lobby.queue.pop(from_idx)
+        lobby.queue.insert(to_idx, item)
+        lobby.relay.ensure_preload()  # the queue head may have changed
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})

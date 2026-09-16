@@ -87,6 +87,17 @@ class PCMPlayer {
     return this.seekOffsetMs + elapsed * 1000;
   }
 
+  // Called at a gapless splice: the next track's audio picks up exactly
+  // where the previous one's scheduled buffers end (`this.nextTime`), on
+  // the SAME AudioContext timeline — no init(), no new context, no gap.
+  // This just re-anchors position reporting (progress bar, lyrics sync,
+  // etc.) to that same instant so it reads 0:00 for the new track instead
+  // of continuing the previous track's elapsed time.
+  markTrackBoundary(offsetMs = 0) {
+    this.startCtxTime = this.nextTime;
+    this.seekOffsetMs = offsetMs;
+  }
+
   getLevels() {
     if (!this.analyser) return [0, 0];
     const buf = new Float32Array(this.analyser.fftSize);
