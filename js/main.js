@@ -34,6 +34,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Before anything else paints: reapplies whatever skin was active last
   // session, so there's no flash of the stock theme on load.
   Skins.init();
+  Viz.init();
   UI.setupProgressBar();
 
   /* ───────── App header (standalone) ───────── */
@@ -83,7 +84,28 @@ document.addEventListener('DOMContentLoaded', () => {
     if (b.dataset.tab === 'chat') document.getElementById('chat-badge').textContent = '';
     if (b.dataset.tab === 'config') UI.renderConfigTab();
     if (b.dataset.tab === 'skins') Skins.renderTab();
+    // The visualizer burns a rAF loop, so it's started on entering the tab
+    // and stopped on leaving rather than running behind hidden panes.
+    if (b.dataset.tab === 'viz') Viz.renderTab(); else Viz.stop();
   }));
+
+  /* ───────── Visualizer ───────── */
+  document.querySelectorAll('.viz-tab').forEach(t => {
+    t.addEventListener('click', () => Viz._switchVizTab(t.dataset.vtab));
+  });
+  document.getElementById('btn-viz-run').addEventListener('click', () => Viz.runDraft());
+  document.getElementById('btn-viz-save').addEventListener('click', () => Viz.saveCurrent());
+  document.getElementById('btn-viz-publish').addEventListener('click', () => Viz.publish());
+  document.getElementById('btn-viz-export').addEventListener('click', () => Viz.exportDraft());
+  document.getElementById('btn-viz-import').addEventListener('click', () => Viz.importViz());
+  document.getElementById('btn-viz-refresh').addEventListener('click', () => Viz.refreshGallery());
+  document.getElementById('btn-viz-full').addEventListener('click', () => Viz.toggleFullscreen());
+  document.querySelectorAll('[data-vsort]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-vsort]').forEach(b => b.classList.toggle('on', b === btn));
+      Viz.refreshGallery(btn.dataset.vsort);
+    });
+  });
 
   /* ───────── Skins ───────── */
   document.querySelectorAll('.skin-tab').forEach(t => {
@@ -197,7 +219,8 @@ document.addEventListener('DOMContentLoaded', () => {
       case 'KeyF': UI.switchTab('search'); document.getElementById('si').focus(); break;
       case 'KeyQ': UI.switchTab('queue'); break;
       case 'KeyY': UI.switchTab('lyrics'); break;
-      case 'KeyK': UI.switchTab('skins'); Skins.renderTab(); break;
+      case 'KeyK': UI.switchTab('skins'); Skins.renderTab(); Viz.stop(); break;
+      case 'KeyV': UI.switchTab('viz'); Viz.renderTab(); break;
     }
   });
 

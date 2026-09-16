@@ -1918,6 +1918,147 @@ async def skin_install(sid):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Visualizer gallery
+#
+# Same storage shape as skins, but a fundamentally different trust model
+# worth spelling out, because the code below deliberately does NOT try to
+# sanitize what it stores.
+#
+# A skin is CSS and can be filtered. A visualizer is JavaScript, and
+# there is no substring blocklist that makes someone else's JavaScript
+# safe — anyone who wants past such a filter gets past it, and having one
+# mostly just creates false confidence. So this endpoint stores the code
+# verbatim and the safety lives entirely on the client: every visualizer
+# runs inside <iframe sandbox="allow-scripts"> (opaque origin, no access
+# to the page, its storage, or the lobby token) with a CSP of
+# `default-src 'none'` (no fetch, no XHR, no beacons). See the header
+# comment in js/visualizer.js.
+#
+# What this server is still on the hook for: size limits, so one person
+# can't fill the disk, and the fact that visualizers.json must never be
+# served as a static file — it holds every author's edit token. The
+# static allowlist below covers that.
+# ═══════════════════════════════════════════════════════════════════
+VIZ_FILE = STATIC_DIR / "visualizers.json"
+VIZ_CODE_LIMIT = 20000
+VISUALIZERS = {}
+
+
+def _clean_viz(payload):
+    payload = payload or {}
+    return {
+        "name": (str(payload.get("name") or "Untitled Visualizer"))[:40],
+        "author": (str(payload.get("author") or "Anonymous"))[:24],
+        "code": str(payload.get("code") or "")[:VIZ_CODE_LIMIT],
+    }
+
+
+def _load_visualizers():
+    global VISUALIZERS
+    try:
+        if VIZ_FILE.exists():
+            VISUALIZERS = json.loads(VIZ_FILE.read_text("utf-8"))
+    except Exception:
+        traceback.print_exc()
+        VISUALIZERS = {}
+
+
+def _save_visualizers():
+    try:
+        VIZ_FILE.write_text(json.dumps(VISUALIZERS, indent=2), "utf-8")
+    except Exception:
+        traceback.print_exc()
+
+
+_load_visualizers()
+
+
+def _viz_summary(vid, viz):
+    return {
+        "id": vid,
+        "name": viz.get("name"),
+        "author": viz.get("author"),
+        "lines": (viz.get("code") or "").count("\n") + 1,
+        "installs": viz.get("installs", 0),
+        "createdAt": viz.get("createdAt"),
+    }
+
+
+@app.route("/api/visualizers")
+async def viz_list():
+    sort = request.args.get("sort", "new")
+    items = [_viz_summary(vid, v) for vid, v in VISUALIZERS.items()]
+    if sort == "popular":
+        items.sort(key=lambda v: (-(v["installs"] or 0), -(v["createdAt"] or 0)))
+    else:
+        items.sort(key=lambda v: -(v["createdAt"] or 0))
+    return jsonify(items[:200])
+
+
+@app.route("/api/visualizers/<vid>")
+async def viz_get(vid):
+    viz = VISUALIZERS.get(vid)
+    if not viz:
+        return jsonify({"error": "not found"}), 404
+    out = _viz_summary(vid, viz)
+    out["code"] = viz.get("code", "")
+    return jsonify(out)
+
+
+@app.route("/api/visualizers", methods=["POST"])
+async def viz_publish():
+    data = await request.get_json(force=True, silent=True) or {}
+    viz = _clean_viz(data.get("viz") or data)
+    if not viz["code"].strip():
+        return jsonify({"error": "visualizer has no code"}), 400
+    if "function draw" not in viz["code"] and "draw =" not in viz["code"]:
+        # Not a security check — just catching the common mistake of
+        # publishing something that can't possibly render.
+        return jsonify({"error": "no draw(ctx, v) function found"}), 400
+
+    vid = (data.get("id") or "").strip()
+    token = (data.get("editToken") or "").strip()
+    if vid and vid in VISUALIZERS:
+        if VISUALIZERS[vid].get("editToken") != token:
+            return jsonify({"error": "wrong edit token"}), 403
+        viz["editToken"] = VISUALIZERS[vid]["editToken"]
+        viz["createdAt"] = VISUALIZERS[vid].get("createdAt", time.time() * 1000)
+        viz["installs"] = VISUALIZERS[vid].get("installs", 0)
+    else:
+        vid = uuid.uuid4().hex[:10]
+        viz["editToken"] = uuid.uuid4().hex
+        viz["createdAt"] = time.time() * 1000
+        viz["installs"] = 0
+
+    VISUALIZERS[vid] = viz
+    _save_visualizers()
+    return jsonify({"ok": True, "id": vid, "editToken": viz["editToken"]})
+
+
+@app.route("/api/visualizers/<vid>/delete", methods=["POST"])
+async def viz_delete(vid):
+    data = await request.get_json(force=True, silent=True) or {}
+    viz = VISUALIZERS.get(vid)
+    if not viz:
+        return jsonify({"error": "not found"}), 404
+    if viz.get("editToken") != (data.get("editToken") or ""):
+        return jsonify({"error": "wrong edit token"}), 403
+    VISUALIZERS.pop(vid, None)
+    _save_visualizers()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/visualizers/<vid>/install", methods=["POST"])
+async def viz_install(vid):
+    viz = VISUALIZERS.get(vid)
+    if not viz:
+        return jsonify({"error": "not found"}), 404
+    viz["installs"] = viz.get("installs", 0) + 1
+    _save_visualizers()
+    return jsonify({"ok": True, "installs": viz["installs"]})
+
+
+# ═══════════════════════════════════════════════════════════════════
 # WebRTC voice — now just plain `await`s, no thread bridge required
 # ═══════════════════════════════════════════════════════════════════
 @app.route("/api/lobby/<code>/webrtc/offer", methods=["POST"])

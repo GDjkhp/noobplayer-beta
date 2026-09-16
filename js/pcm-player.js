@@ -27,7 +27,11 @@ class PCMPlayer {
     this.gain = this.ctx.createGain();
     this.gain.gain.value = volume;
     this.analyser = this.ctx.createAnalyser();
-    this.analyser.fftSize = 256;
+    // 512 (256 bins) rather than 256: the level meter only ever needed a
+    // peak, but visualizers want enough frequency resolution to look like
+    // something. Still cheap enough to read every animation frame.
+    this.analyser.fftSize = 512;
+    this.analyser.smoothingTimeConstant = 0.75;
     this.gain.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
     this.nextTime = this.ctx.currentTime + 0.08;
@@ -105,6 +109,28 @@ class PCMPlayer {
     let peak = 0;
     for (let i = 0; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i]));
     return [peak, peak];
+  }
+
+  // ── visualizer feeds ──
+  // Both players expose these identically (see AudioElPlayer), so
+  // visualizer.js never has to know which mode is running — same reason
+  // getLevels/getPositionMs/isPaused are duplicated across the two.
+  get binCount() { return this.analyser ? this.analyser.frequencyBinCount : 0; }
+
+  getSpectrum(out) {
+    if (!this.analyser) return null;
+    const n = this.analyser.frequencyBinCount;
+    if (!out || out.length !== n) out = new Uint8Array(n);
+    this.analyser.getByteFrequencyData(out);
+    return out;
+  }
+
+  getWaveform(out) {
+    if (!this.analyser) return null;
+    const n = this.analyser.fftSize;
+    if (!out || out.length !== n) out = new Uint8Array(n);
+    this.analyser.getByteTimeDomainData(out);
+    return out;
   }
 
   pause() {

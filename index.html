@@ -10,7 +10,11 @@
 <body>
 
 <audio id="voice-audio" autoplay style="display:none"></audio>
-<audio id="lobby-audio" autoplay style="display:none"></audio>
+<!-- crossorigin: without it WebAudio silently returns an all-zero spectrum
+     for a cross-origin stream, so visualizers flat-line whenever the app is
+     pointed at a Flask server on a different origin. The server sends
+     Access-Control-Allow-Origin on /live to match. -->
+<audio id="lobby-audio" autoplay crossorigin="anonymous" style="display:none"></audio>
 
 <!-- ═══ MAIN APP ═══ -->
 <div id="app" style="display:block">
@@ -131,6 +135,7 @@
         <button class="tab" data-tab="lyrics">Lyrics ✦</button>
         <button class="tab" data-tab="filters">Filters ⚙</button>
         <button class="tab" data-tab="skins">Skins ◈</button>
+        <button class="tab" data-tab="viz">Visualizer ◉</button>
         <button class="tab" data-tab="chat" id="tab-chat-btn" style="display:none">Chat <span id="chat-badge"></span></button>
         <button class="tab" data-tab="config">Config ⚙</button>
       </div>
@@ -322,6 +327,94 @@
         </div>
       </div>
 
+      <div class="pane" id="pane-viz">
+        <div id="viz-hdr">
+          <div class="viz-tabs">
+            <button class="viz-tab on" data-vtab="stage">Stage</button>
+            <button class="viz-tab" data-vtab="editor">Editor</button>
+            <button class="viz-tab" data-vtab="mine">Library <span id="viz-mine-count"></span></button>
+            <button class="viz-tab" data-vtab="browse">Browse</button>
+          </div>
+          <span id="viz-active-name" class="viz-active-name">—</span>
+          <button class="qa" id="btn-viz-full" title="Fullscreen">⛶</button>
+        </div>
+
+        <div id="viz-body">
+
+          <!-- ───────── Stage ───────── -->
+          <div class="viz-pane on" id="vtab-stage">
+            <div id="viz-stage"></div>
+            <div id="viz-error" class="viz-error"></div>
+            <div class="viz-stage-note">
+              Visualizers run in a sandboxed frame with no network access and no
+              access to this page. They can draw anything; they can't read anything.
+            </div>
+          </div>
+
+          <!-- ───────── Editor ───────── -->
+          <div class="viz-pane" id="vtab-editor">
+            <div class="skin-section">
+              <span class="flt-label">Identity</span>
+              <div class="skin-row"><label>Name</label><input id="viz-name" class="hi" type="text" maxlength="40" placeholder="My Visualizer"></div>
+              <div class="skin-row"><label>Author</label><input id="viz-author" class="hi" type="text" maxlength="24" placeholder="Your name"></div>
+            </div>
+
+            <div class="skin-section">
+              <span class="flt-label">Start from</span>
+              <div id="viz-templates" class="skin-preset-grid"></div>
+            </div>
+
+            <div class="skin-section">
+              <span class="flt-label">Code</span>
+              <textarea id="viz-code" class="hi viz-code" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+            </div>
+
+            <div class="skin-actions">
+              <button id="btn-viz-run" class="overlay-btn">▶ Run</button>
+              <button id="btn-viz-save" class="overlay-btn ghost">Save</button>
+              <button id="btn-viz-publish" class="overlay-btn ghost">Publish to Gallery</button>
+              <button id="btn-viz-export" class="overlay-btn ghost">Export</button>
+              <button id="btn-viz-import" class="overlay-btn ghost">Import</button>
+            </div>
+
+            <div class="skin-note">
+              <b>draw(ctx, v)</b> runs every animation frame. <b>setup(ctx, v)</b> is optional and runs once.<br>
+              <code>v.freq</code> spectrum (Uint8Array, 0-255) ·
+              <code>v.wave</code> waveform (128 = silence) ·
+              <code>v.level</code> <code>v.bass</code> <code>v.mid</code> <code>v.treble</code> 0-1 ·
+              <code>v.t</code> <code>v.dt</code> seconds ·
+              <code>v.w</code> <code>v.h</code> size ·
+              <code>v.paused</code> ·
+              <code>v.track</code> ·
+              <code>v.theme</code> colours from your active skin.
+            </div>
+          </div>
+
+          <!-- ───────── Library ───────── -->
+          <div class="viz-pane" id="vtab-mine">
+            <div id="viz-mine-list" class="skin-list"></div>
+          </div>
+
+          <!-- ───────── Browse ───────── -->
+          <div class="viz-pane" id="vtab-browse">
+            <div class="skin-browse-bar">
+              <div class="skin-sort">
+                <button class="qa on" data-vsort="new">Newest</button>
+                <button class="qa" data-vsort="popular">Popular</button>
+              </div>
+              <button class="qa" id="btn-viz-refresh">Refresh</button>
+            </div>
+            <div class="skin-note" style="margin-bottom:12px">
+              Visualizers here are other people's JavaScript. Each one runs isolated from
+              the page with networking switched off, so it can't read your data or phone
+              home — but a badly written one can still stutter or freeze the tab.
+            </div>
+            <div id="viz-gallery" class="skin-list"></div>
+          </div>
+
+        </div>
+      </div>
+
       <div class="pane" id="pane-chat">
         <div id="chat-main">
           <div id="chat-log"></div>
@@ -459,6 +552,7 @@
 <script src="js/api.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/skins.js"></script>
+<script src="js/visualizer.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/standalone.js"></script>
 <script src="js/lobby.js"></script>

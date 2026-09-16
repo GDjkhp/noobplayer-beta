@@ -28,7 +28,10 @@ class AudioElPlayer {
       this.ctx = new (window.AudioContext || window.webkitAudioContext)();
       this.srcNode = this.ctx.createMediaElementSource(audioEl);
       this.analyser = this.ctx.createAnalyser();
-      this.analyser.fftSize = 256;
+      // 512 (256 bins) to match PCMPlayer — visualizers read the same
+      // shape of data regardless of which mode is playing.
+      this.analyser.fftSize = 512;
+      this.analyser.smoothingTimeConstant = 0.75;
       this.srcNode.connect(this.analyser);
       this.analyser.connect(this.ctx.destination);
     } catch (e) {
@@ -72,6 +75,32 @@ class AudioElPlayer {
     let peak = 0;
     for (let i = 0; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i]));
     return [peak, peak];
+  }
+
+  // ── visualizer feeds ── (identical surface to PCMPlayer's)
+  //
+  // Caveat worth knowing: WebAudio refuses to analyse a cross-origin media
+  // element unless it was loaded with CORS, and silently hands back zeros
+  // instead of erroring. The lobby <audio> element therefore carries
+  // crossorigin="anonymous" (see index.html) and the server sends
+  // Access-Control-Allow-Origin on /live — without both, visualizers go
+  // flat-lined the moment you point the app at a non-same-origin server.
+  get binCount() { return this.analyser ? this.analyser.frequencyBinCount : 0; }
+
+  getSpectrum(out) {
+    if (!this.analyser) return null;
+    const n = this.analyser.frequencyBinCount;
+    if (!out || out.length !== n) out = new Uint8Array(n);
+    this.analyser.getByteFrequencyData(out);
+    return out;
+  }
+
+  getWaveform(out) {
+    if (!this.analyser) return null;
+    const n = this.analyser.fftSize;
+    if (!out || out.length !== n) out = new Uint8Array(n);
+    this.analyser.getByteTimeDomainData(out);
+    return out;
   }
 
   async destroy() {

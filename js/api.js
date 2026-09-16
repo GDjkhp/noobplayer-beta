@@ -224,3 +224,52 @@ const SkinAPI = {
     } catch (_) {}
   },
 };
+
+/* ═══════════════════════════════════════════
+   VizAPI — the public visualizer gallery.
+
+   Same shape as SkinAPI, different payload: a visualizer is JavaScript,
+   which the server stores verbatim because there is no useful way to
+   sanitize it. Safety comes from WHERE it runs, not what it contains —
+   see the sandbox notes at the top of visualizer.js.
+═══════════════════════════════════════════ */
+const VizAPI = {
+  base() { return Backend.serverUrl || ''; },
+  available() { return !!this.base(); },
+
+  async list(sort = 'new') {
+    const res = await fetch(`${this.base()}/api/visualizers?sort=${encodeURIComponent(sort)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async get(id) {
+    const res = await fetch(`${this.base()}/api/visualizers/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async publish(viz, id, editToken) {
+    const res = await fetch(`${this.base()}/api/visualizers`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ viz, id, editToken }),
+    });
+    if (!res.ok) { const t = await res.json().catch(() => ({})); throw new Error(t.error || `HTTP ${res.status}`); }
+    return res.json();
+  },
+
+  async remove(id, editToken) {
+    const res = await fetch(`${this.base()}/api/visualizers/${encodeURIComponent(id)}/delete`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editToken }),
+    });
+    if (!res.ok) { const t = await res.json().catch(() => ({})); throw new Error(t.error || `HTTP ${res.status}`); }
+    return res.json();
+  },
+
+  async countInstall(id) {
+    try {
+      await fetch(`${this.base()}/api/visualizers/${encodeURIComponent(id)}/install`, { method: 'POST' });
+    } catch (_) {}
+  },
+};

@@ -59,6 +59,17 @@ const S = {
     editingId: null,
   },
 
+  // Visualizer — user-written canvas visualizers (see visualizer.js).
+  // `active` is what's mounted in the sandbox right now, `mine` are the
+  // ones saved in this browser, `gallery` is the last fetched public list.
+  viz: {
+    active: null,
+    draft: null,
+    mine: [],
+    gallery: [],
+    gallerySort: 'new',
+  },
+
   // Lobby (server mode only)
   lobby: {
     active: false,
