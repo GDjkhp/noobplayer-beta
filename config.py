@@ -13,7 +13,7 @@ NODELINK_PASSWORD = "youshallnotpass"
 # ── Flask server ──
 FLASK_HOST = "0.0.0.0"
 FLASK_PORT = 42069
-DEBUG = False
+DEBUG = True
 
 # ── WebRTC ──
 # STUN server used for ICE gathering. A public Google STUN server works for

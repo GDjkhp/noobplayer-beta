@@ -4,5 +4,5 @@ aiohttp
 aiortc
 av
 numpy
-hypercorn
+uvicorn
 python-socketio

@@ -1,1 +1,1 @@
-python3 -m hypercorn server:asgi_app --bind 0.0.0.0:42069
+python3 -m uvicorn server:asgi_app --host 0.0.0.0 --port 42069

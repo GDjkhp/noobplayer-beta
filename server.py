@@ -400,7 +400,7 @@ class LobbyRelay:
                         for pkt in stream.encode(frame):
                             container.mux(pkt)
                         self._header_chunks_done = True
-                        # Real-time pacing: ~one 20ms frame per 20ms of
+                        # Real-time pacing: ~one 1000ms frame per 1000ms of
                         # wall clock, so CPU/bandwidth stay flat and
                         # listeners' buffers fill at a natural rate
                         # instead of the whole track being transcoded
@@ -1037,8 +1037,7 @@ async def webrtc_offer(code):
 
 # ═══════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    import hypercorn.asyncio
-    from hypercorn.config import Config as HyperConfig
+    import uvicorn
 
     print(f"[NodeLink Lobby Server] NodeLink node: {NL_HOST}")
     print(f"[NodeLink Lobby Server] Voice chat (aiortc): {'enabled' if WEBRTC_AVAILABLE else 'DISABLED — see warning above'}")
@@ -1049,7 +1048,4 @@ if __name__ == "__main__":
     # layer. Socket.IO is mounted a level above that (see `asgi_app`
     # near the top of this file), so it has to be what actually gets
     # served, or every websocket/polling request 404s.
-    hyper_cfg = HyperConfig()
-    hyper_cfg.bind = [f"{config.FLASK_HOST}:{config.FLASK_PORT}"]
-    hyper_cfg.debug = config.DEBUG
-    asyncio.run(hypercorn.asyncio.serve(asgi_app, hyper_cfg))
+    uvicorn.run("server:asgi_app", host=config.FLASK_HOST, port=config.FLASK_PORT, reload=True)
