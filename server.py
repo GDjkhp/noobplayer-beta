@@ -114,6 +114,16 @@ NL_PASS = config.NODELINK_PASSWORD
 
 http_session: aiohttp.ClientSession | None = None
 
+# The relay's NodeLink /v4/loadstream connection is long-lived and can sit
+# idle for an arbitrarily long time — the relay deliberately stops reading
+# from it while the host has paused playback (see LobbyRelay._pump_track's
+# `_resume_event.wait()`). aiohttp's default ClientTimeout (5 minutes
+# total, tracked from request start regardless of read activity) would
+# otherwise kill that connection mid-pause, surfacing as a TimeoutError
+# the instant playback resumes. These streaming requests opt out of it
+# entirely; sock_connect keeps a sane bound on just the initial handshake.
+NODELINK_STREAM_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=None)
+
 
 @app.before_serving
 async def startup():
@@ -362,7 +372,8 @@ class LobbyRelay:
         body = {"encodedTrack": pre["track"].get("encoded"), "position": 0}
         try:
             async with http_session.post(f"{NL_HOST}/v4/loadstream", json=body,
-                                          headers={"Authorization": NL_PASS}) as r:
+                                          headers={"Authorization": NL_PASS},
+                                          timeout=NODELINK_STREAM_TIMEOUT) as r:
                 if r.status != 200:
                     return
                 async for chunk in r.content.iter_chunked(8192):
@@ -371,6 +382,8 @@ class LobbyRelay:
                     pre["chunks"].append(bytes(chunk))
         except asyncio.CancelledError:
             raise
+        except (asyncio.TimeoutError, aiohttp.ClientError):
+            pass  # preload is best-effort — _pump_track just falls back to a live fetch
         except Exception:
             traceback.print_exc()
         finally:
@@ -451,6 +464,7 @@ class LobbyRelay:
             stream.bit_rate = OPUS_BITRATE
 
             cur_track, cur_pos, cur_filters = track, position_ms, filters
+            retry_count = 0
             while True:
                 if self.generation != my_generation:
                     return
@@ -459,14 +473,41 @@ class LobbyRelay:
                 # always reflects the current queue head.
                 self.ensure_preload()
 
-                ended_naturally = await self._pump_track(
+                result = await self._pump_track(
                     container, stream, cur_track, cur_pos, cur_filters, my_generation
                 )
                 if self.generation != my_generation:
                     return
-                if not ended_naturally:
-                    return  # error, or interrupted by an explicit session change
+                if result == "interrupted":
+                    return  # something else already changed the session
 
+                if result == "error":
+                    # The NodeLink connection dropped or timed out mid-track
+                    # (e.g. the host paused long enough that it went stale —
+                    # see NODELINK_STREAM_TIMEOUT above for the fix on new
+                    # connections, this handles ones that die anyway).
+                    # Reconnect at the current position instead of leaving
+                    # the whole lobby silently stuck — same container/
+                    # generation, so listeners don't even notice a reconnect
+                    # happened besides a brief stutter.
+                    retry_count += 1
+                    if retry_count > 5:
+                        await broadcast(self.lobby, "chat", {
+                            "system": True,
+                            "text": "Playback connection kept failing — try skipping or replaying the track.",
+                            "ts": time.time() * 1000,
+                        })
+                        self.lobby.paused = True
+                        await broadcast(self.lobby, "state", self.lobby.public_state())
+                        return
+                    print(f"[relay {self.lobby.code}] stream error, reconnecting (attempt {retry_count})")
+                    await asyncio.sleep(min(0.5 * retry_count, 3.0))
+                    if self.generation != my_generation:
+                        return
+                    cur_pos = self.lobby.current_position_ms()
+                    continue  # retry the SAME track from the recovered position
+
+                retry_count = 0  # that track segment streamed cleanly
                 nxt = await self._advance_for_gapless(my_generation)
                 if nxt is None:
                     for pkt in stream.encode(None):
@@ -486,9 +527,12 @@ class LobbyRelay:
 
     async def _pump_track(self, container, stream, track, position_ms, filters, my_generation):
         """Streams ONE track's PCM into the ongoing Opus/Ogg mux session.
-        Returns True if the track's audio source ended naturally (so the
-        caller should advance to whatever's next), False if it was
-        interrupted (session changed / error) and the caller should stop."""
+        Returns "ended" if the track's audio source ended naturally (caller
+        should advance to whatever's next), "interrupted" if the session
+        changed out from under it (caller should stop silently — something
+        else, e.g. an explicit skip, is already handling it), or "error" if
+        the NodeLink connection itself failed/dropped (caller should
+        reconnect and retry rather than treating it like a real track end)."""
         pcm_buf = bytearray()
 
         async def feed_chunk(chunk):
@@ -522,10 +566,10 @@ class LobbyRelay:
             try:
                 while True:
                     if self.generation != my_generation:
-                        return False
+                        return "interrupted"
                     await self._resume_event.wait()
                     if self.generation != my_generation:
-                        return False
+                        return "interrupted"
                     if idx < len(pre["chunks"]):
                         await feed_chunk(pre["chunks"][idx])
                         idx += 1
@@ -535,7 +579,10 @@ class LobbyRelay:
                         await asyncio.sleep(0.02)  # preload still catching up to real time
             except asyncio.CancelledError:
                 raise
-            return True
+            except Exception:
+                traceback.print_exc()
+                return "error"
+            return "ended"
 
         # Normal live fetch — first track of a session, or the preload
         # missed/failed/didn't match (still counts as gapless-attempted,
@@ -543,19 +590,26 @@ class LobbyRelay:
         body = {"encodedTrack": track.get("encoded"), "position": round(position_ms)}
         if filters:
             body["filters"] = filters
-        async with http_session.post(f"{NL_HOST}/v4/loadstream", json=body,
-                                      headers={"Authorization": NL_PASS}) as r:
-            if r.status != 200:
-                print(f"[relay {self.lobby.code}] NodeLink loadstream {r.status}: {await r.text()}")
-                return False
-            async for chunk in r.content.iter_chunked(8192):
-                if self.generation != my_generation:
-                    return False
-                await self._resume_event.wait()   # blocks here while paused, resumes exactly in place
-                if self.generation != my_generation:
-                    return False
-                await feed_chunk(chunk)
-        return True
+        try:
+            async with http_session.post(f"{NL_HOST}/v4/loadstream", json=body,
+                                          headers={"Authorization": NL_PASS},
+                                          timeout=NODELINK_STREAM_TIMEOUT) as r:
+                if r.status != 200:
+                    print(f"[relay {self.lobby.code}] NodeLink loadstream {r.status}: {await r.text()}")
+                    return "error"
+                async for chunk in r.content.iter_chunked(8192):
+                    if self.generation != my_generation:
+                        return "interrupted"
+                    await self._resume_event.wait()   # blocks here while paused, resumes exactly in place
+                    if self.generation != my_generation:
+                        return "interrupted"
+                    await feed_chunk(chunk)
+        except asyncio.CancelledError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+            print(f"[relay {self.lobby.code}] NodeLink stream dropped: {e!r}")
+            return "error"
+        return "ended"
 
     @staticmethod
     def _pcm_to_frame(raw):
@@ -801,7 +855,8 @@ async def nl_loadstream():
 
     async def gen():
         async with http_session.post(f"{NL_HOST}/v4/loadstream", json=data,
-                                      headers={"Authorization": NL_PASS}) as r:
+                                      headers={"Authorization": NL_PASS},
+                                      timeout=NODELINK_STREAM_TIMEOUT) as r:
             async for chunk in r.content.iter_chunked(8192):
                 if chunk:
                     yield chunk
