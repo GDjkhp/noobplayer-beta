@@ -1137,6 +1137,52 @@ async def lobby_filters(code):
     return jsonify({"ok": True, "state": state})
 
 
+@app.route("/api/lobby/<code>/settings", methods=["POST"])
+async def lobby_settings(code):
+    """Host-only: rename the lobby and/or flip its public/private
+    visibility — the settings previously only settable at creation time,
+    now editable any time from the Config tab."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    if "name" in data:
+        name = (data.get("name") or "").strip()[:40]
+        if name:
+            lobby.name = name
+    if "isPublic" in data:
+        lobby.is_public = bool(data.get("isPublic"))
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
+
+
+@app.route("/api/lobby/<code>/rename", methods=["POST"])
+async def lobby_rename(code):
+    """Anyone can change their OWN display name — not host-gated."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    client_id = data.get("clientId")
+    p = lobby.participants.get(client_id)
+    if not p:
+        return jsonify({"error": "not in lobby"}), 403
+    new_name = (data.get("displayName") or "").strip()[:24]
+    if new_name and new_name != p.name:
+        old_name = p.name
+        p.name = new_name
+        await broadcast(lobby, "participants", lobby.participant_list())
+        await broadcast(lobby, "chat", {
+            "system": True,
+            "text": f"{old_name} is now known as {new_name}",
+            "ts": time.time() * 1000,
+        })
+    return jsonify({"ok": True, "displayName": p.name})
+
+
 @app.route("/api/lobby/<code>/queue/add", methods=["POST"])
 async def lobby_queue_add(code):
     lobby = get_lobby_or_404(code)
