@@ -1526,6 +1526,28 @@ async def lobby_skip(code):
     return jsonify({"ok": True, "state": state})
 
 
+@app.route("/api/lobby/<code>/stop", methods=["POST"])
+async def lobby_stop(code):
+    """Host-only: stop playback outright and clear the queue. Unlike skip,
+    this does NOT advance to whatever's next — it mirrors standalone mode's
+    Stop button (Engine.stop() there just empties S.current/S.queue)."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    lobby.current_track = None
+    lobby.queue = []
+    lobby.paused = True
+    lobby.position_anchor_ms = 0
+    lobby.anchor_time = time.time()
+    await lobby.relay.stop()
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
+
+
 @app.route("/api/lobby/<code>/prev", methods=["POST"])
 async def lobby_prev(code):
     """Step back to the previously played track. Lobby mode used to have no

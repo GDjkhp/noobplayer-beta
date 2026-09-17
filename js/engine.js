@@ -504,7 +504,7 @@ const Engine = {
     if (S.mode === 'server') {
       if (!S.lobby.isHost) { toast('Only the host can stop playback', 'warn'); return; }
       try {
-        const r = await LobbyAPI.control(S.lobby.code, 'skip', { clientId: S.lobby.clientId });
+        const r = await LobbyAPI.control(S.lobby.code, 'stop', { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
