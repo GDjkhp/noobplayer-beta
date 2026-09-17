@@ -1266,7 +1266,7 @@ async def nl_loadstream():
 DOWNLOAD_FORMATS = {
     "opus": {"mime": "audio/ogg", "ext": "ogg"},
     "mp3":  {"mime": "audio/mpeg", "ext": "mp3"},
-    "pcm":  {"mime": "audio/wav", "ext": "wav"},
+    "wav":  {"mime": "audio/wav", "ext": "wav"},
 }
 
 
@@ -1347,7 +1347,7 @@ async def download_track():
     if not encoded:
         return jsonify({"error": "encodedTrack required"}), 400
     if fmt not in DOWNLOAD_FORMATS:
-        return jsonify({"error": "format must be opus, mp3, or pcm"}), 400
+        return jsonify({"error": "format must be opus, mp3, or wav"}), 400
 
     try:
         pcm = await _fetch_full_pcm(encoded)
@@ -1356,7 +1356,7 @@ async def download_track():
     if not pcm:
         return jsonify({"error": "empty stream"}), 502
 
-    if fmt == "pcm":
+    if fmt == "wav":
         data = _pcm_to_wav_bytes(pcm)
     else:
         codec, container_fmt, bitrate = (

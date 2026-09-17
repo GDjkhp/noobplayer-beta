@@ -172,7 +172,7 @@ const UI = {
     menu.innerHTML = `
       <button class="dl-opt" data-fmt="opus"><span>Opus</span><small>.ogg</small></button>
       <button class="dl-opt" data-fmt="mp3"><span>MP3</span><small>.mp3</small></button>
-      <button class="dl-opt" data-fmt="pcm"><span>Raw PCM</span><small>.wav</small></button>
+      <button class="dl-opt" data-fmt="wav"><span>WAV</span><small>.wav</small></button>
     `;
     document.body.appendChild(menu);
 

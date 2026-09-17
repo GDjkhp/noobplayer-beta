@@ -226,7 +226,7 @@ const SkinAPI = {
 };
 
 /* ═══════════════════════════════════════════
-   DownloadAPI — full-track downloads (opus/ogg, mp3, or raw PCM as WAV).
+   DownloadAPI — full-track downloads (opus/ogg, mp3, or wav).
 
    Same shape as SkinAPI/VizAPI: it's a plain feature of whichever Quart
    server you're pointed at, not tied to being in an active lobby, so it
