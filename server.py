@@ -637,7 +637,7 @@ class LobbyRelay:
         the NodeLink connection itself failed/dropped (caller should
         reconnect and retry rather than treating it like a real track end)."""
         pcm_buf = bytearray()
-        frame_dur = PCM_FRAME_SAMPLES / PCM_RATE  # 1.0s
+        frame_dur = PCM_FRAME_SAMPLES / PCM_RATE  # 20ms
 
         async def feed_chunk(chunk):
             pcm_buf.extend(chunk)
