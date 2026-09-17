@@ -272,7 +272,6 @@ const UI = {
           <div class="qi-t">${esc(t.info.title)}</div>
           <div class="qi-a">${esc(t.info.author)}${chip}</div>
         </div>
-        <span class="qi-d">${fmt(t.info.length)}</span>
         <div class="qi-bs">
           <button class="qib" data-qa="play" data-qi="${i}" title="Play now" ${locked?'disabled':''}>▶</button>
           <button class="qib" data-qa="up"   data-qi="${i}" title="Move up" ${(locked||i===0)?'disabled':''}>↑</button>
@@ -280,6 +279,7 @@ const UI = {
           <button class="qib dl" data-qa="dl" data-qi="${i}" title="Download">⬇</button>
           <button class="qib del" data-qa="rm" data-qi="${i}" title="${canRemove ? 'Remove' : 'Only the host can remove other people\u2019s tracks'}" ${canRemove?'':'disabled'}>✕</button>
         </div>
+        <span class="qi-d">${fmt(t.info.length)}</span>
       </div>`;
     }).join('');
 
@@ -394,11 +394,11 @@ const UI = {
             <div class="si-t">${esc(t.info.title)}</div>
             <div class="si-a">${esc(t.info.author)}</div>
           </div>
-          <span class="si-d">${fmt(t.info.length)}</span>
           <div class="si-acts">
             <button class="add-btn pnow" data-a="play" data-i="${i}" ${locked?'disabled':''}>▶ Play</button>
             <button class="add-btn" data-a="q" data-i="${i}">+ Queue</button>
           </div>
+          <span class="si-d">${fmt(t.info.length)}</span>
         </div>`;
       });
       res.innerHTML = html;

@@ -179,7 +179,7 @@ body::after {
 #main { display: flex; flex: 1; overflow: hidden; }
 
 #left {
-  width: 320px; flex-shrink: 0; border-right: 1px solid var(--brd);
+  width:480px; flex-shrink: 0; border-right: 1px solid var(--brd);
   display: flex; flex-direction: column; background: var(--surf);
   overflow-y: auto; scrollbar-width: thin;
 }
@@ -474,7 +474,7 @@ body::after {
 #meaning-close { display: block; margin-top: 16px; background: none; border: 1px solid var(--brd2); color: var(--muted); font-family: var(--fm); font-size: 11px; text-transform: uppercase; padding: 6px 14px; cursor: pointer; transition: all .15s; }
 #meaning-close:hover { border-color: var(--red); color: var(--red); }
 
-@media (max-width: 700px) {
+@media (max-width: 1000px) {
   #main { flex-direction: column; }
   #left { width: 100%; border-right: none; border-bottom: 1px solid var(--brd); max-height: 55vh; }
   #art-wrap { max-height: 180px; aspect-ratio: auto; }
