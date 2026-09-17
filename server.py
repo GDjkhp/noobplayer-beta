@@ -241,7 +241,20 @@ PCM_CHANNELS = 2
 PCM_FRAME_SAMPLES = 48000                                    # 1000ms @ 48kHz
 PCM_FRAME_BYTES = PCM_FRAME_SAMPLES * PCM_CHANNELS * 2      # s16le
 OPUS_BITRATE = 96000
-LISTENER_QUEUE_MAX = 8   # chunks; a slow client gets old ones dropped, not a backlog
+# Chunks; a slow client gets its OLDEST buffered chunk dropped to make
+# room, not a growing backlog. That drop is destructive for that
+# listener though — it's a permanent hole in their Ogg byte stream, not
+# a retransmittable gap, and browsers don't recover gracefully from
+# missing bytes mid-container (typically a glitch or stall, not a clean
+# skip). 8 was thin enough that ordinary network jitter — not just a
+# genuinely stalled client — triggered it constantly, which is the most
+# likely source of frequent audio dropouts. Each queued item is one
+# `sink_write` call (roughly one flushed Ogg page, well under 100ms of
+# audio), so 8 was only ~1s of slack for the WHOLE relay pipeline,
+# shared across every listener independently. Bumped to give a few
+# seconds of real cushion; a still-slow listener after this many still
+# genuinely can't keep up and dropping for them is correct.
+LISTENER_QUEUE_MAX = 150
 IDLE_KEEPALIVE_SECONDS = 15   # silence frame cadence while the queue is empty — must stay
                               # comfortably under any reverse-proxy idle-read timeout in front
 
@@ -301,6 +314,19 @@ class LobbyRelay:
         self._idle = False               # True while parked in the idle wait below
         self._idle_event = asyncio.Event()
         self._pending = None             # (track, position_ms, filters) waiting to resume with
+
+        # ---- real-time pacing anchor ---------------------------------
+        # See feed_chunk() in _pump_track: a naive `sleep(1.0)` per 1s
+        # frame drifts behind real time by whatever the encode/mux/write
+        # work costs each iteration, compounding over a track's length.
+        # `_pace_next` is the monotonic deadline for the NEXT frame;
+        # sleeping to a deadline (rather than sleeping a fixed duration)
+        # cancels out that drift automatically. None means "no schedule
+        # yet — start fresh on the next frame", which feed_chunk also
+        # falls back to whenever the gap since the last frame is large
+        # (pause, seek, idle-to-active), so it never tries to "catch up"
+        # a multi-second backlog by firehosing frames.
+        self._pace_next = None
 
     # ---- listener management ----------------------------------------
     def add_listener(self):
@@ -422,6 +448,7 @@ class LobbyRelay:
         self._idle = False
         self._idle_event.clear()
         self._pending = None
+        self._pace_next = None
         self.generation += 1
         self._header_chunks = []
         self._header_chunks_done = False
@@ -610,6 +637,7 @@ class LobbyRelay:
         the NodeLink connection itself failed/dropped (caller should
         reconnect and retry rather than treating it like a real track end)."""
         pcm_buf = bytearray()
+        frame_dur = PCM_FRAME_SAMPLES / PCM_RATE  # 1.0s
 
         async def feed_chunk(chunk):
             pcm_buf.extend(chunk)
@@ -620,11 +648,26 @@ class LobbyRelay:
                 for pkt in stream.encode(frame):
                     container.mux(pkt)
                 self._header_chunks_done = True
-                # Real-time pacing: ~one 1000ms frame per 1000ms of wall
-                # clock, so CPU/bandwidth stay flat and listeners' buffers
-                # fill at a natural rate instead of the whole track being
-                # transcoded and pushed as fast as NodeLink can send it.
-                await asyncio.sleep(PCM_FRAME_SAMPLES / PCM_RATE)
+                # Real-time pacing: sleep to an absolute deadline rather
+                # than a fixed `sleep(1.0)`. A fixed sleep only measures
+                # its OWN duration — it says nothing about how long the
+                # encode/mux/write above just took, so that overhead is
+                # pure, uncorrected drift that compounds every iteration
+                # (the classic cause of a live relay slowly falling
+                # behind real time until listeners' buffers run dry).
+                # Scheduling against a deadline means any overhead just
+                # eats into the next sleep instead of extending the total.
+                now = time.monotonic()
+                if self._pace_next is None or now - self._pace_next > frame_dur * 2:
+                    # First frame of a session, or a big gap since the
+                    # last one (pause/seek/idle->active) — start a fresh
+                    # schedule from now rather than firehosing frames to
+                    # "catch up" a backlog that was never really owed.
+                    self._pace_next = now
+                self._pace_next += frame_dur
+                delay = self._pace_next - now
+                if delay > 0:
+                    await asyncio.sleep(delay)
 
         # Prefer an already-running preload for this exact track. Only
         # applies at position 0 — explicit seeks/skips always take the
