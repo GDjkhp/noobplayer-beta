@@ -238,7 +238,7 @@ if WEBRTC_AVAILABLE:
 # ═══════════════════════════════════════════════════════════════════
 PCM_RATE = 48000
 PCM_CHANNELS = 2
-PCM_FRAME_SAMPLES = 48000                                    # 1000ms @ 48kHz
+PCM_FRAME_SAMPLES = 960                                     # 20ms @ 48kHz
 PCM_FRAME_BYTES = PCM_FRAME_SAMPLES * PCM_CHANNELS * 2      # s16le
 OPUS_BITRATE = 96000
 # Chunks; a slow client gets its OLDEST buffered chunk dropped to make
