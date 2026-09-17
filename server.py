@@ -640,8 +640,10 @@ class LobbyRelay:
         reconnect and retry rather than treating it like a real track end)."""
         pcm_buf = bytearray()
         frame_dur = PCM_FRAME_SAMPLES / PCM_RATE  # 20ms
+        anchor_corrected = False
 
         async def feed_chunk(chunk):
+            nonlocal anchor_corrected
             pcm_buf.extend(chunk)
             while len(pcm_buf) >= PCM_FRAME_BYTES:
                 frame_bytes = bytes(pcm_buf[:PCM_FRAME_BYTES])
@@ -650,6 +652,30 @@ class LobbyRelay:
                 for pkt in stream.encode(frame):
                     container.mux(pkt)
                 self._header_chunks_done = True
+
+                if not anchor_corrected:
+                    # This is the first frame of audio actually ready to
+                    # go out for this track/segment — the true moment
+                    # `position_ms` becomes "now", not whenever the
+                    # play/skip/seek/queue-add command was issued. Every
+                    # route that kicks off a track sets the lobby's
+                    # position anchor optimistically right away (so the
+                    # UI updates instantly), but fetching from NodeLink —
+                    # track lookup, stream negotiation — can easily take
+                    # a few seconds, during which that optimistic anchor
+                    # just keeps ticking with nothing actually playing
+                    # yet. That's what caused the progress bar to open
+                    # already several seconds in instead of at 0:00.
+                    # Correcting it here, the instant real audio is
+                    # actually ready, fixes that for every path that
+                    # reaches this loop — explicit plays, skips, seeks,
+                    # retries after a dropped connection, and gapless
+                    # natural advances alike.
+                    anchor_corrected = True
+                    self.lobby.position_anchor_ms = position_ms
+                    self.lobby.anchor_time = time.time()
+                    await broadcast(self.lobby, "state", self.lobby.public_state())
+
                 # Real-time pacing: sleep to an absolute deadline rather
                 # than a fixed `sleep(0.02)`. A fixed sleep only measures
                 # its OWN duration — it says nothing about how long the
