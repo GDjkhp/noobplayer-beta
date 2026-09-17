@@ -544,6 +544,23 @@ const Engine = {
     else { UI.renderQueue(); toast(`+ ${track.info.title}`, 'success', 2000); this._ensurePreload(); }
   },
 
+  // Bulk variant of addToQueue — used by "+ Add All" on a playlist result.
+  // In lobby mode this fires ONE request (queue/add_bulk) instead of one
+  // per track, letting the server do the current-track/queue split and
+  // broadcast once. In standalone mode there's no network call either way
+  // (it's all local state), so this just loops addToQueue for that case.
+  async addAllToQueue(tracks) {
+    if (!tracks || !tracks.length) return;
+    if (S.mode === 'server') {
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'queue/add_bulk', { clientId: S.lobby.clientId, tracks });
+        Lobby.applyControlResult(r);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      return;
+    }
+    for (const t of tracks) await this.addToQueue(t);
+  },
+
   async removeFromQueue(i) {
     if (S.mode === 'server') {
       try {

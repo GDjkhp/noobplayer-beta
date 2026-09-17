@@ -1689,6 +1689,48 @@ async def lobby_queue_add(code):
     return jsonify({"ok": True, "state": state})
 
 
+@app.route("/api/lobby/<code>/queue/add_bulk", methods=["POST"])
+async def lobby_queue_add_bulk(code):
+    """Same as queue/add, but for a whole list of tracks in one request —
+    used by "+ Add All" on a playlist result so the client fires a single
+    call instead of one per track. Mirrors queue/add's logic (first track
+    becomes current_track if nothing is playing, rest go on the queue) but
+    only starts playback / kicks off preload / broadcasts once at the end."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    client_id = data.get("clientId")
+    if client_id not in lobby.participants:
+        return jsonify({"error": "not in lobby"}), 403
+    tracks = data.get("tracks")
+    if not isinstance(tracks, list) or not tracks:
+        return jsonify({"error": "no tracks"}), 400
+    participant = lobby.participants.get(client_id)
+    tracks = [stamp_requester(t, participant) for t in tracks]
+
+    started_playback = False
+    if not lobby.current_track:
+        lobby.current_track = tracks[0]
+        lobby.queue.extend(tracks[1:])
+        lobby.paused = False
+        lobby.position_anchor_ms = 0
+        lobby.anchor_time = time.time()
+        started_playback = True
+    else:
+        lobby.queue.extend(tracks)
+
+    if started_playback:
+        await lobby.relay.resume_or_start(lobby.current_track, 0, lobby.filters)
+        await populate_recommendations(lobby, broadcast_state=False)
+    else:
+        lobby.relay.ensure_preload()  # queue may have just gone from empty -> non-empty
+
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state, "added": len(tracks)})
+
+
 @app.route("/api/lobby/<code>/queue/remove", methods=["POST"])
 async def lobby_queue_remove(code):
     lobby = get_lobby_or_404(code)

@@ -329,9 +329,14 @@ const UI = {
 
       const addAll = document.getElementById('btn-add-all');
       if (addAll) addAll.addEventListener('click', async () => {
-        for (const t of tracks) await Engine.addToQueue(t);
+        addAll.disabled = true;
+        const prevLabel = addAll.textContent;
+        addAll.textContent = 'Adding…';
+        await Engine.addAllToQueue(tracks);
         toast(`Added ${tracks.length} tracks`, 'success');
         UI.switchTab('queue');
+        addAll.disabled = false;
+        addAll.textContent = prevLabel;
       });
     } catch (e) {
       res.innerHTML = `<div class="empty"><p>Error: ${esc(e.message)}</p></div>`;

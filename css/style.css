@@ -462,6 +462,37 @@ body::after {
   #left { width: 100%; border-right: none; border-bottom: 1px solid var(--brd); max-height: 55vh; }
   #art-wrap { max-height: 180px; aspect-ratio: auto; }
   .mode-grid { grid-template-columns: 1fr; }
+
+  /* Tabs: a bit tighter so more of them fit before you have to scroll. */
+  .tab { padding: 10px 12px; font-size: 10px; }
+
+  /* Search bar: input+select+button no longer fit on one line at phone
+     widths (the button was getting clipped off the right edge) — put the
+     search term on its own row and let source/button share the second. */
+  #search-bar { flex-wrap: wrap; }
+  #si { flex: 1 1 100%; min-width: 0; }
+  #src-sel { flex: 1; min-width: 0; }
+  #btn-srch { flex: 0 0 auto; }
+
+  /* Chat: the log+input column and the participants sidebar no longer fit
+     side by side — stack the (short) participants list above the log
+     instead of squeezing both into half-width columns. */
+  #pane-chat { flex-direction: column; }
+  #chat-main { border-right: none; border-bottom: 1px solid var(--brd); min-height: 0; }
+  #chat-users { width: 100%; max-height: 96px; padding: 8px 10px; border-bottom: 1px solid var(--brd); }
+  #chat-users-list { display: flex; flex-wrap: wrap; gap: 4px; }
+  .cu-item { padding: 4px 6px; background: var(--surf2); }
+  .cu-meta { display: flex; align-items: center; }
+  .cu-tag { margin-left: 4px; }
+}
+
+/* Row-action buttons (search results' Play/Queue, queue items' reorder/
+   remove, the drag handle) are opacity:0-until-:hover, which on a touch
+   screen never fires — they'd be invisible and effectively unusable.
+   Keep them always visible wherever there's no hover capability at all,
+   phone or tablet, regardless of viewport width. */
+@media (hover: none) {
+  .si-acts, .qi-bs, .qi-drag { opacity: 1; }
 }
 /* ═══════════════ Queue: requester chips ═══════════════ */
 .qi-req {
