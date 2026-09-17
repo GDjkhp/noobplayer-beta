@@ -316,7 +316,7 @@ class LobbyRelay:
         self._pending = None             # (track, position_ms, filters) waiting to resume with
 
         # ---- real-time pacing anchor ---------------------------------
-        # See feed_chunk() in _pump_track: a naive `sleep(1.0)` per 1s
+        # See feed_chunk() in _pump_track: a naive `sleep(0.02)` per 1s
         # frame drifts behind real time by whatever the encode/mux/write
         # work costs each iteration, compounding over a track's length.
         # `_pace_next` is the monotonic deadline for the NEXT frame;
@@ -649,7 +649,7 @@ class LobbyRelay:
                     container.mux(pkt)
                 self._header_chunks_done = True
                 # Real-time pacing: sleep to an absolute deadline rather
-                # than a fixed `sleep(1.0)`. A fixed sleep only measures
+                # than a fixed `sleep(0.02)`. A fixed sleep only measures
                 # its OWN duration — it says nothing about how long the
                 # encode/mux/write above just took, so that overhead is
                 # pure, uncorrected drift that compounds every iteration
