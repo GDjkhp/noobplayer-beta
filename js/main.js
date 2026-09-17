@@ -127,6 +127,37 @@ document.addEventListener('DOMContentLoaded', () => {
   /* ───────── Lyrics ───────── */
   document.getElementById('btn-lyr').addEventListener('click', () => UI.fetchLyrics());
 
+  /* ───────── Download (now-playing) ───────── */
+  document.getElementById('btn-dl').addEventListener('click', e => UI.openDownloadMenu(e.currentTarget, S.current));
+
+  /* ───────── Media Session (lock-screen / hardware media keys) ─────────
+     Metadata + playback/position state are pushed from
+     UI.updateMediaSession() whenever the track or play state changes
+     (see ui.js); this just wires the OS-side controls back into the same
+     Engine methods the on-page buttons use, so host-locking in lobby
+     mode etc. is respected automatically. */
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.setActionHandler('play', () => Engine.togglePause());
+    navigator.mediaSession.setActionHandler('pause', () => Engine.togglePause());
+    navigator.mediaSession.setActionHandler('previoustrack', () => Engine.prev());
+    navigator.mediaSession.setActionHandler('nexttrack', () => Engine.skip());
+    navigator.mediaSession.setActionHandler('stop', () => Engine.stop());
+    navigator.mediaSession.setActionHandler('seekbackward', details => {
+      if (!S.player) return;
+      Engine.seekTo(S.player.getPositionMs() - (details.seekOffset || 10) * 1000);
+    });
+    navigator.mediaSession.setActionHandler('seekforward', details => {
+      if (!S.player) return;
+      Engine.seekTo(Math.min(S.current?.info.length || 0, S.player.getPositionMs() + (details.seekOffset || 10) * 1000));
+    });
+    try {
+      navigator.mediaSession.setActionHandler('seekto', details => {
+        if (details.seekTime == null) return;
+        Engine.seekTo(details.seekTime * 1000);
+      });
+    } catch (_) { /* not all browsers support the 'seekto' action */ }
+  }
+
   /* ───────── Filters ───────── */
   document.querySelectorAll('.preset-btn').forEach(btn => {
     btn.addEventListener('click', async () => {

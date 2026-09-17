@@ -69,10 +69,12 @@ with zero extra configuration.
 
 import asyncio
 import fractions
+import io
 import json
 import random
 import re
 import string
+import struct
 import time
 import uuid
 import traceback
@@ -1249,6 +1251,132 @@ async def nl_loadstream():
                     yield chunk
 
     return Response(gen(), mimetype="application/octet-stream")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Track download — full-track, one-shot, from position 0 regardless of
+# where playback currently is. Reuses the same PCM constants as
+# LobbyRelay (above) but none of its real-time pacing/gapless machinery:
+# a download just wants the whole file as fast as possible, not a live
+# feed. Available from BOTH standalone and lobby mode — this route lives
+# on the Quart server, and Backend.serverUrl (see api.js) is set on boot
+# regardless of which playback mode is active, same as the skin/
+# visualizer galleries.
+# ═══════════════════════════════════════════════════════════════════
+DOWNLOAD_FORMATS = {
+    "opus": {"mime": "audio/ogg", "ext": "ogg"},
+    "mp3":  {"mime": "audio/mpeg", "ext": "mp3"},
+    "pcm":  {"mime": "audio/wav", "ext": "wav"},
+}
+
+
+async def _fetch_full_pcm(encoded_track):
+    """Pulls an entire track's raw PCM from NodeLink in one go — no
+    pacing, no chunk-by-chunk playback scheduling, just read as fast as
+    the connection allows."""
+    body = {"encodedTrack": encoded_track, "position": 0}
+    buf = bytearray()
+    async with http_session.post(f"{NL_HOST}/v4/loadstream", json=body,
+                                  headers={"Authorization": NL_PASS},
+                                  timeout=NODELINK_STREAM_TIMEOUT) as r:
+        if r.status != 200:
+            raise RuntimeError(f"NodeLink loadstream {r.status}: {await r.text()}")
+        async for chunk in r.content.iter_chunked(65536):
+            buf.extend(chunk)
+    return bytes(buf)
+
+
+def _pcm_to_wav_bytes(pcm_bytes):
+    """Wraps raw s16le/48kHz/stereo PCM in a standard WAV header — no
+    re-encoding needed, just the 44-byte RIFF/fmt/data header in front,
+    with exact sizes since we have the whole buffer already."""
+    channels, bits = PCM_CHANNELS, 16
+    byte_rate = PCM_RATE * channels * bits // 8
+    block_align = channels * bits // 8
+    data_size = len(pcm_bytes)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + data_size, b"WAVE",
+        b"fmt ", 16, 1, channels, PCM_RATE, byte_rate, block_align, bits,
+        b"data", data_size,
+    )
+    return header + pcm_bytes
+
+
+def _encode_pcm_blocking(pcm_bytes, codec, container_fmt, bitrate):
+    """CPU-bound PyAV encode of a full PCM buffer into an in-memory
+    container. Run via asyncio.to_thread — this blocks the thread it
+    runs on for the whole track's encode, which would stall the event
+    loop (and every lobby's relay) if called directly from a route."""
+    # Pad the tail to a whole number of frames with silence rather than
+    # truncating — losing up to ~20ms is inaudible, losing part of the
+    # actual last frame's audio isn't.
+    remainder = len(pcm_bytes) % PCM_FRAME_BYTES
+    if remainder:
+        pcm_bytes = pcm_bytes + b"\x00" * (PCM_FRAME_BYTES - remainder)
+
+    buf = io.BytesIO()
+    container = av.open(buf, mode="w", format=container_fmt)
+    stream = container.add_stream(codec, rate=PCM_RATE)
+    stream.layout = "stereo"
+    if bitrate:
+        stream.bit_rate = bitrate
+    try:
+        for i in range(0, len(pcm_bytes), PCM_FRAME_BYTES):
+            frame = LobbyRelay._pcm_to_frame(pcm_bytes[i:i + PCM_FRAME_BYTES])
+            for pkt in stream.encode(frame):
+                container.mux(pkt)
+        for pkt in stream.encode(None):  # flush the encoder
+            container.mux(pkt)
+    finally:
+        container.close()
+    return buf.getvalue()
+
+
+def _safe_filename(name):
+    name = re.sub(r'[\\/:*?"<>|\r\n]', "", name or "").strip()
+    return name[:120] or "track"
+
+
+@app.route("/api/download")
+async def download_track():
+    encoded = request.args.get("encodedTrack")
+    fmt = (request.args.get("format") or "opus").lower()
+    title = request.args.get("title") or "track"
+    author = request.args.get("author") or ""
+    if not encoded:
+        return jsonify({"error": "encodedTrack required"}), 400
+    if fmt not in DOWNLOAD_FORMATS:
+        return jsonify({"error": "format must be opus, mp3, or pcm"}), 400
+
+    try:
+        pcm = await _fetch_full_pcm(encoded)
+    except (asyncio.TimeoutError, aiohttp.ClientError, RuntimeError) as e:
+        return jsonify({"error": f"failed to fetch audio: {e}"}), 502
+    if not pcm:
+        return jsonify({"error": "empty stream"}), 502
+
+    if fmt == "pcm":
+        data = _pcm_to_wav_bytes(pcm)
+    else:
+        codec, container_fmt, bitrate = (
+            ("libopus", "ogg", OPUS_BITRATE) if fmt == "opus" else ("libmp3lame", "mp3", 192000)
+        )
+        try:
+            data = await asyncio.to_thread(_encode_pcm_blocking, pcm, codec, container_fmt, bitrate)
+        except Exception as e:
+            # Most likely cause: this ffmpeg build doesn't have the
+            # requested encoder (libmp3lame in particular isn't always
+            # bundled) rather than anything wrong with the track itself.
+            return jsonify({"error": f"encoding to {fmt} failed: {e}"}), 500
+
+    spec = DOWNLOAD_FORMATS[fmt]
+    filename = _safe_filename(f"{author} - {title}" if author else title)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}.{spec["ext"]}"',
+        "Content-Length": str(len(data)),
+    }
+    return Response(data, mimetype=spec["mime"], headers=headers)
 
 
 # ═══════════════════════════════════════════════════════════════════

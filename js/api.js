@@ -226,6 +226,32 @@ const SkinAPI = {
 };
 
 /* ═══════════════════════════════════════════
+   DownloadAPI — full-track downloads (opus/ogg, mp3, or raw PCM as WAV).
+
+   Same shape as SkinAPI/VizAPI: it's a plain feature of whichever Quart
+   server you're pointed at, not tied to being in an active lobby, so it
+   works in standalone mode too as long as Backend.serverUrl is set
+   (which it is from boot — see Main.autoStart in main.js).
+═══════════════════════════════════════════ */
+const DownloadAPI = {
+  base() { return Backend.serverUrl || ''; },
+  available() { return !!this.base(); },
+
+  // Builds the download URL — a plain GET with Content-Disposition:
+  // attachment, so the caller just needs to navigate to it (see
+  // triggerDownload in utils.js) rather than fetch()-ing the body itself.
+  url(track, format) {
+    const p = new URLSearchParams({
+      encodedTrack: track.encoded,
+      format,
+      title: track.info?.title || '',
+      author: track.info?.author || '',
+    });
+    return `${this.base()}/api/download?${p.toString()}`;
+  },
+};
+
+/* ═══════════════════════════════════════════
    VizAPI — the public visualizer gallery.
 
    Same shape as SkinAPI, different payload: a visualizer is JavaScript,

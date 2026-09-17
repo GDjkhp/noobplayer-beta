@@ -333,7 +333,24 @@ body::after {
 .qib { background: none; border: none; color: var(--muted); cursor: pointer; padding: 3px; font-size: 13px; display: flex; align-items: center; transition: color .15s; line-height: 1; }
 .qib:hover { color: var(--text); }
 .qib.del:hover { color: var(--red); }
+.qib.dl:hover { color: var(--accent); }
 .qib:disabled { opacity: .3; cursor: not-allowed; }
+
+/* Download format picker — a tiny fixed-position menu spawned next to
+   whichever download button was clicked (now-playing or a queue item).
+   See UI.openDownloadMenu/closeDownloadMenu in ui.js. */
+.dl-menu {
+  position: fixed; z-index: 500; background: var(--surf3); border: 1px solid var(--brd2);
+  box-shadow: 0 8px 24px rgba(0,0,0,.4); min-width: 150px; padding: 4px; display: flex; flex-direction: column;
+}
+.dl-opt {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  background: none; border: none; color: var(--text); font-family: var(--fn); font-size: 12px;
+  padding: 7px 9px; cursor: pointer; text-align: left; transition: background .15s, color .15s;
+}
+.dl-opt:hover { background: var(--surf2); color: var(--accent); }
+.dl-opt small { font-family: var(--fm); font-size: 9px; color: var(--muted); }
+.dl-opt:hover small { color: var(--accent); }
 
 #lyr-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
 #lyr-src-lbl { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }

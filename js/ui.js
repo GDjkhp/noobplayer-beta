@@ -69,6 +69,7 @@ const UI = {
     const t = S.current;
     const img = document.getElementById('art-img');
     const empty = document.getElementById('art-empty');
+    document.getElementById('btn-dl').disabled = !t;
 
     if (t) {
       if (t.info.artworkUrl) {
@@ -120,6 +121,93 @@ const UI = {
     const playing = S.current && S.player && !S.player.isPaused;
     document.getElementById('ico-play').style.display = playing ? 'none' : 'block';
     document.getElementById('ico-pause').style.display = playing ? 'block' : 'none';
+    this.updateMediaSession();
+  },
+
+  // Media Session API — drives the OS/browser "now playing" integration
+  // (lock screen, hardware media keys, the tab-level flyout Chrome shows —
+  // see main.js for the action handlers that make its buttons actually do
+  // something). Called on every track change and every play/pause toggle;
+  // cheap enough not to worry about over-calling it.
+  updateMediaSession() {
+    if (!('mediaSession' in navigator)) return;
+    const t = S.current;
+    if (!t) {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = 'none';
+      return;
+    }
+    const artwork = t.info.artworkUrl
+      ? [96, 192, 256, 384, 512].map(size => ({ src: t.info.artworkUrl, sizes: `${size}x${size}`, type: 'image/png' }))
+      : [];
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: t.info.title || 'Unknown title',
+      artist: t.info.author || 'Unknown artist',
+      album: 'Noobplayer',
+      artwork,
+    });
+    navigator.mediaSession.playbackState = (S.player && !S.player.isPaused) ? 'playing' : 'paused';
+    if (S.player && t.info.length) {
+      try {
+        navigator.mediaSession.setPositionState({
+          duration: t.info.length / 1000,
+          playbackRate: 1,
+          position: Math.min(S.player.getPositionMs(), t.info.length) / 1000,
+        });
+      } catch (_) { /* duration/position can briefly be inconsistent right at a track boundary */ }
+    }
+  },
+
+  // Small fixed-position format picker spawned next to whichever download
+  // button was clicked — the now-playing one in #ctrls-sec, or a queue
+  // item's. One instance at a time; opening a new one (or clicking
+  // anywhere outside, or Escape) closes whatever's already open.
+  openDownloadMenu(anchorEl, track) {
+    this.closeDownloadMenu();
+    if (!track) { toast('Nothing to download', 'warn'); return; }
+    if (!DownloadAPI.available()) { toast('Downloads need a server connection', 'warn'); return; }
+
+    const menu = document.createElement('div');
+    menu.className = 'dl-menu';
+    menu.innerHTML = `
+      <button class="dl-opt" data-fmt="opus"><span>Opus</span><small>.ogg</small></button>
+      <button class="dl-opt" data-fmt="mp3"><span>MP3</span><small>.mp3</small></button>
+      <button class="dl-opt" data-fmt="pcm"><span>Raw PCM</span><small>.wav</small></button>
+    `;
+    document.body.appendChild(menu);
+
+    const r = anchorEl.getBoundingClientRect();
+    let left = Math.min(r.left, window.innerWidth - menu.offsetWidth - 8);
+    let top = r.bottom + 6;
+    if (top + menu.offsetHeight > window.innerHeight) top = r.top - menu.offsetHeight - 6;
+    menu.style.left = Math.max(8, left) + 'px';
+    menu.style.top = Math.max(8, top) + 'px';
+
+    menu.querySelectorAll('.dl-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        triggerDownload(DownloadAPI.url(track, btn.dataset.fmt));
+        toast(`Downloading "${track.info.title}" — this can take a moment`, 'info', 3000);
+        this.closeDownloadMenu();
+      });
+    });
+
+    this._dlMenu = menu;
+    // Deferred a tick so the same click that opened the menu doesn't also
+    // immediately fire this outside-click listener and close it.
+    setTimeout(() => {
+      document.addEventListener('click', this._dlMenuOutside = (e) => {
+        if (!menu.contains(e.target)) this.closeDownloadMenu();
+      });
+      document.addEventListener('keydown', this._dlMenuEsc = (e) => {
+        if (e.key === 'Escape') this.closeDownloadMenu();
+      });
+    }, 0);
+  },
+
+  closeDownloadMenu() {
+    if (this._dlMenu) { this._dlMenu.remove(); this._dlMenu = null; }
+    if (this._dlMenuOutside) { document.removeEventListener('click', this._dlMenuOutside); this._dlMenuOutside = null; }
+    if (this._dlMenuEsc) { document.removeEventListener('keydown', this._dlMenuEsc); this._dlMenuEsc = null; }
   },
 
   updateEQ() {
@@ -189,6 +277,7 @@ const UI = {
           <button class="qib" data-qa="play" data-qi="${i}" title="Play now" ${locked?'disabled':''}>▶</button>
           <button class="qib" data-qa="up"   data-qi="${i}" title="Move up" ${(locked||i===0)?'disabled':''}>↑</button>
           <button class="qib" data-qa="dn"   data-qi="${i}" title="Move down" ${(locked||i===S.queue.length-1)?'disabled':''}>↓</button>
+          <button class="qib dl" data-qa="dl" data-qi="${i}" title="Download">⬇</button>
           <button class="qib del" data-qa="rm" data-qi="${i}" title="${canRemove ? 'Remove' : 'Only the host can remove other people\u2019s tracks'}" ${canRemove?'':'disabled'}>✕</button>
         </div>
       </div>`;
@@ -215,6 +304,7 @@ const UI = {
         } else if (a === 'up' && i > 0) { Engine.moveQueueItem(i, i - 1); }
         else if (a === 'dn' && i < S.queue.length - 1) { Engine.moveQueueItem(i, i + 1); }
         else if (a === 'rm') Engine.removeFromQueue(i);
+        else if (a === 'dl') UI.openDownloadMenu(btn, S.queue[i]);
       });
     });
 
