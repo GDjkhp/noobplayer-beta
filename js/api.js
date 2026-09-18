@@ -165,6 +165,14 @@ const LobbyAPI = {
     return `${this.base()}/api/lobby/${code}/live?g=${relayGen}`;
   },
 
+  // Read-only relay/encode diagnostics — polled by debug.js when the
+  // Debug tab is open. Never called on a hot path.
+  async debugStats(code) {
+    const res = await fetch(`${this.base()}/api/lobby/${code}/debug`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  },
+
   webrtcOfferUrl(code) {
     return `${this.base()}/api/lobby/${code}/webrtc/offer`;
   },

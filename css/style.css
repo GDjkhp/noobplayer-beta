@@ -693,3 +693,64 @@ body::after {
   #viz-stage { aspect-ratio: 4 / 3; min-height: 180px; }
   .viz-card { flex-wrap: wrap; }
 }
+/* ═══════════════════ DEBUG TAB ═══════════════════ */
+#pane-debug { overflow: hidden; }
+#dbg-root { flex: 1; overflow-y: auto; min-height: 0; }
+.dbg-wrap { display: flex; flex-direction: column; gap: 16px; padding: 16px; }
+
+.dbg-toolbar { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.dbg-title { font-weight: 800; font-size: 15px; color: var(--accent); letter-spacing: .04em; }
+.dbg-sub { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }
+
+.dbg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.dbg-card { background: var(--surf); border: 1px solid var(--brd); padding: 9px 11px; min-width: 0; }
+.dbg-card-k { font-family: var(--fm); font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+.dbg-card-v { font-family: var(--fm); font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dbg-section { background: var(--surf); border: 1px solid var(--brd); padding: 12px 14px; min-width: 0; }
+.dbg-section-title { font-weight: 700; font-size: 12px; color: var(--text); margin-bottom: 10px; display: flex; align-items: baseline; gap: 6px; }
+.dbg-count { font-family: var(--fm); font-size: 10px; color: var(--muted); font-weight: 400; }
+.dbg-lane-hint { font-family: var(--fm); font-size: 9px; color: var(--muted); font-weight: 400; }
+
+.dbg-lane-wrap { margin-bottom: 12px; }
+.dbg-lane-wrap:last-child { margin-bottom: 0; }
+.dbg-lane-lbl { display: block; font-family: var(--fm); font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
+.dbg-lane {
+  display: flex; align-items: flex-end; gap: 2px; height: 30px;
+  background: var(--surf2); border: 1px solid var(--brd); padding: 4px 6px; overflow: hidden;
+}
+.dbg-lane-empty { font-family: var(--fm); font-size: 10px; color: var(--muted2); }
+.dbg-box {
+  height: 100%; flex-shrink: 0; border-radius: 1px;
+  animation: dbgBoxIn .25s ease-out;
+}
+.dbg-box.net { background: linear-gradient(180deg, var(--accent), rgba(91,156,246,.35)); }
+.dbg-box.spk { background: linear-gradient(180deg, var(--green), rgba(74,222,128,.35)); }
+@keyframes dbgBoxIn { from { opacity: 0; transform: scaleY(.3); } to { opacity: 1; transform: scaleY(1); } }
+
+.dbg-meter { height: 10px; background: var(--surf2); border: 1px solid var(--brd); overflow: hidden; }
+.dbg-meter-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--green), var(--amber), var(--red)); transition: width .1s linear; }
+
+.dbg-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .dbg-cols { grid-template-columns: 1fr; } }
+
+.dbg-scroll { max-height: 240px; overflow-y: auto; }
+.dbg-table { width: 100%; border-collapse: collapse; font-family: var(--fm); font-size: 10.5px; }
+.dbg-table th {
+  position: sticky; top: 0; background: var(--surf); text-align: left; color: var(--muted);
+  font-weight: 600; text-transform: uppercase; letter-spacing: .04em; font-size: 9px;
+  padding: 4px 6px; border-bottom: 1px solid var(--brd2);
+}
+.dbg-table td { padding: 4px 6px; border-bottom: 1px solid var(--brd); color: var(--text); white-space: nowrap; }
+.dbg-table td.dbg-mono { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.dbg-table tr.dbg-row-err td { color: var(--red); }
+.dbg-empty-row { color: var(--muted2); text-align: center; padding: 10px !important; }
+
+.dbg-list { display: flex; flex-direction: column; gap: 3px; }
+.dbg-list-row {
+  display: flex; gap: 10px; align-items: baseline; font-family: var(--fm); font-size: 10.5px;
+  padding: 4px 6px; background: var(--surf2); border-left: 2px solid var(--brd2);
+}
+.dbg-list-row.dbg-row-err { border-left-color: var(--red); color: var(--red); }
+.dbg-list-row.dbg-row-warn { border-left-color: var(--amber); color: var(--amber); }
+.dbg-muted { color: var(--muted); margin-left: auto; }

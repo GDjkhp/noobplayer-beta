@@ -145,6 +145,7 @@
         <button class="tab" data-tab="viz">Visualizer ◉</button>
         <button class="tab" data-tab="chat" id="tab-chat-btn" style="display:none">Chat <span id="chat-badge"></span></button>
         <button class="tab" data-tab="config">Config ⚙</button>
+        <button class="tab" data-tab="debug">Debug ⌁</button>
       </div>
 
       <div class="pane on" id="pane-search">
@@ -536,6 +537,18 @@
 
         </div>
       </div>
+
+      <!-- ───────── Debug tab ─────────
+           Skeleton only — everything inside #dbg-root is built and kept
+           live by js/debug.js (instrumentation lives there too, via
+           fetch/prototype patching, so no other file needs to import
+           or know about Debug). -->
+      <div class="pane" id="pane-debug">
+        <div id="dbg-root">
+          <div class="empty"><p>Loading debug tools…</p></div>
+        </div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -563,6 +576,7 @@
 <script src="js/ui.js"></script>
 <script src="js/standalone.js"></script>
 <script src="js/lobby.js"></script>
+<script src="js/debug.js"></script>
 <script src="js/main.js"></script>
 </body>
 </html>

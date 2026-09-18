@@ -78,6 +78,7 @@ import struct
 import time
 import uuid
 import traceback
+from collections import deque
 from pathlib import Path
 
 import aiohttp
@@ -330,6 +331,22 @@ class LobbyRelay:
         # a multi-second backlog by firehosing frames.
         self._pace_next = None
 
+        # ---- debug/stats instrumentation -----------------------------
+        # Lightweight, bounded-memory counters surfaced read-only via
+        # GET /api/lobby/<code>/debug for the client's Debug tab. Purely
+        # observational — nothing here changes playback behaviour, and a
+        # deque(maxlen=...) means it can never grow unbounded.
+        self.stats = {
+            "frames_encoded": 0,
+            "pcm_bytes_in": 0,
+            "opus_bytes_out": 0,
+            "encode_ms": deque(maxlen=200),
+            "pace_drift_ms": deque(maxlen=200),
+            "listener_drops": 0,
+            "sessions_started": 0,
+            "last_frame_ts": None,
+        }
+
     # ---- listener management ----------------------------------------
     def add_listener(self):
         key = object()
@@ -351,12 +368,38 @@ class LobbyRelay:
         if q.full():
             try:
                 q.get_nowait()  # drop the oldest chunk to make room — never block the relay for one slow listener
+                self.stats["listener_drops"] += 1
             except asyncio.QueueEmpty:
                 pass
         try:
             q.put_nowait(data)
         except asyncio.QueueFull:
             pass
+
+    def debug_snapshot(self):
+        """Read-only stats snapshot for the client Debug tab. Safe to call
+        from any task — only ever reads the bounded counters above."""
+        enc = list(self.stats["encode_ms"])
+        drift = list(self.stats["pace_drift_ms"])
+        avg = lambda xs: round(sum(xs) / len(xs), 3) if xs else None
+        last_ts = self.stats["last_frame_ts"]
+        return {
+            "generation": self.generation,
+            "idle": self._idle,
+            "listeners": len(self.listeners),
+            "hasPreload": self._preload is not None,
+            "framesEncoded": self.stats["frames_encoded"],
+            "pcmBytesIn": self.stats["pcm_bytes_in"],
+            "opusBytesOut": self.stats["opus_bytes_out"],
+            "encodeMsAvg": avg(enc),
+            "encodeMsLast": round(enc[-1], 3) if enc else None,
+            "encodeMsMax": round(max(enc), 3) if enc else None,
+            "paceDriftMsAvg": avg(drift),
+            "paceDriftMsMax": round(max(drift), 3) if drift else None,
+            "listenerDrops": self.stats["listener_drops"],
+            "sessionsStarted": self.stats["sessions_started"],
+            "lastFrameAgeMs": round((time.time() - last_ts) * 1000, 1) if last_ts else None,
+        }
 
     def _broadcast_bytes(self, data):
         for listener in list(self.listeners.values()):
@@ -533,6 +576,7 @@ class LobbyRelay:
             stream = container.add_stream("libopus", rate=PCM_RATE)
             stream.layout = "stereo"
             stream.bit_rate = OPUS_BITRATE
+            self.stats["sessions_started"] += 1
 
             cur_track, cur_pos, cur_filters = track, position_ms, filters
             retry_count = 0
@@ -649,8 +693,17 @@ class LobbyRelay:
                 frame_bytes = bytes(pcm_buf[:PCM_FRAME_BYTES])
                 del pcm_buf[:PCM_FRAME_BYTES]
                 frame = self._pcm_to_frame(frame_bytes)
+                _t0 = time.monotonic()
                 for pkt in stream.encode(frame):
                     container.mux(pkt)
+                    try:
+                        self.stats["opus_bytes_out"] += pkt.size
+                    except Exception:
+                        pass
+                self.stats["encode_ms"].append((time.monotonic() - _t0) * 1000)
+                self.stats["frames_encoded"] += 1
+                self.stats["pcm_bytes_in"] += len(frame_bytes)
+                self.stats["last_frame_ts"] = time.time()
                 self._header_chunks_done = True
 
                 if not anchor_corrected:
@@ -696,6 +749,8 @@ class LobbyRelay:
                 delay = self._pace_next - now
                 if delay > 0:
                     await asyncio.sleep(delay)
+                else:
+                    self.stats["pace_drift_ms"].append(-delay * 1000)
 
         # Prefer an already-running preload for this exact track. Only
         # applies at position 0 — explicit seeks/skips always take the
@@ -1570,6 +1625,21 @@ async def lobby_live(code):
     r.timeout = None # remove 60 sec limit timeout
 
     return r
+
+@app.route("/api/lobby/<code>/debug")
+async def lobby_debug(code):
+    """Read-only relay/encode diagnostics for the client's Debug tab
+    (encode timing, pacing drift, listener queue drops, byte counters).
+    Same trust level as /api/lobby/public — no auth, nothing mutated."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    snap = lobby.relay.debug_snapshot()
+    snap["participants"] = len(lobby.participants)
+    snap["queueLength"] = len(lobby.queue)
+    snap["paused"] = lobby.paused
+    snap["positionMs"] = lobby.current_position_ms()
+    return jsonify(snap)
 
 @app.route("/api/lobby/<code>/play", methods=["POST"])
 async def lobby_play(code):
