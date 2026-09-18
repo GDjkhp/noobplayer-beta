@@ -347,6 +347,15 @@ class LobbyRelay:
             "last_frame_ts": None,
         }
 
+        # ---- debug/stats push (Socket.IO) ------------------------------
+        # The Debug tab subscribes/unsubscribes over the socket (see
+        # socket_debug_subscribe below) instead of polling a REST route,
+        # so stats only ever go out to sockets that actually asked for
+        # them, and only while at least one is asking. Nothing runs when
+        # nobody has the tab open.
+        self._debug_subscribers = set()   # sids
+        self._debug_task = None
+
     # ---- listener management ----------------------------------------
     def add_listener(self):
         key = object()
@@ -399,7 +408,35 @@ class LobbyRelay:
             "listenerDrops": self.stats["listener_drops"],
             "sessionsStarted": self.stats["sessions_started"],
             "lastFrameAgeMs": round((time.time() - last_ts) * 1000, 1) if last_ts else None,
+            "participants": len(self.lobby.participants),
+            "queueLength": len(self.lobby.queue),
+            "paused": self.lobby.paused,
+            "positionMs": self.lobby.current_position_ms(),
         }
+
+    # ---- debug/stats push (Socket.IO) --------------------------------
+    def debug_subscribe(self, sid):
+        self._debug_subscribers.add(sid)
+        if self._debug_task is None or self._debug_task.done():
+            self._debug_task = asyncio.create_task(self._debug_push_loop())
+
+    def debug_unsubscribe(self, sid):
+        self._debug_subscribers.discard(sid)
+        # No need to cancel the task explicitly — it checks the
+        # subscriber set itself each cycle and exits once empty.
+
+    async def _debug_push_loop(self):
+        try:
+            while self._debug_subscribers:
+                snap = self.debug_snapshot()
+                for sid in list(self._debug_subscribers):
+                    try:
+                        await sio.emit("debug_stats", snap, room=sid)
+                    except Exception:
+                        self._debug_subscribers.discard(sid)
+                await asyncio.sleep(1.5)
+        finally:
+            self._debug_task = None
 
     def _broadcast_bytes(self, data):
         for listener in list(self.listeners.values()):
@@ -1563,6 +1600,7 @@ async def disconnect(sid):
     lobby = get_lobby_or_404(code)
     if not lobby:
         return
+    lobby.relay.debug_unsubscribe(sid)
     sids = lobby.sids.get(client_id)
     if sids:
         sids.discard(sid)
@@ -1571,6 +1609,25 @@ async def disconnect(sid):
     # _schedule_disconnect_check, which double-checks after a grace
     # period whether a new sid ever showed up for this client_id.
     asyncio.create_task(_schedule_disconnect_check(lobby, client_id))
+
+
+# The Debug tab subscribes to this per-connection (not per-participant —
+# a sid disappears on every reconnect, so the client re-subscribes with
+# its fresh sid rather than this being tied to clientId/token).
+@sio.on("debug_subscribe")
+async def socket_debug_subscribe(sid, data):
+    data = data or {}
+    lobby = get_lobby_or_404((data.get("code") or "").upper())
+    if lobby:
+        lobby.relay.debug_subscribe(sid)
+
+
+@sio.on("debug_unsubscribe")
+async def socket_debug_unsubscribe(sid, data):
+    data = data or {}
+    lobby = get_lobby_or_404((data.get("code") or "").upper())
+    if lobby:
+        lobby.relay.debug_unsubscribe(sid)
 
 
 @app.route("/api/lobby/<code>/chat", methods=["POST"])
@@ -1625,21 +1682,6 @@ async def lobby_live(code):
     r.timeout = None # remove 60 sec limit timeout
 
     return r
-
-@app.route("/api/lobby/<code>/debug")
-async def lobby_debug(code):
-    """Read-only relay/encode diagnostics for the client's Debug tab
-    (encode timing, pacing drift, listener queue drops, byte counters).
-    Same trust level as /api/lobby/public — no auth, nothing mutated."""
-    lobby = get_lobby_or_404(code)
-    if not lobby:
-        return jsonify({"error": "not found"}), 404
-    snap = lobby.relay.debug_snapshot()
-    snap["participants"] = len(lobby.participants)
-    snap["queueLength"] = len(lobby.queue)
-    snap["paused"] = lobby.paused
-    snap["positionMs"] = lobby.current_position_ms()
-    return jsonify(snap)
 
 @app.route("/api/lobby/<code>/play", methods=["POST"])
 async def lobby_play(code):

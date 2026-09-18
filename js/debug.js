@@ -27,10 +27,11 @@
        instrumentation point below is the actual audible signal for that
        mode (a PCM feed(), an AudioContext resume(), or the <audio>
        'playing' event).
-     - Server encode/pacing (lobby only)  → polls the small read-only
-       GET /api/lobby/<code>/debug endpoint added in server.py
-       (LobbyRelay.debug_snapshot()) every couple of seconds while this
-       tab is open.
+     - Server encode/pacing (lobby only)  → pushed over the lobby's
+       existing Socket.IO connection while this tab is subscribed (see
+       server.py's LobbyRelay.debug_subscribe / _debug_push_loop). No
+       REST polling, and nothing runs server-side when no one is
+       subscribed.
 ═══════════════════════════════════════════ */
 
 const NET_CAP = 40, EVT_CAP = 30, LANE_CAP = 28;
@@ -49,7 +50,7 @@ const Debug = {
   networkChunks: [],  // raw bytes arriving off the PCM stream (standalone)
   speakerChunks: [],  // bytes scheduled onto the AudioContext timeline
 
-  server: null,       // last polled server-side relay debug_snapshot()
+  server: null,       // last snapshot pushed over the socket by the server
 
   _initDone: false,
   _built: false,
@@ -59,8 +60,6 @@ const Debug = {
   _pendingAction: null,
   _pendingTimeout: null,
   _renderTimer: null,
-  _pollTimer: null,
-  _hbTimer: null,
 
   /* ───────── setup (called once, at script load) ───────── */
   _init() {
@@ -262,38 +261,55 @@ const Debug = {
   dropout(gapMs, context) { dbgPushCap(this.dropouts, { ts: Date.now(), gapMs: Math.round(gapMs), context: context || '' }, EVT_CAP); },
   audioElEvent(type, meta) { dbgPushCap(this.audioElEvents, { ts: Date.now(), type, meta }, EVT_CAP); },
 
-  /* ───────── polling ───────── */
-  async pollServer() {
-    if (!(S.mode === 'server' && S.lobby.active && S.lobby.code)) { this.server = null; return; }
-    try { this.server = await LobbyAPI.debugStats(S.lobby.code); }
-    catch (e) { this.server = { error: e.message }; }
+  /* ───────── server-pushed stats (Socket.IO, lobby mode only) ─────────
+     No polling: the Debug tab subscribes over the lobby's existing
+     socket when opened and unsubscribes when closed. The server only
+     runs its stats-push loop while at least one sid is subscribed (see
+     LobbyRelay.debug_subscribe in server.py), so this produces zero
+     extra traffic to your NodeLink node and zero extra HTTP requests —
+     just socket messages, and only while you're actually looking. */
+  _debugSocket: null,
+  _socketSub: false,
+
+  subscribeSocket() {
+    if (!(S.mode === 'server' && S.lobby.active && S.lobby.socket)) return;
+    const socket = S.lobby.socket;
+    if (this._debugSocket !== socket) {
+      this._debugSocket = socket;
+      socket.on('debug_stats', (snap) => { this.server = snap; });
+      // A reconnect gets a fresh sid server-side, so the server's
+      // subscriber-by-sid entry from before the drop is gone — resubscribe.
+      socket.on('connect', () => {
+        this._socketSub = false;
+        if (this._running && S.activeTab === 'debug') this.subscribeSocket();
+      });
+    }
+    if (!this._socketSub && socket.connected) {
+      socket.emit('debug_subscribe', { code: S.lobby.code });
+      this._socketSub = true;
+    }
   },
 
-  // Keeps a steady trickle of network-latency samples even when the
-  // person isn't otherwise doing anything, by reusing an endpoint the
-  // app already calls at connect time (Backend.info()) — the fetch hook
-  // above logs it like any other request.
-  async heartbeat() {
-    if (!Backend.mode) return;
-    try { await Backend.info(); } catch (_) {}
+  unsubscribeSocket() {
+    if (this._debugSocket && this._socketSub) {
+      try { this._debugSocket.emit('debug_unsubscribe', { code: S.lobby.code }); } catch (_) {}
+    }
+    this._socketSub = false;
+    this.server = null;
   },
 
   /* ───────── lifecycle ───────── */
   start() {
     this.ensureSkeleton();
     this._running = true;
-    this.pollServer();
-    this.heartbeat();
+    this.subscribeSocket();
     clearInterval(this._renderTimer); this._renderTimer = setInterval(() => this.render(), 280);
-    clearInterval(this._pollTimer);   this._pollTimer = setInterval(() => this.pollServer(), 2000);
-    clearInterval(this._hbTimer);     this._hbTimer = setInterval(() => this.heartbeat(), 4000);
     this.render();
   },
   stop() {
     this._running = false;
+    this.unsubscribeSocket();
     clearInterval(this._renderTimer); this._renderTimer = null;
-    clearInterval(this._pollTimer);   this._pollTimer = null;
-    clearInterval(this._hbTimer);     this._hbTimer = null;
   },
   clear() {
     this.net = []; this.playerEvents = []; this.dropouts = [];
@@ -361,7 +377,7 @@ const Debug = {
         </div>
 
         <div class="dbg-section" id="dbg-server-section" style="display:none">
-          <div class="dbg-section-title">Server relay — encode / pacing <span class="dbg-lane-hint">(lobby mode, polled every 2s)</span></div>
+          <div class="dbg-section-title">Server relay — encode / pacing <span class="dbg-lane-hint">(lobby mode, pushed live over the socket)</span></div>
           <div class="dbg-grid" id="dbg-server-cards"></div>
         </div>
       </div>
