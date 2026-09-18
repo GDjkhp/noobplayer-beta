@@ -1423,15 +1423,6 @@ async def nl_loadlyrics():
         return Response(body, status=r.status, mimetype="application/json")
 
 
-@app.route("/api/nodelink/loadchapters")
-async def nl_loadchapters():
-    et = request.args.get("encodedTrack", "")
-    async with http_session.get(f"{NL_HOST}/v4/loadchapters", params={"encodedTrack": et},
-                                 headers={"Authorization": NL_PASS}) as r:
-        body = await r.read()
-        return Response(body, status=r.status, mimetype="application/json")
-
-
 @app.route("/api/nodelink/meaning")
 async def nl_meaning():
     et = request.args.get("encodedTrack", "")

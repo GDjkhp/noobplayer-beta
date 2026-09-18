@@ -97,7 +97,6 @@ const UI = {
       document.getElementById('t-tot').textContent = '0:00';
       document.getElementById('prog-fill').style.width = '0%';
       document.getElementById('prog-thumb').style.left = '0%';
-      document.getElementById('chaps-wrap').style.display = 'none';
       document.getElementById('pcm-meter').classList.remove('active');
       document.getElementById('lyr-body').innerHTML =
         `<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><p>Play a track and fetch lyrics</p></div>`;
@@ -238,7 +237,7 @@ const UI = {
     if (S.posTimer) clearInterval(S.posTimer);
     S.posTimer = setInterval(() => {
       if (!S.current || !S.player) return;
-      UI.updateProgress(); UI.syncLyrics(); UI.syncChapters(); UI.updateLevelMeter();
+      UI.updateProgress(); UI.syncLyrics(); UI.updateLevelMeter();
     }, 100);
   },
 
@@ -487,37 +486,6 @@ const UI = {
       const active = document.querySelector(`.ll[data-i="${idx}"]`);
       if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
-  },
-
-  async fetchChapters(encodedTrack) {
-    try {
-      const data = await Backend.loadchapters(encodedTrack);
-      if (!data || data.loadType === 'empty' || !data.data?.chapters?.length) {
-        document.getElementById('chaps-wrap').style.display = 'none'; S.chapters = []; return;
-      }
-      S.chapters = data.data.chapters.map(c => ({ t: c.start, title: c.title || 'Chapter' }));
-      document.getElementById('chaps-wrap').style.display = 'block';
-      document.getElementById('chap-cnt').textContent = `(${S.chapters.length})`;
-      document.getElementById('chaps-list').innerHTML = S.chapters.map((c, i) =>
-        `<div class="chap-item" data-i="${i}" data-t="${c.t}">
-          <span class="chap-ts">${fmt(c.t * 1000)}</span>
-          <span class="chap-title">${esc(c.title)}</span>
-        </div>`
-      ).join('');
-      document.querySelectorAll('.chap-item').forEach(el => {
-        el.addEventListener('click', () => Engine.seekTo(parseFloat(el.dataset.t) * 1000));
-      });
-    } catch (_) {
-      document.getElementById('chaps-wrap').style.display = 'none'; S.chapters = [];
-    }
-  },
-
-  syncChapters() {
-    if (!S.chapters.length || !S.player) return;
-    const nowSec = S.player.getPositionMs() / 1000;
-    let idx = -1;
-    for (let i = 0; i < S.chapters.length; i++) { if (S.chapters[i].t <= nowSec) idx = i; else break; }
-    document.querySelectorAll('.chap-item').forEach((el, i) => el.classList.toggle('active', i === idx));
   },
 
   async fetchMeaning() {

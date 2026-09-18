@@ -2,7 +2,7 @@
 Configuration for the NodeLink lobby server.
 
 Set your NodeLink node's credentials here. The Flask server proxies all
-NodeLink API calls (search, stream, lyrics, chapters, meaning) using these
+NodeLink API calls (search, stream, lyrics, meaning) using these
 credentials, so browser clients in Server Mode never need to know them.
 """
 

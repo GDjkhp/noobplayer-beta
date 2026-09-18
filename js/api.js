@@ -54,13 +54,6 @@ const Backend = {
     return this._get(path);
   },
 
-  async loadchapters(encodedTrack) {
-    const path = this.mode === 'standalone'
-      ? `/v4/loadchapters?encodedTrack=${encodeURIComponent(encodedTrack)}`
-      : `/api/nodelink/loadchapters?encodedTrack=${encodeURIComponent(encodedTrack)}`;
-    return this._get(path);
-  },
-
   async meaning(encodedTrack) {
     const path = this.mode === 'standalone'
       ? `/v4/meaning?encodedTrack=${encodeURIComponent(encodedTrack)}`

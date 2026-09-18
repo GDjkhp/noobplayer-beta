@@ -40,9 +40,6 @@ const S = {
   // Lyrics
   lyrics: null, lyricsType: null, _lyrLastIdx: -1,
 
-  // Chapters
-  chapters: [],
-
   // UI
   searchResults: [], activeTab: 'search', progDrag: false,
 

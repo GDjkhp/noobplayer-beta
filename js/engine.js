@@ -30,14 +30,12 @@ const Engine = {
   async _localPlay(track, positionMs = 0, filters = {}) {
     S.current = track;
     S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
-    S.chapters = [];
 
     UI.updatePlayerUI();
     UI.setBuffering(true);
 
     await this._startPCMStream(track.encoded, positionMs, filters);
     UI.renderQueue();
-    UI.fetchChapters(track.encoded);
     this._ensurePreload();
     // Fire-and-forget: keeps the recommendation pool topped up off whatever
     // is playing now, the way the bot's queue_on_start() calls get_rekt().
@@ -377,14 +375,12 @@ const Engine = {
 
     S.current = next;
     S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
-    S.chapters = [];
     S.preload = null; // this track is live now, not "the preload" anymore
 
     if (hardCut) S.player.cutOver(0); else S.player.markTrackBoundary(0);
 
     UI.updatePlayerUI();
     UI.renderQueue();
-    UI.fetchChapters(next.encoded);
     UI.setBuffering(false);
     UI.startPosTimer();
     UI.updatePlayPauseIcons();
@@ -906,7 +902,7 @@ const Engine = {
      separately on purpose. A gapless server-side advance (current track
      ends naturally and LobbyRelay stitches the next one into the SAME
      Opus/Ogg session — see server.py) changes `currentTrack` WITHOUT
-     bumping `relayGen`, so trackChanged fires (UI/chapters update) but
+     bumping `relayGen`, so trackChanged fires (lyrics/UI update) but
      genChanged doesn't (the <audio> element just keeps playing the same
      underlying stream, uninterrupted). The element only ever reconnects
      for a genuinely fresh encode session (explicit play/skip/seek/filter
@@ -956,8 +952,6 @@ const Engine = {
 
     if (trackChanged) {
       S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
-      S.chapters = [];
-      UI.fetchChapters(state.currentTrack.encoded);
     }
     S.current = state.currentTrack;
 

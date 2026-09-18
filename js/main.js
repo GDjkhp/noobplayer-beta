@@ -171,14 +171,6 @@ document.addEventListener('DOMContentLoaded', () => {
     .forEach(([sid,lid]) => document.getElementById(sid).addEventListener('input', () => UI.syncSliderLabel(sid, lid)));
   document.getElementById('btn-apply-flt').addEventListener('click', () => Engine.applyFilters(UI.buildFiltersFromUI()));
 
-  /* ───────── Chapters ───────── */
-  document.getElementById('chaps-head').addEventListener('click', () => {
-    const list = document.getElementById('chaps-list');
-    const arr = document.getElementById('chap-arr');
-    list.classList.toggle('open');
-    arr.textContent = list.classList.contains('open') ? '▾' : '▸';
-  });
-
   /* ───────── Meaning ───────── */
   document.getElementById('btn-meaning').addEventListener('click', () => UI.fetchMeaning());
   document.getElementById('meaning-close').addEventListener('click', () => document.getElementById('meaning-modal').classList.remove('show'));
