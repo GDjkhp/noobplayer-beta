@@ -340,11 +340,11 @@ const Debug = {
         <div class="dbg-section">
           <div class="dbg-section-title">Audio pipeline</div>
           <div class="dbg-lane-wrap">
-            <span class="dbg-lane-lbl">Network → decode <span class="dbg-lane-hint">(box width ≈ chunk size)</span></span>
+            <span class="dbg-lane-lbl">Network → decode <span class="dbg-lane-hint">(box width ≈ chunk size · standalone only)</span></span>
             <div class="dbg-lane" id="dbg-lane-net"></div>
           </div>
           <div class="dbg-lane-wrap">
-            <span class="dbg-lane-lbl">Scheduled → speaker <span class="dbg-lane-hint">(box width ≈ audio duration)</span></span>
+            <span class="dbg-lane-lbl">Scheduled → speaker <span class="dbg-lane-hint">(box width ≈ audio duration · standalone only)</span></span>
             <div class="dbg-lane" id="dbg-lane-spk"></div>
           </div>
           <div class="dbg-lane-wrap">
@@ -461,7 +461,11 @@ const Debug = {
   _renderLane(id, arr, cls) {
     const el = document.getElementById(id);
     if (!el) return;
-    if (!arr.length) { el.innerHTML = `<span class="dbg-lane-empty">no chunks yet</span>`; return; }
+    if (S.mode !== 'standalone') {
+      el.innerHTML = `<span class="dbg-lane-empty">standalone mode only — lobby playback decodes/schedules PCM server-side, not in this browser. See "Buffered ahead" and Audio element events for the lobby equivalent.</span>`;
+      return;
+    }
+    if (!arr.length) { el.innerHTML = `<span class="dbg-lane-empty">no chunks yet — play a track</span>`; return; }
     const items = arr.slice(0, LANE_CAP).slice().reverse();
     el.innerHTML = items.map(c => {
       const w = Math.max(6, Math.min(64, Math.round(6 + c.bytes / 120)));
