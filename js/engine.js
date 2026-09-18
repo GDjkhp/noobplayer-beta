@@ -355,18 +355,38 @@ const Engine = {
       return;
     }
 
+    // hardCut: false — the current track's stream has genuinely run out
+    // and its buffered tail is right about to finish anyway, so just
+    // continue the timeline exactly where that tail ends (see
+    // PCMPlayer.markTrackBoundary). Nothing audible is being cut short.
+    this._spliceTrackIn(pre, next, { hardCut: false });
+  },
+
+  // Splices a preloaded track directly onto the current PCMPlayer — same
+  // AudioContext, no re-init, no network refetch for whatever already
+  // arrived — either picking up exactly where the old track's scheduled
+  // audio ends (hardCut: false, the natural-end case above) or stopping
+  // the old track immediately (hardCut: true, an interrupt like
+  // Next/Previous/explicit play or a filter change — see
+  // _playNowGapless / _restreamWithFilters below). Shared by both so they
+  // can never disagree about how a splice is wired up.
+  _spliceTrackIn(pre, next, { hardCut }) {
     const gen = ++S.playGen;
+    if (S.fetchCtrl) { S.fetchCtrl.abort(); S.fetchCtrl = null; }
     if (S.trackEndTimer) { clearTimeout(S.trackEndTimer); S.trackEndTimer = null; }
 
     S.current = next;
     S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
     S.chapters = [];
     S.preload = null; // this track is live now, not "the preload" anymore
-    S.player.markTrackBoundary(0);
+
+    if (hardCut) S.player.cutOver(0); else S.player.markTrackBoundary(0);
 
     UI.updatePlayerUI();
     UI.renderQueue();
     UI.fetchChapters(next.encoded);
+    UI.setBuffering(false);
+    UI.startPosTimer();
     UI.updatePlayPauseIcons();
     UI.updateEQ();
 
@@ -383,6 +403,16 @@ const Engine = {
     } else {
       (async () => {
         try {
+          // _startPreload's own connection may not have finished setting up
+          // pre.reader yet — this can now be reached moments after a
+          // preload kicked off (fast repeated skips), whereas the old
+          // natural-end-only path always had minutes to connect. Wait
+          // rather than assume it's ready.
+          while (!pre.reader) {
+            if (gen !== S.playGen) return;
+            if (pre.error || pre.done) return;
+            await new Promise(r => setTimeout(r, 10));
+          }
           while (true) {
             if (gen !== S.playGen) return;
             const { done, value } = await pre.reader.read();
@@ -399,6 +429,90 @@ const Engine = {
     }
 
     this._ensurePreload(); // start prefetching whatever comes after THIS track
+    this._populateRecommendations(next);
+  },
+
+  // Entry point for interrupt-driven track changes (skip/prev/explicit
+  // play) — tries an instant, gapless hand-off to `track` using whatever's
+  // already sitting in the background preload, hard-cutting whatever's
+  // currently playing rather than letting it run out naturally (that's
+  // the difference from _spliceGapless above). Falls back to the old,
+  // audibly-gappy path (_localPlay → full network fetch) only when there's
+  // nothing usable preloaded — e.g. the very first track of a session, or
+  // skipping again before the preload for THIS jump had a chance to start.
+  async _playNowGapless(track, filters) {
+    const pre = S.preload;
+    const usable = pre && S.player && S.player.ctx && !pre.error && (pre.reader || pre.done)
+      && pre.track.encoded === track.encoded
+      && JSON.stringify(pre.filters) === JSON.stringify(filters);
+    if (!usable) { await this._localPlay(track, 0, filters); return; }
+    this._spliceTrackIn(pre, track, { hardCut: true });
+  },
+
+  // Re-streams the current track with new filters WITHOUT stopping
+  // playback while the new (filtered) stream is in flight — whatever's
+  // already scheduled on the current PCMPlayer keeps playing right up
+  // until the first bytes of the re-filtered stream actually arrive, at
+  // which point it's a hard cutover (same AudioContext, no re-init). That
+  // gap used to be the old filters' audio going dead silent the instant
+  // you hit Apply, then staying silent through a full init()+network
+  // round trip before the new filters' audio started — this keeps sound
+  // going the whole time instead.
+  async _restreamWithFilters(filters) {
+    if (!S.current) return;
+    if (!S.player || !S.player.ctx) { await this._startPCMStream(S.current.encoded, 0, filters); UI.startPosTimer(); this._ensurePreload(); return; }
+
+    const track = S.current;
+    const posMs = Math.round(S.player.getPositionMs());
+    const gen = ++S.playGen;
+
+    if (S.fetchCtrl) { S.fetchCtrl.abort(); S.fetchCtrl = null; }
+    if (S.trackEndTimer) { clearTimeout(S.trackEndTimer); S.trackEndTimer = null; }
+    this._cancelPreload(); // fetched with the old filters — stale the moment these change
+
+    const ctrl = new AbortController();
+    S.fetchCtrl = ctrl;
+
+    let resp;
+    try {
+      resp = await Backend.openStream(track.encoded, posMs, filters, ctrl.signal);
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      toast(`Filter stream error: ${e.message}`, 'error', 6000);
+      return;
+    }
+    if (gen !== S.playGen) return; // superseded by something else while we were connecting
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      toast(`Filter stream error ${resp.status}: ${errText}`, 'error', 6000);
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    let cut = false;
+    try {
+      while (true) {
+        if (gen !== S.playGen) return;
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (gen !== S.playGen) return;
+        if (!cut) {
+          // First real bytes of the re-filtered stream — cut over NOW.
+          // Everything up to this instant played gap-free on the old
+          // filters; only from here does the new filter actually apply.
+          cut = true;
+          S.player.cutOver(posMs);
+          UI.setBuffering(false);
+          UI.startPosTimer();
+        }
+        S.player.feed(value);
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') console.warn('filter restream error:', e.message);
+      return;
+    }
+    if (gen === S.playGen) this._handleStreamExhausted(gen);
+    this._ensurePreload(); // stale (old filters) — restart so the next gapless splice sounds right
   },
 
   _onTrackEnd() {
@@ -441,8 +555,7 @@ const Engine = {
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
-    S.current = track;
-    await this._localPlay(track, 0, S.filters);
+    await this._playNowGapless(track, S.filters);
     toast(`▶  ${track.info.title}`, 'success', 2000);
   },
 
@@ -482,7 +595,7 @@ const Engine = {
     // one" should move on rather than replay forever.
     const next = this._advanceQueueState(S.current, { skipTrackLoop: true });
     if (!next) { if (S.current) this.stop(); else toast('Queue is empty', 'warn'); return; }
-    await this._localPlay(next, 0, S.filters);
+    await this._playNowGapless(next, S.filters);
   },
 
   async prev() {
@@ -496,8 +609,8 @@ const Engine = {
     }
     if (S.history.length === 0) { toast('No previous track', 'warn'); return; }
     if (S.current) S.queue.unshift(S.current);
-    const prev = S.history.pop();
-    await this._localPlay(prev, 0, S.filters);
+    const prevTrack = S.history.pop();
+    await this._playNowGapless(prevTrack, S.filters);
   },
 
   async stop() {
@@ -776,14 +889,8 @@ const Engine = {
       this._ensurePreload();
       return;
     }
-    const pos = S.player ? S.player.getPositionMs() : 0;
-    toast('Applying filters — re-streaming…', 'info');
-    await this._startPCMStream(S.current.encoded, Math.round(pos), filters);
-    UI.startPosTimer();
-    // Filters apply queue-wide, so the preload (fetched with the OLD
-    // filters) is now stale — restart it so the next gapless splice
-    // actually sounds right instead of reverting mid-transition.
-    this._ensurePreload();
+    toast('Applying filters…', 'info', 1500);
+    await this._restreamWithFilters(filters);
   },
 
   /* ───────── called by Lobby.onState() to drive the shared <audio> element off server-authoritative state ─────────

@@ -18,6 +18,10 @@ class PCMPlayer {
     this._endTimer = null;
     this.seekOffsetMs = 0;
     this._suspendedMs = null;
+    // Every AudioBufferSourceNode `feed()` has scheduled, so a hard cutover
+    // (see `cutOver` below) can stop them all instantly instead of letting
+    // whatever's already scheduled keep playing out.
+    this._sources = [];
   }
 
   async init(volume = 0.8) {
@@ -38,6 +42,7 @@ class PCMPlayer {
     this.startCtxTime = null;
     this.remainder = new Uint8Array(0);
     this._suspendedMs = null;
+    this._sources = [];
     return this;
   }
 
@@ -79,6 +84,11 @@ class PCMPlayer {
 
     const when = Math.max(this.nextTime, this.ctx.currentTime + 0.02);
     src.start(when);
+    this._sources.push(src);
+    src.onended = () => {
+      const i = this._sources.indexOf(src);
+      if (i !== -1) this._sources.splice(i, 1);
+    };
     if (this.startCtxTime === null) this.startCtxTime = when;
     this.nextTime = when + buf.duration;
   }
@@ -100,6 +110,29 @@ class PCMPlayer {
   markTrackBoundary(offsetMs = 0) {
     this.startCtxTime = this.nextTime;
     this.seekOffsetMs = offsetMs;
+  }
+
+  // Hard cutover: stops every buffer this player has scheduled — whether
+  // it's already audibly playing or still queued up ahead — RIGHT NOW, and
+  // resets the scheduling clock to "this instant", all on the SAME
+  // AudioContext. Used for an interrupt (Next/Previous/explicit play, or a
+  // filter change) where the point is to switch immediately rather than
+  // let more of the current audio play out first (that's what
+  // markTrackBoundary above is for). Because the context itself is never
+  // closed/recreated, there's no re-init delay and nothing to reconnect —
+  // feed() can start scheduling the new audio again the instant this
+  // returns, which is what makes the switch gapless instead of a beat of
+  // silence.
+  cutOver(offsetMs = 0) {
+    if (!this.ctx) return;
+    for (const src of this._sources) { try { src.stop(0); } catch (_) {} }
+    this._sources = [];
+    if (this._endTimer) { clearTimeout(this._endTimer); this._endTimer = null; }
+    this.nextTime = this.ctx.currentTime + 0.02;
+    this.startCtxTime = null;
+    this.seekOffsetMs = offsetMs;
+    this.remainder = new Uint8Array(0);
+    this._suspendedMs = null;
   }
 
   getLevels() {
@@ -164,5 +197,6 @@ class PCMPlayer {
     this.remainder = new Uint8Array(0);
     this.startCtxTime = null;
     this._suspendedMs = null;
+    this._sources = [];
   }
 }
