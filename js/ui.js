@@ -107,7 +107,12 @@ const UI = {
   },
 
   updateProgress() {
-    if (!S.current || !S.player) return;
+    // While the user is actively dragging the thumb, S.progDrag is true and
+    // setupProgressBar() below is already writing the dragged position on
+    // every mousemove. This timer-driven tick used to run regardless and
+    // stomp that with the real (stale, pre-seek) playback position 10x a
+    // second, which is what caused the bar to flicker back and forth.
+    if (!S.current || !S.player || S.progDrag) return;
     const posMs = S.player.getPositionMs();
     const durMs = S.current.info.length;
     if (!durMs) return;

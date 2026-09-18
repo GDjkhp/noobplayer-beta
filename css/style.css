@@ -184,6 +184,11 @@ body::after {
   overflow-y: auto; scrollbar-width: thin;
 }
 #art-wrap { position: relative; aspect-ratio: 1; background: var(--surf2); overflow: hidden; flex-shrink: 0; }
+/* Groups info/progress/chapters/ctrls so they can be treated as one block —
+   on mobile this whole panel gets overlaid on top of the album art instead
+   of stacking below it (see the max-width:1000px query). On desktop it's
+   just a plain flex column, identical to the old unwrapped layout. */
+#player-panel { display: flex; flex-direction: column; min-width: 0; }
 #art-img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .5s; }
 #art-img.vis { opacity: 1; }
 #art-empty {
@@ -476,8 +481,25 @@ body::after {
 
 @media (max-width: 1000px) {
   #main { flex-direction: column; }
-  #left { width: 100%; border-right: none; border-bottom: 1px solid var(--brd); max-height: 55vh; }
-  #art-wrap { max-height: 180px; aspect-ratio: auto; }
+
+  /* The whole player becomes a single square: art fills it edge-to-edge as
+     a background layer, and player-panel (info/progress/chapters/ctrls)
+     is overlaid on top of it, anchored to the bottom. Nothing here scrolls
+     or grows past the square — overflow is just clipped — so there's never
+     a scrollbar inside the player on small screens. */
+  #left {
+    width: 100%; border-right: none; border-bottom: 1px solid var(--brd);
+    max-height: none; overflow: hidden; position: relative; aspect-ratio: 1;
+  }
+  #art-wrap {
+    position: absolute; inset: 0; max-height: none; aspect-ratio: auto; z-index: 0;
+  }
+  #player-panel {
+    position: absolute; left: 0; right: 0; bottom: 0; top: auto; z-index: 2;
+    max-height: 100%; overflow: hidden;
+    background: linear-gradient(to top, rgba(6,6,15,.94) 0%, rgba(6,6,15,.82) 60%, rgba(6,6,15,0) 100%);
+  }
+  #info, #prog-wrap, #ctrls { border-bottom-color: rgba(255,255,255,.08); }
   .mode-grid { grid-template-columns: 1fr; }
 
   /* Tabs: a bit tighter so more of them fit before you have to scroll. */
