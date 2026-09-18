@@ -14,11 +14,16 @@
      - Server requests + latency   → window.fetch is wrapped once; every
        call the app already makes (lobby control, chat, skins gallery,
        NodeLink proxy, stream open TTFB…) is logged automatically.
-     - PCM chunks received / sent to speaker, buffer dropouts
-       (standalone) → PCMPlayer.prototype.feed is wrapped. The original
-       already decides "am I behind schedule" every call (that's the
-       whole point of `nextTime` vs `ctx.currentTime`); this just reads
-       that same math before/after calling through.
+     - Buffer dropouts (standalone) → PCMPlayer.prototype.feed is
+       wrapped. The original already decides "am I behind schedule"
+       every call (that's the whole point of `nextTime` vs
+       `ctx.currentTime`); this just reads that same math before/after
+       calling through.
+     - Stream waveform → a rolling window sampled from
+       S.player.getWaveform(), the analyser feed both PCMPlayer and
+       AudioElPlayer expose identically, so it works unmodified in both
+       modes. A detected dropout (either side) injects a few red glitch
+       columns instead of a real reading — see _injectWaveGlitch.
      - Audio element stalls/waits/playing (lobby)  → listeners attached
        straight to #lobby-audio.
      - Player action → time-to-audible latency  → Engine's public
@@ -27,14 +32,15 @@
        instrumentation point below is the actual audible signal for that
        mode (a PCM feed(), an AudioContext resume(), or the <audio>
        'playing' event).
-     - Server encode/pacing (lobby only)  → pushed over the lobby's
-       existing Socket.IO connection while this tab is subscribed (see
-       server.py's LobbyRelay.debug_subscribe / _debug_push_loop). No
-       REST polling, and nothing runs server-side when no one is
-       subscribed.
+     - Server encode/pacing + the hidden Smart Queue (lobby only)  →
+       pushed over the lobby's existing Socket.IO connection while this
+       tab is subscribed (see server.py's LobbyRelay.debug_subscribe /
+       _debug_push_loop). No REST polling, and nothing runs server-side
+       when no one is subscribed.
 ═══════════════════════════════════════════ */
 
-const NET_CAP = 40, EVT_CAP = 30, LANE_CAP = 28;
+const NET_CAP = 40, EVT_CAP = 30;
+const WAVE_MAX_COLS = 360, WAVE_TICK_MS = 30;
 
 function dbgPushCap(arr, item, cap) {
   arr.unshift(item);
@@ -47,9 +53,8 @@ const Debug = {
   playerEvents: [],   // Engine action → latency
   dropouts: [],       // detected gaps/stalls, either side
   audioElEvents: [],  // #lobby-audio DOM events
-  networkChunks: [],  // raw bytes arriving off the PCM stream (standalone)
-  speakerChunks: [],  // bytes scheduled onto the AudioContext timeline
   nodelinkRequests: [], // backend → NodeLink calls, pushed live (lobby mode)
+  _waveHistory: [],   // rolling waveform columns: {amp:0..1, dropout:bool}, oldest first (index 0 = left edge)
 
   server: null,       // last snapshot pushed over the socket by the server
 
@@ -61,6 +66,8 @@ const Debug = {
   _pendingAction: null,
   _pendingTimeout: null,
   _renderTimer: null,
+  _waveRaf: null,
+  _waveLastTick: 0,
 
   /* ───────── setup (called once, at script load) ───────── */
   _init() {
@@ -118,21 +125,14 @@ const Debug = {
 
     const origFeed = PCMPlayer.prototype.feed;
     PCMPlayer.prototype.feed = function (bytes) {
-      const raw = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-      self.networkChunk(raw.length);
-
       let starvedMs = 0;
       if (this.ctx && this.startCtxTime !== null) {
         const need = this.ctx.currentTime + 0.02;
         if (need > this.nextTime + 0.005) starvedMs = (need - this.nextTime) * 1000;
       }
-      const preNextTime = this.nextTime;
 
       const result = origFeed.call(this, bytes);
 
-      if (this.nextTime > preNextTime) {
-        self.speakerChunk(raw.length, (this.nextTime - preNextTime) * 1000);
-      }
       if (starvedMs > 2) {
         self.dropout(starvedMs, (S.current && S.current.info && S.current.info.title) || '');
       }
@@ -257,9 +257,10 @@ const Debug = {
     if (rec) rec.latencyMs = Math.round(performance.now() - pa.ts);
     this._pendingAction = null;
   },
-  networkChunk(bytes) { dbgPushCap(this.networkChunks, { ts: Date.now(), bytes }, LANE_CAP); },
-  speakerChunk(bytes, durationMs) { dbgPushCap(this.speakerChunks, { ts: Date.now(), bytes, durationMs }, LANE_CAP); },
-  dropout(gapMs, context) { dbgPushCap(this.dropouts, { ts: Date.now(), gapMs: Math.round(gapMs), context: context || '' }, EVT_CAP); },
+  dropout(gapMs, context) {
+    dbgPushCap(this.dropouts, { ts: Date.now(), gapMs: Math.round(gapMs), context: context || '' }, EVT_CAP);
+    this._injectWaveGlitch(gapMs);
+  },
   audioElEvent(type, meta) { dbgPushCap(this.audioElEvents, { ts: Date.now(), type, meta }, EVT_CAP); },
 
   /* ───────── server-pushed stats (Socket.IO, lobby mode only) ─────────
@@ -309,17 +310,127 @@ const Debug = {
     this.subscribeSocket();
     clearInterval(this._renderTimer); this._renderTimer = setInterval(() => this.render(), 280);
     this.render();
+    this._startWave();
   },
   stop() {
     this._running = false;
     this.unsubscribeSocket();
     clearInterval(this._renderTimer); this._renderTimer = null;
+    this._stopWave();
+    this._waveHistory = []; // fresh sweep next time the tab opens, rather than a stale gap stitched in
   },
   clear() {
     this.net = []; this.playerEvents = []; this.dropouts = [];
-    this.audioElEvents = []; this.networkChunks = []; this.speakerChunks = [];
+    this.audioElEvents = [];
     this.nodelinkRequests = [];
+    this._waveHistory = [];
     this.render();
+  },
+
+  /* ───────── stream waveform ─────────
+     Runs its own requestAnimationFrame loop (throttled to WAVE_TICK_MS)
+     independent of the slower render() interval, since a scrolling
+     waveform needs to feel smooth. Reads S.player.getWaveform() — the
+     analyser feed both PCMPlayer (standalone) and AudioElPlayer (lobby)
+     expose identically — so this works the same way in both modes and
+     needs zero mode-specific branching.
+
+     Gapless stitching: this never resets on a track change (playTrack /
+     skip / prev / gapless splice don't touch _waveHistory), and the
+     analyser output is continuous across a gapless boundary anyway, so
+     the waveform just keeps scrolling through it with no visible seam —
+     exactly like the audio itself. It only resets on Clear or on
+     leaving the tab (see stop() above). */
+  _startWave() {
+    if (this._waveRaf) return;
+    const loop = (ts) => {
+      if (!this._running) { this._waveRaf = null; return; }
+      if (ts - this._waveLastTick >= WAVE_TICK_MS) {
+        this._waveLastTick = ts;
+        this._waveSample();
+        this._drawWave();
+      }
+      this._waveRaf = requestAnimationFrame(loop);
+    };
+    this._waveRaf = requestAnimationFrame(loop);
+  },
+  _stopWave() {
+    if (this._waveRaf) cancelAnimationFrame(this._waveRaf);
+    this._waveRaf = null;
+  },
+
+  _waveSample() {
+    let amp = 0;
+    if (S.player && typeof S.player.getWaveform === 'function') {
+      try {
+        const buf = S.player.getWaveform();
+        if (buf && buf.length) {
+          let peak = 0;
+          for (let i = 0; i < buf.length; i += 4) { // sparse sample, cheap — this runs ~33x/sec
+            const dev = Math.abs(buf[i] - 128);
+            if (dev > peak) peak = dev;
+          }
+          amp = Math.min(1, peak / 128);
+        }
+      } catch (_) {}
+    }
+    this._waveHistory.push({ amp, dropout: false });
+    if (this._waveHistory.length > WAVE_MAX_COLS) this._waveHistory.shift();
+  },
+
+  // Called from dropout() — simulates the visual "jump" by inserting a
+  // few erratic, red-flagged columns instead of a real reading, roughly
+  // proportional to how long the gap was (capped so one huge stall
+  // doesn't swallow the whole visible window).
+  _injectWaveGlitch(gapMs) {
+    const cols = Math.max(3, Math.min(28, Math.round(gapMs / WAVE_TICK_MS)));
+    for (let i = 0; i < cols; i++) {
+      this._waveHistory.push({ amp: 0.2 + Math.random() * 0.8, dropout: true });
+    }
+    while (this._waveHistory.length > WAVE_MAX_COLS) this._waveHistory.shift();
+  },
+
+  _drawWave() {
+    const canvas = document.getElementById('dbg-wave');
+    if (!canvas) return;
+    const cssW = canvas.clientWidth || 600, cssH = canvas.clientHeight || 90;
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas._dbgW !== cssW || canvas._dbgH !== cssH) {
+      canvas.width = cssW * dpr; canvas.height = cssH * dpr;
+      canvas._dbgW = cssW; canvas._dbgH = cssH;
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    const midY = cssH / 2;
+    const hist = this._waveHistory;
+    const n = hist.length;
+    const colW = Math.max(1.5, cssW / WAVE_MAX_COLS);
+
+    // faint centerline baseline, drawn first so bars sit on top of it
+    ctx.strokeStyle = 'rgba(255,255,255,.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(cssW, midY); ctx.stroke();
+
+    // newest sample right-aligned to the right edge, scrolling left as
+    // the array fills — bars right of "now" haven't happened yet (there
+    // are none, since we don't have lookahead), bars left of it are history
+    const startX = cssW - n * colW;
+    for (let i = 0; i < n; i++) {
+      const col = hist[i];
+      const x = startX + i * colW;
+      if (x < -colW) continue;
+      const h = Math.max(1, col.amp * (cssH / 2 - 4));
+      ctx.fillStyle = col.dropout ? 'rgba(248,81,73,.92)' : 'rgba(91,156,246,.85)';
+      ctx.fillRect(x, midY - h, Math.max(1, colW - 0.4), h * 2);
+    }
+
+    // fixed playhead line — the point audio crosses as it scrolls from
+    // "just arrived" (right) into "already played" (left) history
+    ctx.strokeStyle = 'rgba(255,255,255,.6)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cssW / 2, 2); ctx.lineTo(cssW / 2, cssH - 2); ctx.stroke();
   },
 
   /* ───────── DOM: skeleton (built once) ───────── */
@@ -331,26 +442,15 @@ const Debug = {
       <div class="dbg-wrap">
         <div class="dbg-toolbar">
           <span class="dbg-title">⌁ Debug</span>
-          <span class="dbg-sub">live instrumentation — network · audio pipeline · player events</span>
+          <span class="dbg-sub">live instrumentation — network · stream waveform · player events</span>
           <button class="qa d" id="dbg-clear">Clear</button>
         </div>
 
         <div class="dbg-grid" id="dbg-cards"></div>
 
         <div class="dbg-section">
-          <div class="dbg-section-title">Audio pipeline</div>
-          <div class="dbg-lane-wrap">
-            <span class="dbg-lane-lbl">Network → decode <span class="dbg-lane-hint">(box width ≈ chunk size · standalone only)</span></span>
-            <div class="dbg-lane" id="dbg-lane-net"></div>
-          </div>
-          <div class="dbg-lane-wrap">
-            <span class="dbg-lane-lbl">Scheduled → speaker <span class="dbg-lane-hint">(box width ≈ audio duration · standalone only)</span></span>
-            <div class="dbg-lane" id="dbg-lane-spk"></div>
-          </div>
-          <div class="dbg-lane-wrap">
-            <span class="dbg-lane-lbl">Output level</span>
-            <div class="dbg-meter"><div class="dbg-meter-fill" id="dbg-meter-fill"></div></div>
-          </div>
+          <div class="dbg-section-title">Stream waveform <span class="dbg-lane-hint">scrolling · red = dropout/glitch</span></div>
+          <canvas id="dbg-wave" class="dbg-wave-canvas"></canvas>
         </div>
 
         <div class="dbg-cols">
@@ -384,9 +484,15 @@ const Debug = {
           </div>
         </div>
 
-        <div class="dbg-section">
-          <div class="dbg-section-title">Audio element events <span class="dbg-count" id="dbg-ael-count"></span></div>
-          <div class="dbg-scroll"><div id="dbg-ael-list" class="dbg-list"></div></div>
+        <div class="dbg-cols">
+          <div class="dbg-section">
+            <div class="dbg-section-title">Audio element events <span class="dbg-count" id="dbg-ael-count"></span></div>
+            <div class="dbg-scroll"><div id="dbg-ael-list" class="dbg-list"></div></div>
+          </div>
+          <div class="dbg-section">
+            <div class="dbg-section-title">Smart Queue <span class="dbg-lane-hint">hidden recommendation pool</span> <span class="dbg-count" id="dbg-sq-count"></span></div>
+            <div class="dbg-scroll"><div id="dbg-sq-list" class="dbg-list"></div></div>
+          </div>
         </div>
 
         <div class="dbg-section" id="dbg-server-section" style="display:none">
@@ -402,14 +508,12 @@ const Debug = {
   render() {
     if (!this._built) return;
     this._renderCards();
-    this._renderLane('dbg-lane-net', this.networkChunks, 'net');
-    this._renderLane('dbg-lane-spk', this.speakerChunks, 'spk');
-    this._renderMeter();
     this._renderNetTable();
     this._renderNodelinkTable();
     this._renderEvtTable();
     this._renderDrops();
     this._renderAel();
+    this._renderSmartQueue();
     this._renderServer();
   },
 
@@ -456,32 +560,6 @@ const Debug = {
     if (!arr.length) return null;
     const last = arr.slice(0, 10);
     return last.reduce((a, b) => a + b, 0) / last.length;
-  },
-
-  _renderLane(id, arr, cls) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    if (S.mode !== 'standalone') {
-      el.innerHTML = `<span class="dbg-lane-empty">standalone mode only — lobby playback decodes/schedules PCM server-side, not in this browser. See "Buffered ahead" and Audio element events for the lobby equivalent.</span>`;
-      return;
-    }
-    if (!arr.length) { el.innerHTML = `<span class="dbg-lane-empty">no chunks yet — play a track</span>`; return; }
-    const items = arr.slice(0, LANE_CAP).slice().reverse();
-    el.innerHTML = items.map(c => {
-      const w = Math.max(6, Math.min(64, Math.round(6 + c.bytes / 120)));
-      const title = `${c.bytes}B` + (c.durationMs ? ` · ${c.durationMs.toFixed(1)}ms audio` : '');
-      return `<div class="dbg-box ${cls}" style="width:${w}px" title="${esc(title)}"></div>`;
-    }).join('');
-  },
-
-  _renderMeter() {
-    const fill = document.getElementById('dbg-meter-fill');
-    if (!fill) return;
-    let level = 0;
-    if (S.player && typeof S.player.getLevels === 'function') {
-      try { level = (S.player.getLevels()[0]) || 0; } catch (_) {}
-    }
-    fill.style.width = `${Math.min(100, Math.round(level * 140))}%`;
   },
 
   _renderNetTable() {
@@ -559,6 +637,35 @@ const Debug = {
         <span>${esc(a.type)}</span>
         <span class="dbg-muted">${a.meta ? `t=${(a.meta.t || 0).toFixed(1)}s · buf+${(a.meta.buffered || 0).toFixed(1)}s` : ''}</span>
       </div>`).join('') || `<div class="dbg-empty-row">no audio element events yet</div>`;
+  },
+
+  // Standalone: S.autoQueue is already client-side (nothing hidden).
+  // Lobby: the pool lives entirely server-side (Lobby.auto_queue) and was
+  // never sent to clients before — this reads the autoQueue field added
+  // to the debug_stats push in server.py specifically for this card.
+  _renderSmartQueue() {
+    const list = document.getElementById('dbg-sq-list');
+    const count = document.getElementById('dbg-sq-count');
+    if (!list) return;
+    let items = [], total = 0;
+    if (S.mode === 'standalone') {
+      items = (S.autoQueue || []).map(t => ({ title: t.info && t.info.title, author: t.info && t.info.author }));
+      total = items.length;
+    } else if (S.mode === 'server' && this.server && !this.server.error) {
+      items = this.server.autoQueue || [];
+      total = this.server.autoQueueCount || 0;
+    }
+    count.textContent = total ? `(${total})` : '';
+    if (!items.length) {
+      list.innerHTML = `<div class="dbg-empty-row">${S.mode ? 'empty — nothing queued for autoplay/smart shuffle yet' : 'not connected'}</div>`;
+      return;
+    }
+    list.innerHTML = items.slice(0, 25).map((t, i) => `
+      <div class="dbg-list-row">
+        <span class="dbg-mono">#${i + 1}</span>
+        <span>${esc(t.title || 'Unknown title')}</span>
+        <span class="dbg-muted">${esc(t.author || '')}</span>
+      </div>`).join('');
   },
 
   _renderServer() {

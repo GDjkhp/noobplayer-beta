@@ -497,6 +497,12 @@ class LobbyRelay:
             "queueLength": len(self.lobby.queue),
             "paused": self.lobby.paused,
             "positionMs": self.lobby.current_position_ms(),
+            # The recommendation pool (get_rekt equivalent) — never exposed
+            # to clients otherwise, it's purely a server-side implementation
+            # detail Autoplay/Smart Shuffle drain from. Capped + stripped
+            # down (see _track_brief) since this goes out on every push.
+            "autoQueueCount": len(self.lobby.auto_queue),
+            "autoQueue": [_track_brief(t) for t in self.lobby.auto_queue[:30]],
         }
 
     # ---- debug/stats push (Socket.IO) --------------------------------
@@ -1017,6 +1023,19 @@ def track_id(track):
         return None
     info = track.get("info") or {}
     return info.get("identifier") or track.get("encoded")
+
+
+def _track_brief(track):
+    """Lightweight {title, author, ...} view of a track for the Debug tab's
+    Smart Queue card — deliberately drops `encoded` (can be a large base64
+    blob) since this gets sent to every subscribed sid on each stats push."""
+    info = (track or {}).get("info") or {}
+    return {
+        "title": info.get("title"),
+        "author": info.get("author"),
+        "length": info.get("length"),
+        "sourceName": info.get("sourceName"),
+    }
 
 
 def stamp_requester(track, participant):
