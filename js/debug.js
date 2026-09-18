@@ -49,6 +49,7 @@ const Debug = {
   audioElEvents: [],  // #lobby-audio DOM events
   networkChunks: [],  // raw bytes arriving off the PCM stream (standalone)
   speakerChunks: [],  // bytes scheduled onto the AudioContext timeline
+  nodelinkRequests: [], // backend → NodeLink calls, pushed live (lobby mode)
 
   server: null,       // last snapshot pushed over the socket by the server
 
@@ -277,6 +278,8 @@ const Debug = {
     if (this._debugSocket !== socket) {
       this._debugSocket = socket;
       socket.on('debug_stats', (snap) => { this.server = snap; });
+      socket.on('nodelink_request', (entry) => { dbgPushCap(this.nodelinkRequests, entry, NET_CAP); });
+      socket.on('nodelink_requests_backlog', (list) => { this.nodelinkRequests = (list || []).slice(0, NET_CAP); });
       // A reconnect gets a fresh sid server-side, so the server's
       // subscriber-by-sid entry from before the drop is gone — resubscribe.
       socket.on('connect', () => {
@@ -296,6 +299,7 @@ const Debug = {
     }
     this._socketSub = false;
     this.server = null;
+    this.nodelinkRequests = [];
   },
 
   /* ───────── lifecycle ───────── */
@@ -314,6 +318,7 @@ const Debug = {
   clear() {
     this.net = []; this.playerEvents = []; this.dropouts = [];
     this.audioElEvents = []; this.networkChunks = []; this.speakerChunks = [];
+    this.nodelinkRequests = [];
     this.render();
   },
 
@@ -350,12 +355,22 @@ const Debug = {
 
         <div class="dbg-cols">
           <div class="dbg-section">
-            <div class="dbg-section-title">Server requests <span class="dbg-count" id="dbg-net-count"></span></div>
+            <div class="dbg-section-title">Server requests <span class="dbg-lane-hint">(browser → backend)</span> <span class="dbg-count" id="dbg-net-count"></span></div>
             <div class="dbg-scroll"><table class="dbg-table">
               <thead><tr><th>time</th><th>method</th><th>path</th><th>status</th><th>latency</th><th>size</th></tr></thead>
               <tbody id="dbg-net-body"></tbody>
             </table></div>
           </div>
+          <div class="dbg-section">
+            <div class="dbg-section-title">NodeLink requests <span class="dbg-lane-hint">(backend → NodeLink, pushed live)</span> <span class="dbg-count" id="dbg-nl-count"></span></div>
+            <div class="dbg-scroll"><table class="dbg-table">
+              <thead><tr><th>time</th><th>method</th><th>path</th><th>status</th><th>latency</th><th>size</th></tr></thead>
+              <tbody id="dbg-nl-body"></tbody>
+            </table></div>
+          </div>
+        </div>
+
+        <div class="dbg-cols">
           <div class="dbg-section">
             <div class="dbg-section-title">Player events <span class="dbg-count" id="dbg-evt-count"></span></div>
             <div class="dbg-scroll"><table class="dbg-table">
@@ -363,17 +378,15 @@ const Debug = {
               <tbody id="dbg-evt-body"></tbody>
             </table></div>
           </div>
-        </div>
-
-        <div class="dbg-cols">
           <div class="dbg-section">
             <div class="dbg-section-title">Dropouts / gaps <span class="dbg-count" id="dbg-drop-count"></span></div>
             <div class="dbg-scroll"><div id="dbg-drop-list" class="dbg-list"></div></div>
           </div>
-          <div class="dbg-section">
-            <div class="dbg-section-title">Audio element events <span class="dbg-count" id="dbg-ael-count"></span></div>
-            <div class="dbg-scroll"><div id="dbg-ael-list" class="dbg-list"></div></div>
-          </div>
+        </div>
+
+        <div class="dbg-section">
+          <div class="dbg-section-title">Audio element events <span class="dbg-count" id="dbg-ael-count"></span></div>
+          <div class="dbg-scroll"><div id="dbg-ael-list" class="dbg-list"></div></div>
         </div>
 
         <div class="dbg-section" id="dbg-server-section" style="display:none">
@@ -393,6 +406,7 @@ const Debug = {
     this._renderLane('dbg-lane-spk', this.speakerChunks, 'spk');
     this._renderMeter();
     this._renderNetTable();
+    this._renderNodelinkTable();
     this._renderEvtTable();
     this._renderDrops();
     this._renderAel();
@@ -480,6 +494,27 @@ const Debug = {
         <td>${n.ms == null ? '—' : n.ms + 'ms'}</td>
         <td>${this._fmtBytes(n.size)}</td>
       </tr>`).join('') || `<tr><td colspan="6" class="dbg-empty-row">no requests yet</td></tr>`;
+  },
+
+  _renderNodelinkTable() {
+    const body = document.getElementById('dbg-nl-body');
+    const count = document.getElementById('dbg-nl-count');
+    if (!body) return;
+    if (S.mode !== 'server') {
+      count.textContent = '';
+      body.innerHTML = `<tr><td colspan="6" class="dbg-empty-row">standalone mode — your browser talks to NodeLink directly, see Server requests</td></tr>`;
+      return;
+    }
+    count.textContent = `(${this.nodelinkRequests.length})`;
+    body.innerHTML = this.nodelinkRequests.slice(0, 20).map(n => `
+      <tr class="${n.ok === false ? 'dbg-row-err' : ''}">
+        <td>${this._fmtTime(n.ts)}</td>
+        <td>${esc(n.method)}</td>
+        <td class="dbg-mono" title="${esc(n.path)}">${esc(this._trunc(n.path, 26))}</td>
+        <td>${esc(String(n.status))}</td>
+        <td>${n.ms == null ? '—' : n.ms + 'ms'}</td>
+        <td>${this._fmtBytes(n.size)}</td>
+      </tr>`).join('') || `<tr><td colspan="6" class="dbg-empty-row">no NodeLink requests yet</td></tr>`;
   },
 
   _renderEvtTable() {

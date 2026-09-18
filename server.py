@@ -130,10 +130,95 @@ http_session: aiohttp.ClientSession | None = None
 NODELINK_STREAM_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=None)
 
 
+# ── NodeLink request instrumentation (Debug tab) ───────────────────────
+# Wraps the aiohttp session used for every backend → NodeLink call (the
+# proxy endpoints below AND the playback relay's own internal
+# loadtracks/loadstream calls) so the Debug tab can show them, without
+# editing any of the ~10 call sites that already do
+# `async with http_session.get(...)`. Pure observation: logs a bounded,
+# most-recent-first deque and pushes each completed request to whichever
+# sids are currently subscribed — nothing extra is ever sent to NodeLink,
+# and nothing runs at all when no one has the Debug tab open.
+NODELINK_LOG_CAP = 60
+nodelink_requests = deque(maxlen=NODELINK_LOG_CAP)
+NODELINK_DEBUG_SUBSCRIBERS = set()  # sids
+
+
+async def _push_nodelink_entry(entry):
+    for sid in list(NODELINK_DEBUG_SUBSCRIBERS):
+        try:
+            await sio.emit("nodelink_request", entry, room=sid)
+        except Exception:
+            NODELINK_DEBUG_SUBSCRIBERS.discard(sid)
+
+
+class _TrackedRequest:
+    """Wraps one aiohttp request context manager. Timed at __aenter__
+    (time-to-headers) rather than __aexit__ — /v4/loadstream responses in
+    particular stay open and get read from for the life of a whole track,
+    so timing to __aexit__ would report track length as "latency" instead
+    of a useful TTFB number."""
+
+    __slots__ = ("method", "url", "_cm")
+
+    def __init__(self, method, url, cm):
+        self.method = method
+        self.url = url
+        self._cm = cm
+
+    def _path(self):
+        return self.url[len(NL_HOST):] if self.url.startswith(NL_HOST) else self.url
+
+    async def __aenter__(self):
+        t0 = time.monotonic()
+        try:
+            resp = await self._cm.__aenter__()
+        except Exception as e:
+            entry = {
+                "method": self.method, "path": self._path(), "status": "ERR", "ok": False,
+                "ms": round((time.monotonic() - t0) * 1000), "size": None,
+                "ts": time.time() * 1000, "error": str(e)[:160],
+            }
+            nodelink_requests.appendleft(entry)
+            await _push_nodelink_entry(entry)
+            raise
+        entry = {
+            "method": self.method, "path": self._path(), "status": resp.status, "ok": resp.status < 400,
+            "ms": round((time.monotonic() - t0) * 1000),
+            "size": int(resp.headers["Content-Length"]) if "Content-Length" in resp.headers else None,
+            "ts": time.time() * 1000,
+        }
+        nodelink_requests.appendleft(entry)
+        await _push_nodelink_entry(entry)
+        return resp
+
+    async def __aexit__(self, *exc):
+        return await self._cm.__aexit__(*exc)
+
+
+class _InstrumentedSession:
+    """Drop-in wrapper for aiohttp.ClientSession — only get()/post() are
+    overridden; close() and everything else pass straight through via
+    __getattr__, so wrapping http_session at startup is the only edit
+    needed to instrument every call site."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def get(self, url, **kwargs):
+        return _TrackedRequest("GET", url, self._session.get(url, **kwargs))
+
+    def post(self, url, **kwargs):
+        return _TrackedRequest("POST", url, self._session.post(url, **kwargs))
+
+    def __getattr__(self, name):
+        return getattr(self._session, name)
+
+
 @app.before_serving
 async def startup():
     global http_session
-    http_session = aiohttp.ClientSession()
+    http_session = _InstrumentedSession(aiohttp.ClientSession())
 
 
 @app.after_serving
@@ -1593,6 +1678,7 @@ async def socket_join_lobby(sid, data):
 
 @sio.event
 async def disconnect(sid):
+    NODELINK_DEBUG_SUBSCRIBERS.discard(sid)
     info = _sid_registry.pop(sid, None)
     if not info:
         return
@@ -1620,6 +1706,12 @@ async def socket_debug_subscribe(sid, data):
     lobby = get_lobby_or_404((data.get("code") or "").upper())
     if lobby:
         lobby.relay.debug_subscribe(sid)
+    NODELINK_DEBUG_SUBSCRIBERS.add(sid)
+    # NodeLink requests aren't tied to any one lobby (the http_session is
+    # server-wide), so a fresh subscriber gets whatever's already in the
+    # log immediately instead of waiting for the next request to happen.
+    if nodelink_requests:
+        await sio.emit("nodelink_requests_backlog", list(nodelink_requests), room=sid)
 
 
 @sio.on("debug_unsubscribe")
@@ -1628,6 +1720,7 @@ async def socket_debug_unsubscribe(sid, data):
     lobby = get_lobby_or_404((data.get("code") or "").upper())
     if lobby:
         lobby.relay.debug_unsubscribe(sid)
+    NODELINK_DEBUG_SUBSCRIBERS.discard(sid)
 
 
 @app.route("/api/lobby/<code>/chat", methods=["POST"])
