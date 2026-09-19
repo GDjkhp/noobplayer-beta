@@ -91,8 +91,8 @@ const Debug = {
   _bufHistory: [],    // live window onto the FRONT of _futureQueue: index 0 = soonest-to-play ("now", flush against the stream strip's right edge), last index = furthest into the future (right edge) — recomputed every tick in _bufSample, not accumulated
   _futureQueue: [],   // FIFO of real, already-decided-but-unheard audio, front = soonest to play — see _bufSample
   _lastWaveGen: null, // last-seen server relay generation from wave_peaks — a change means a hard cut
-  _bufFrozen: false,      // true while simulating a dropout — freezes the buffered strip's scroll (nothing is being "consumed" while playback is stalled)
-  _bufFreezeTimer: null,
+  _bufFrozen: false,      // true while a stall is live — freezes the buffered strip's scroll (nothing is being "consumed" while playback is stalled). Recomputed live every tick in _bufSample — see _isPlaybackStalled.
+  _audioElWaiting: false, // lobby mode: live "is #lobby-audio currently buffering" flag, set directly by the waiting/stalled/playing listeners — see _isPlaybackStalled
 
   // segment overlay toggle for the STREAM strip only — 'off' | 'seconds'
   // (the buffered strip never draws its own grid — see _drawBufWave)
@@ -220,7 +220,6 @@ const Debug = {
       self._futureQueue.length = 0;
       self._bufHistory = [];
       self._bufFrozen = false;
-      clearTimeout(self._bufFreezeTimer);
       return r;
     };
   },
@@ -256,8 +255,10 @@ const Debug = {
         const now = performance.now();
         if (type === 'waiting' || type === 'stalled') {
           if (waitStart === null) waitStart = now;
+          self._audioElWaiting = true; // live flag — see _isPlaybackStalled
         }
         if (type === 'playing') {
+          self._audioElWaiting = false;
           if (waitStart !== null) { self.dropout(now - waitStart, 'lobby stream stall'); waitStart = null; }
           self.actionReady();
         }
@@ -330,7 +331,6 @@ const Debug = {
   dropout(gapMs, context) {
     dbgPushCap(this.dropouts, { ts: Date.now(), gapMs: Math.round(gapMs), context: context || '' }, EVT_CAP);
     this._injectWaveGlitch(gapMs);
-    this._freezeBuf(gapMs);
   },
   audioElEvent(type, meta) { dbgPushCap(this.audioElEvents, { ts: Date.now(), type, meta }, EVT_CAP); },
 
@@ -363,7 +363,6 @@ const Debug = {
           this._futureQueue.length = 0;
           this._bufHistory = [];
           this._bufFrozen = false;
-          clearTimeout(this._bufFreezeTimer);
         }
         this._lastWaveGen = payload.generation;
         for (const amp of payload.peaks) this._futureEnqueue(amp);
@@ -409,7 +408,6 @@ const Debug = {
     this._bufHistory = [];
     this._futureQueue = [];
     this._bufFrozen = false;
-    clearTimeout(this._bufFreezeTimer);
     this._lastPreloadRef = null; this._lastPreloadSampledCount = 0;
   },
   clear() {
@@ -420,7 +418,6 @@ const Debug = {
     this._bufHistory = [];
     this._futureQueue = [];
     this._bufFrozen = false;
-    clearTimeout(this._bufFreezeTimer);
     this._lastPreloadRef = null; this._lastPreloadSampledCount = 0;
     this.render();
   },
@@ -493,15 +490,30 @@ const Debug = {
     while (this._waveHistory.length > WAVE_MAX_COLS) this._waveHistory.shift();
   },
 
-  // Freezes the buffered strip's scroll for roughly the duration of the
-  // dropout — while playback is stalled nothing is actually being
-  // consumed, so the buffered strip shouldn't keep scrolling as if it
-  // were. See _bufSample, which checks _bufFrozen before popping.
-  _freezeBuf(gapMs) {
-    const freezeMs = Math.max(WAVE_TICK_MS, Math.min(28 * WAVE_TICK_MS, gapMs));
-    this._bufFrozen = true;
-    clearTimeout(this._bufFreezeTimer);
-    this._bufFreezeTimer = setTimeout(() => { this._bufFrozen = false; }, freezeMs);
+  // Live check, read fresh every tick from _bufSample — NOT a timer.
+  // Freezing has to start exactly when the stall starts and end exactly
+  // when it ends, or the buffered strip either scrolls through a stall
+  // it should've paused for, or sits frozen past the point playback
+  // actually recovered — either way the queue and real time drift apart,
+  // and the strip has to fast-forward to resync once they're compared
+  // again. Reading live state sidesteps that entirely: nothing to drift.
+  //   - standalone: mirrors the same "am I behind schedule" comparison
+  //     patchPCMPlayer's feed hook uses for starvedMs — nextTime only
+  //     moves forward when feed() actually schedules a new buffer, so if
+  //     ctx.currentTime has caught up to (or passed) nextTime, playback
+  //     has run out of scheduled audio right now, this instant — no need
+  //     to wait for the next feed() call to find out.
+  //   - lobby: _audioElWaiting is set true/false directly by the
+  //     'waiting'/'stalled'/'playing' listeners in attachAudioElListeners,
+  //     live, the moment each fires.
+  _isPlaybackStalled() {
+    if (S.mode === 'standalone') {
+      const p = S.player;
+      if (!p || !p.ctx || p.startCtxTime === null || p.isPaused) return false;
+      return p.ctx.currentTime + 0.02 > p.nextTime + 0.005;
+    }
+    if (S.mode === 'server') return !!this._audioElWaiting;
+    return false;
   },
 
   /* ───────── buffered waveform ─────────
@@ -511,7 +523,7 @@ const Debug = {
      hasn't heard yet — held in a single FIFO (_futureQueue), front =
      soonest to play.
 
-     Every tick (unless _bufFrozen — see _freezeBuf), the front item is
+     Every tick (unless _bufFrozen — see _isPlaybackStalled), the front item is
      popped off and discarded: it has effectively "become" the stream
      waveform's newest sample now, so it drops out of the buffered strip
      rather than piling up on it. _bufHistory is just a live snapshot of
@@ -578,9 +590,11 @@ const Debug = {
   // just reached "now" and is about to be audible, so it's discarded
   // rather than kept around (keeping it would mean the buffered strip
   // still showed audio that's already playing). Skipped entirely while
-  // _bufFrozen: a dropout means playback isn't actually advancing, so
-  // nothing should be "consumed" from the buffer either — see
-  // _freezeBuf. Deliberately always exactly one, never more: the strip's
+  // _bufFrozen (set live, per tick, in _bufSample — see
+  // _isPlaybackStalled): while a stall is actually happening, nothing is
+  // being consumed, so nothing should pop either — that's what keeps the
+  // queue and real time in sync and avoids a fast-forward once the stall
+  // ends. Deliberately always exactly one, never more: the strip's
   // scroll speed has to stay constant and match the stream strip's, so
   // "now" (the left edge — see _bufSample) never jumps or fast-forwards
   // no matter how full the queue gets. A queue that's building up faster
@@ -594,6 +608,7 @@ const Debug = {
 
   _bufSample() {
     if (S.mode === 'standalone') this._bufPollPreload();
+    this._bufFrozen = this._isPlaybackStalled();
     this._futurePop();
     // Live view of whatever's left, soonest-first — index 0 (left edge)
     // is always "now". No accumulation, no history to cap/splice.
