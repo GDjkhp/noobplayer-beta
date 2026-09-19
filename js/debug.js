@@ -27,11 +27,19 @@
        optional segment grid (seconds, toggled in the UI) draws over both
        strips, with a scrolling time label per line — see _drawSegments.
      - Buffered waveform → a single FIFO queue (_futureQueue) of real,
-       already-decided audio that hasn't reached the listener's ears yet.
-       Every tick, one slice drains off the front into _bufHistory —
-       decoupling bursty arrival (a big feed() chunk, a batch of server
-       peaks) from the strip's steady per-tick scroll, and naturally
-       catching up (draining extra) if something ever piles the queue up.
+       already-decided audio that hasn't reached the listener's ears yet,
+       front = soonest to play. Every tick, unless a dropout is being
+       simulated (_bufFrozen — see below), one item is popped off the
+       front and discarded — it has now "become" the stream waveform's
+       newest sample, so it drops out of the buffered strip rather than
+       piling up. _bufHistory is just a live look at whatever's left at
+       the front of the queue (capped to the strip width), so index 0
+       (soonest, "now") always sits at the buffered strip's LEFT edge —
+       exactly where the stream strip's RIGHT edge ("now") is — and the
+       two scroll at the same per-tick rate, so lining the two strips up
+       edge-to-edge shows one continuous waveform. Freezing on a dropout
+       (instead of continuing to pop) simulates nothing being consumed
+       while playback is stalled.
        Where that future data actually comes from, in either mode:
          - standalone: PCMPlayer.feed()'s own bytes, sampled the instant
            they arrive (already decoded and scheduled onto the
@@ -65,7 +73,7 @@
 
 const NET_CAP = 40, EVT_CAP = 30;
 const WAVE_MAX_COLS = 360, WAVE_TICK_MS = 30;
-const FUTURE_QUEUE_MAX = 400;   // safety cap on _futureQueue — see _futureDrain
+const FUTURE_QUEUE_MAX = 400;   // safety cap on _futureQueue — see _futurePop
 
 function dbgPushCap(arr, item, cap) {
   arr.unshift(item);
@@ -79,12 +87,15 @@ const Debug = {
   dropouts: [],       // detected gaps/stalls, either side
   audioElEvents: [],  // #lobby-audio DOM events
   nodelinkRequests: [], // backend → NodeLink calls, pushed live (lobby mode)
-  _waveHistory: [],   // rolling waveform columns: {amp:0..1, dropout:bool, ts}, oldest first (index 0 = left edge)
-  _bufHistory: [],    // rolling BUFFERED (not-yet-played) columns, same shape — drained from _futureQueue
-  _futureQueue: [],   // FIFO of real, already-decided-but-unheard audio — see _futureDrain
+  _waveHistory: [],   // rolling waveform columns: {amp:0..1, dropout:bool, ts}, oldest first (index 0 = left edge = oldest, last index = right edge = "now")
+  _bufHistory: [],    // live window onto the FRONT of _futureQueue: index 0 = soonest-to-play ("now", flush against the stream strip's right edge), last index = furthest into the future (right edge) — recomputed every tick in _bufSample, not accumulated
+  _futureQueue: [],   // FIFO of real, already-decided-but-unheard audio, front = soonest to play — see _bufSample
   _lastWaveGen: null, // last-seen server relay generation from wave_peaks — a change means a hard cut
+  _bufFrozen: false,      // true while simulating a dropout — freezes the buffered strip's scroll (nothing is being "consumed" while playback is stalled)
+  _bufFreezeTimer: null,
 
-  // segment overlay toggle for both strips — 'off' | 'seconds'
+  // segment overlay toggle for the STREAM strip only — 'off' | 'seconds'
+  // (the buffered strip never draws its own grid — see _drawBufWave)
   _segMode: 'off',
 
   // buffered-waveform bookkeeping (standalone mode reads S.preload.chunks
@@ -171,7 +182,7 @@ const Debug = {
       // Sample BEFORE origFeed schedules it — every byte handed to feed()
       // is, by definition, audio that hasn't reached the speaker yet
       // (PCMPlayer schedules it ahead on its own AudioContext timeline).
-      // Enqueue it rather than pushing straight to history — _futureDrain
+      // Enqueue it rather than pushing straight to history — _futurePop
       // paces it onto the strip one slice per tick instead of dumping a
       // whole chunk's worth in at once.
       self._futureEnqueueBytes(bytes);
@@ -207,6 +218,9 @@ const Debug = {
     PCMPlayer.prototype.cutOver = function (...args) {
       const r = origCutOver.apply(this, args);
       self._futureQueue.length = 0;
+      self._bufHistory = [];
+      self._bufFrozen = false;
+      clearTimeout(self._bufFreezeTimer);
       return r;
     };
   },
@@ -316,6 +330,7 @@ const Debug = {
   dropout(gapMs, context) {
     dbgPushCap(this.dropouts, { ts: Date.now(), gapMs: Math.round(gapMs), context: context || '' }, EVT_CAP);
     this._injectWaveGlitch(gapMs);
+    this._freezeBuf(gapMs);
   },
   audioElEvent(type, meta) { dbgPushCap(this.audioElEvents, { ts: Date.now(), type, meta }, EVT_CAP); },
 
@@ -346,6 +361,9 @@ const Debug = {
         if (!payload || !payload.peaks) return;
         if (this._lastWaveGen !== null && payload.generation !== this._lastWaveGen) {
           this._futureQueue.length = 0;
+          this._bufHistory = [];
+          this._bufFrozen = false;
+          clearTimeout(this._bufFreezeTimer);
         }
         this._lastWaveGen = payload.generation;
         for (const amp of payload.peaks) this._futureEnqueue(amp);
@@ -390,6 +408,8 @@ const Debug = {
     this._waveHistory = []; // fresh sweep next time the tab opens, rather than a stale gap stitched in
     this._bufHistory = [];
     this._futureQueue = [];
+    this._bufFrozen = false;
+    clearTimeout(this._bufFreezeTimer);
     this._lastPreloadRef = null; this._lastPreloadSampledCount = 0;
   },
   clear() {
@@ -399,6 +419,8 @@ const Debug = {
     this._waveHistory = [];
     this._bufHistory = [];
     this._futureQueue = [];
+    this._bufFrozen = false;
+    clearTimeout(this._bufFreezeTimer);
     this._lastPreloadRef = null; this._lastPreloadSampledCount = 0;
     this.render();
   },
@@ -456,27 +478,48 @@ const Debug = {
     if (this._waveHistory.length > WAVE_MAX_COLS) this._waveHistory.shift();
   },
 
-  // Called from dropout() — simulates the visual "jump" by inserting a
-  // few erratic, red-flagged columns instead of a real reading, roughly
-  // proportional to how long the gap was (capped so one huge stall
-  // doesn't swallow the whole visible window).
+  // Called from dropout() — there's no real signal during a dropout (the
+  // whole point is nothing arrived), so this doesn't invent one: it's
+  // silence, drawn as a flat red line (amp 0 — _drawStrip's Math.max(1, …)
+  // floor still gives it a hairline so it's visible), not a fake glitchy
+  // reading. Column count is roughly proportional to how long the gap
+  // was (capped so one huge stall doesn't swallow the whole visible
+  // window).
   _injectWaveGlitch(gapMs) {
     const cols = Math.max(3, Math.min(28, Math.round(gapMs / WAVE_TICK_MS)));
     for (let i = 0; i < cols; i++) {
-      this._waveHistory.push({ amp: 0.2 + Math.random() * 0.8, dropout: true, ts: performance.now() });
+      this._waveHistory.push({ amp: 0, dropout: true, ts: performance.now() });
     }
     while (this._waveHistory.length > WAVE_MAX_COLS) this._waveHistory.shift();
+  },
+
+  // Freezes the buffered strip's scroll for roughly the duration of the
+  // dropout — while playback is stalled nothing is actually being
+  // consumed, so the buffered strip shouldn't keep scrolling as if it
+  // were. See _bufSample, which checks _bufFrozen before popping.
+  _freezeBuf(gapMs) {
+    const freezeMs = Math.max(WAVE_TICK_MS, Math.min(28 * WAVE_TICK_MS, gapMs));
+    this._bufFrozen = true;
+    clearTimeout(this._bufFreezeTimer);
+    this._bufFreezeTimer = setTimeout(() => { this._bufFrozen = false; }, freezeMs);
   },
 
   /* ───────── buffered waveform ─────────
      Second strip, drawn under the stream waveform. Where the strip above
      reads S.player.getWaveform() (audio actually reaching the speaker
      right now), this one shows real, already-decided audio the listener
-     hasn't heard yet — fed through a single FIFO (_futureQueue) that
-     _futureDrain empties one slice per tick into _bufHistory, so a bursty
-     arrival (a big feed() chunk, a batch of server peaks) doesn't dump a
-     wall of columns in at once — it paces onto the strip the same way the
-     top strip does.
+     hasn't heard yet — held in a single FIFO (_futureQueue), front =
+     soonest to play.
+
+     Every tick (unless _bufFrozen — see _freezeBuf), the front item is
+     popped off and discarded: it has effectively "become" the stream
+     waveform's newest sample now, so it drops out of the buffered strip
+     rather than piling up on it. _bufHistory is just a live snapshot of
+     whatever's left at the front of the queue, so index 0 (soonest,
+     "now") always sits at the buffered strip's LEFT edge — exactly where
+     the stream strip's RIGHT edge ("now") is — and both strips scroll at
+     the same per-tick rate. Line the two strips up edge-to-edge and it's
+     one continuous waveform, past on the left, future on the right.
 
      Where the queue actually gets filled, never fabricated:
        - standalone: every chunk passed to PCMPlayer.feed() (patched
@@ -507,7 +550,7 @@ const Debug = {
 
   _futureEnqueue(amp) {
     this._futureQueue.push({ amp, dropout: false, ts: performance.now() });
-    // Safety cap only — _futureDrain already catches up on its own each
+    // Safety cap only — _futurePop already catches up on its own each
     // tick when the queue runs ahead; this just bounds worst-case memory
     // if draining ever falls badly behind (e.g. the tab was backgrounded).
     if (this._futureQueue.length > FUTURE_QUEUE_MAX * 2) {
@@ -531,35 +574,46 @@ const Debug = {
     this._lastPreloadSampledCount = chunks.length;
   },
 
-  // Drains _futureQueue into _bufHistory — one slice per tick under
-  // normal conditions, matching the top strip's scroll rate. If the
-  // queue has piled up past FUTURE_QUEUE_MAX (a burst arrived faster
-  // than ticks can drain it), drains the excess too so the strip catches
-  // back up to "now" instead of permanently lagging.
-  _futureDrain() {
+  // Pops one item off the FRONT of _futureQueue — it has just reached
+  // "now" and is about to be audible, so it's discarded rather than kept
+  // around (keeping it would mean the buffered strip still showed audio
+  // that's already playing). Skipped entirely while _bufFrozen: a
+  // dropout means playback isn't actually advancing, so nothing should
+  // be "consumed" from the buffer either — see _freezeBuf. If the queue
+  // has piled up past FUTURE_QUEUE_MAX (a burst arrived faster than
+  // real-time), pops the excess too so the strip catches back up to
+  // "now" instead of permanently lagging.
+  _futurePop() {
+    if (this._bufFrozen) return;
     const q = this._futureQueue;
     if (!q.length) return;
     const excess = q.length - FUTURE_QUEUE_MAX;
-    const drainCount = 1 + Math.max(0, excess);
-    for (let i = 0; i < drainCount && q.length; i++) {
-      this._bufHistory.push(q.shift());
-    }
-    if (this._bufHistory.length > WAVE_MAX_COLS) {
-      this._bufHistory.splice(0, this._bufHistory.length - WAVE_MAX_COLS);
-    }
+    const popCount = 1 + Math.max(0, excess);
+    for (let i = 0; i < popCount && q.length; i++) q.shift();
   },
 
   _bufSample() {
     if (S.mode === 'standalone') this._bufPollPreload();
-    this._futureDrain();
+    this._futurePop();
+    // Live view of whatever's left, soonest-first — index 0 (left edge)
+    // is always "now". No accumulation, no history to cap/splice.
+    this._bufHistory = this._futureQueue.slice(0, WAVE_MAX_COLS);
   },
 
   // Shared renderer for both strips — stream waveform and buffered
   // waveform are the same scrolling-columns visual over two different
   // data sources, so this draws either given a canvas id + history ring.
-  // No centerline, no playhead: newest sample sits flush against the
-  // right edge and scrolls left as history fills in, nothing marks "now"
-  // except that edge itself.
+  // No centerline, no playhead — "now" is marked only by an edge:
+  //   - stream strip (opts.anchor omitted/'right'): newest sample sits
+  //     flush against the RIGHT edge, older ones trail off to the left.
+  //   - buffered strip (opts.anchor:'left'): soonest-to-play sample sits
+  //     flush against the LEFT edge — the same "now" instant as the
+  //     stream strip's right edge — with the future trailing off to the
+  //     right as more gets buffered. This matters whenever the buffer is
+  //     shorter than a full window: anchoring left keeps "now" pinned at
+  //     x=0 instead of sliding around with however much is buffered.
+  //   opts.segments:false skips the grid overlay (buffered strip only —
+  //   the stream strip already carries it, a second copy is redundant).
   _drawStrip(canvasId, hist, opts) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) return;
@@ -576,14 +630,14 @@ const Debug = {
     const midY = cssH / 2;
     const n = hist.length;
     const colW = Math.max(1.5, cssW / WAVE_MAX_COLS);
-    const startX = cssW - n * colW;
+    const startX = opts.anchor === 'left' ? 0 : cssW - n * colW;
 
-    this._drawSegments(ctx, cssW, cssH, hist); // behind the bars
+    if (opts.segments !== false) this._drawSegments(ctx, cssW, cssH, hist); // behind the bars
 
     for (let i = 0; i < n; i++) {
       const col = hist[i];
       const x = startX + i * colW;
-      if (x < -colW) continue;
+      if (x < -colW || x > cssW) continue;
       const h = Math.max(1, col.amp * (cssH / 2 - 4));
       ctx.fillStyle = col.dropout ? 'rgba(248,81,73,.92)' : opts.color;
       ctx.fillRect(x, midY - h, Math.max(1, colW - 0.4), h * 2);
@@ -595,17 +649,17 @@ const Debug = {
   },
 
   _drawBufWave() {
-    this._drawStrip('dbg-wave-buf', this._bufHistory, { color: 'rgba(167,139,250,.85)' });
+    this._drawStrip('dbg-wave-buf', this._bufHistory, { color: 'rgba(167,139,250,.85)', anchor: 'left', segments: false });
   },
 
   // Vertical grid lines toggled via the Off/Seconds control, one per
   // second, plus a small elapsed-time label riding along the top of each
   // line. Anchored to real timestamps stored on each column (see
-  // _waveSample/_futureEnqueue), not to array index, so the whole grid —
-  // lines AND labels — scrolls smoothly and drift-free with the bars
-  // instead of stepping, and does so identically on whichever strip is
-  // drawing it (stream or buffered — see _drawStrip below, which calls
-  // this once per strip with that strip's own history/timestamps).
+  // _waveSample/_futureEnqueue), not to array index, so the grid — lines
+  // AND labels — scrolls smoothly and drift-free with the bars instead
+  // of stepping. Stream strip only — see _drawStrip's opts.segments;
+  // drawing it a second time on the buffered strip below would just be
+  // a duplicate of the same grid.
   _drawSegments(ctx, cssW, cssH, hist) {
     if (this._segMode === 'off' || !hist.length) return;
     const nowTs = hist[hist.length - 1].ts;
