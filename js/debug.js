@@ -73,7 +73,7 @@
 
 const NET_CAP = 40, EVT_CAP = 30;
 const WAVE_MAX_COLS = 360, WAVE_TICK_MS = 30;
-const FUTURE_QUEUE_MAX = 400;   // safety cap on _futureQueue — see _futurePop
+const FUTURE_QUEUE_MAX = 400;   // hard memory cap on _futureQueue — see _futureEnqueue (NOT a scroll-speed threshold; _futurePop always advances by exactly one)
 
 function dbgPushCap(arr, item, cap) {
   arr.unshift(item);
@@ -574,22 +574,22 @@ const Debug = {
     this._lastPreloadSampledCount = chunks.length;
   },
 
-  // Pops one item off the FRONT of _futureQueue — it has just reached
-  // "now" and is about to be audible, so it's discarded rather than kept
-  // around (keeping it would mean the buffered strip still showed audio
-  // that's already playing). Skipped entirely while _bufFrozen: a
-  // dropout means playback isn't actually advancing, so nothing should
-  // be "consumed" from the buffer either — see _freezeBuf. If the queue
-  // has piled up past FUTURE_QUEUE_MAX (a burst arrived faster than
-  // real-time), pops the excess too so the strip catches back up to
-  // "now" instead of permanently lagging.
+  // Pops exactly one item off the FRONT of _futureQueue per tick — it has
+  // just reached "now" and is about to be audible, so it's discarded
+  // rather than kept around (keeping it would mean the buffered strip
+  // still showed audio that's already playing). Skipped entirely while
+  // _bufFrozen: a dropout means playback isn't actually advancing, so
+  // nothing should be "consumed" from the buffer either — see
+  // _freezeBuf. Deliberately always exactly one, never more: the strip's
+  // scroll speed has to stay constant and match the stream strip's, so
+  // "now" (the left edge — see _bufSample) never jumps or fast-forwards
+  // no matter how full the queue gets. A queue that's building up faster
+  // than real-time just grows further past the visible window instead of
+  // being caught up on — the safety cap in _futureEnqueue bounds that,
+  // not this.
   _futurePop() {
     if (this._bufFrozen) return;
-    const q = this._futureQueue;
-    if (!q.length) return;
-    const excess = q.length - FUTURE_QUEUE_MAX;
-    const popCount = 1 + Math.max(0, excess);
-    for (let i = 0; i < popCount && q.length; i++) q.shift();
+    if (this._futureQueue.length) this._futureQueue.shift();
   },
 
   _bufSample() {
