@@ -24,12 +24,8 @@
        AudioElPlayer expose identically, so it works unmodified in both
        modes. A detected dropout (either side) injects a few red glitch
        columns instead of a real reading — see _injectWaveGlitch. An
-       optional segment grid (seconds or detected BPM, toggled in the UI)
-       draws over both strips — see _drawSegments.
-     - Beat/BPM detection → a lightweight energy-based onset detector
-       reading S.player.getSpectrum()'s low-frequency bins every tick;
-       see _beatSample/_recomputeBpm. Shown as a stat card and used to
-       phase-lock the BPM segment grid.
+       optional segment grid (seconds, toggled in the UI) draws over both
+       strips, with a scrolling time label per line — see _drawSegments.
      - Buffered waveform → a single FIFO queue (_futureQueue) of real,
        already-decided audio that hasn't reached the listener's ears yet.
        Every tick, one slice drains off the front into _bufHistory —
@@ -70,8 +66,6 @@
 const NET_CAP = 40, EVT_CAP = 30;
 const WAVE_MAX_COLS = 360, WAVE_TICK_MS = 30;
 const FUTURE_QUEUE_MAX = 400;   // safety cap on _futureQueue — see _futureDrain
-const BEAT_MIN_GAP_MS = 250;    // debounce → caps detection at 240 BPM
-const BEAT_ENERGY_WINDOW = 43;  // ~1.3s of ticks — local average/variance window
 
 function dbgPushCap(arr, item, cap) {
   arr.unshift(item);
@@ -90,16 +84,8 @@ const Debug = {
   _futureQueue: [],   // FIFO of real, already-decided-but-unheard audio — see _futureDrain
   _lastWaveGen: null, // last-seen server relay generation from wave_peaks — a change means a hard cut
 
-  // segment overlay toggle for both strips — 'off' | 'seconds' | 'bpm'
+  // segment overlay toggle for both strips — 'off' | 'seconds'
   _segMode: 'off',
-
-  // beat/BPM detection (energy-based onset, see _beatSample)
-  _bpm: null,
-  _bpmTrackKey: null,
-  _beatTimes: [],      // recent onset timestamps (performance.now(), ms)
-  _energyHistory: [],  // recent low-band energy readings, for local avg/variance
-  _lastBeatTs: 0,
-  _specBuf: null,
 
   // buffered-waveform bookkeeping (standalone mode reads S.preload.chunks
   // directly rather than waiting for engine.js to feed() them — see
@@ -404,7 +390,6 @@ const Debug = {
     this._waveHistory = []; // fresh sweep next time the tab opens, rather than a stale gap stitched in
     this._bufHistory = [];
     this._futureQueue = [];
-    this._energyHistory = []; this._beatTimes = []; this._bpm = null; this._bpmTrackKey = null;
     this._lastPreloadRef = null; this._lastPreloadSampledCount = 0;
   },
   clear() {
@@ -414,7 +399,6 @@ const Debug = {
     this._waveHistory = [];
     this._bufHistory = [];
     this._futureQueue = [];
-    this._energyHistory = []; this._beatTimes = []; this._bpm = null; this._bpmTrackKey = null;
     this._lastPreloadRef = null; this._lastPreloadSampledCount = 0;
     this.render();
   },
@@ -441,7 +425,6 @@ const Debug = {
         this._waveLastTick = ts;
         this._waveSample();
         this._bufSample();
-        this._beatSample();
         this._drawWave();
         this._drawBufWave();
       }
@@ -571,83 +554,6 @@ const Debug = {
     this._futureDrain();
   },
 
-  /* ───────── beat / BPM detection ─────────
-     Lightweight real-time energy-based onset detector, fed by
-     S.player.getSpectrum() — the same analyser surface PCMPlayer and
-     AudioElPlayer both expose, so this needs no mode-specific branching
-     either. Every tick: sum a low-frequency band (~90–375Hz, i.e. kick/
-     bass territory), keep a rolling ~1.3s window of that energy, and
-     flag an onset when the instantaneous reading spikes well above the
-     local average (classic adaptive-threshold beat detection). Onset
-     timestamps feed a median inter-onset-interval → BPM, smoothed with
-     an EMA so the reading doesn't jitter every beat. Not a substitute
-     for a real offline BPM analyzer, but close enough to draw a beat
-     grid that tracks the actual track. */
-  _beatSample() {
-    if (!S.player || typeof S.player.getSpectrum !== 'function') return;
-
-    const trackKey = (S.current && S.current.encoded) || null;
-    if (trackKey !== this._bpmTrackKey) {
-      this._bpmTrackKey = trackKey;
-      this._energyHistory = [];
-      this._beatTimes = [];
-      this._bpm = null;
-    }
-    if (!trackKey) return;
-
-    let spec;
-    try { spec = S.player.getSpectrum(this._specBuf); } catch (_) { return; }
-    if (!spec || !spec.length) return;
-    this._specBuf = spec;
-
-    const bins = Math.min(5, spec.length);
-    let sum = 0;
-    for (let i = 1; i < bins; i++) sum += spec[i]; // skip bin 0 (DC)
-    const energy = sum / Math.max(1, bins - 1);    // 0..255
-
-    const hist = this._energyHistory;
-    hist.push(energy);
-    if (hist.length > BEAT_ENERGY_WINDOW) hist.shift();
-    if (hist.length < 10) return; // warm up before trusting the average
-
-    const avg = hist.reduce((a, b) => a + b, 0) / hist.length;
-    let variance = 0;
-    for (const e of hist) variance += (e - avg) * (e - avg);
-    variance /= hist.length;
-
-    // higher variance (busy, dynamic section) → demand a bigger spike;
-    // quiet/steady section → a smaller one is enough
-    const threshold = Math.min(2.4, Math.max(1.15, 1.3 + variance / 3000));
-    const now = performance.now();
-
-    if (avg > 4 && energy > avg * threshold && (now - this._lastBeatTs) > BEAT_MIN_GAP_MS) {
-      this._lastBeatTs = now;
-      this._beatTimes.push(now);
-      if (this._beatTimes.length > 16) this._beatTimes.shift();
-      this._recomputeBpm();
-    }
-  },
-
-  _recomputeBpm() {
-    const times = this._beatTimes;
-    if (times.length < 4) return;
-    const intervals = [];
-    for (let i = 1; i < times.length; i++) intervals.push(times[i] - times[i - 1]);
-    intervals.sort((a, b) => a - b);
-    const median = intervals[Math.floor(intervals.length / 2)];
-    if (median <= 0) return;
-    let bpm = 60000 / median;
-    while (bpm < 70) bpm *= 2;   // fold half/double-time readings into one sane range
-    while (bpm > 190) bpm /= 2;
-    this._bpm = this._bpm ? (this._bpm * 0.75 + bpm * 0.25) : bpm; // EMA smoothing
-  },
-
-  _bpmLabel() {
-    if (!S.mode) return '—';
-    if (!this._bpm) return this._beatTimes.length ? 'analyzing…' : 'listening…';
-    return `${Math.round(this._bpm)} BPM`;
-  },
-
   // Shared renderer for both strips — stream waveform and buffered
   // waveform are the same scrolling-columns visual over two different
   // data sources, so this draws either given a canvas id + history ring.
@@ -692,40 +598,46 @@ const Debug = {
     this._drawStrip('dbg-wave-buf', this._bufHistory, { color: 'rgba(167,139,250,.85)' });
   },
 
-  // Vertical grid lines toggled via the Off/Seconds/BPM control. Anchored
-  // to real timestamps stored on each column (see _waveSample/_futureEnqueue),
-  // not to array index, so the grid scrolls smoothly and drift-free with
-  // the bars instead of stepping. BPM mode phase-locks to the most
-  // recently detected beat rather than an arbitrary offset, so lines
-  // land on the actual onsets rather than just "every N seconds".
+  // Vertical grid lines toggled via the Off/Seconds control, one per
+  // second, plus a small elapsed-time label riding along the top of each
+  // line. Anchored to real timestamps stored on each column (see
+  // _waveSample/_futureEnqueue), not to array index, so the whole grid —
+  // lines AND labels — scrolls smoothly and drift-free with the bars
+  // instead of stepping, and does so identically on whichever strip is
+  // drawing it (stream or buffered — see _drawStrip below, which calls
+  // this once per strip with that strip's own history/timestamps).
   _drawSegments(ctx, cssW, cssH, hist) {
     if (this._segMode === 'off' || !hist.length) return;
     const nowTs = hist[hist.length - 1].ts;
-    let intervalMs, color;
-    if (this._segMode === 'bpm') {
-      if (!this._bpm) return;
-      intervalMs = 60000 / this._bpm;
-      color = 'rgba(251,191,36,.45)';
-    } else {
-      intervalMs = 1000;
-      color = 'rgba(255,255,255,.14)';
-    }
-    const anchorTs = (this._segMode === 'bpm' && this._beatTimes.length)
-      ? this._beatTimes[this._beatTimes.length - 1] : nowTs;
+    const intervalMs = 1000;
+    const lineColor = 'rgba(255,255,255,.14)';
+    const labelColor = 'rgba(255,255,255,.55)';
     const visibleMs = WAVE_MAX_COLS * WAVE_TICK_MS;
     const colW = Math.max(1.5, cssW / WAVE_MAX_COLS);
 
-    ctx.strokeStyle = color;
     ctx.lineWidth = 1;
-    ctx.beginPath();
-    let t = anchorTs;
-    while (t < nowTs) t += intervalMs; // fold forward in case anchor is stale
-    for (; t >= nowTs - visibleMs - intervalMs; t -= intervalMs) {
+    ctx.font = '9px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+
+    let secsAgo = 0;
+    for (let t = nowTs; t >= nowTs - visibleMs - intervalMs; t -= intervalMs, secsAgo++) {
       const x = cssW - ((nowTs - t) / WAVE_TICK_MS) * colW;
       if (x < -2) break;
-      if (x <= cssW + 2) { ctx.moveTo(x, 3); ctx.lineTo(x, cssH - 3); }
+      if (x > cssW + 2) continue;
+
+      ctx.strokeStyle = lineColor;
+      ctx.beginPath();
+      ctx.moveTo(x, 3); ctx.lineTo(x, cssH - 3);
+      ctx.stroke();
+
+      // The label moves with its line (same `x`) so it tracks the scroll
+      // exactly rather than sitting fixed while the grid slides under it.
+      const label = secsAgo === 0 ? 'now' : `-${secsAgo}s`;
+      const lx = Math.min(Math.max(x, 12), cssW - 12);
+      ctx.fillStyle = labelColor;
+      ctx.fillText(label, lx, 4);
     }
-    ctx.stroke();
   },
 
   /* ───────── DOM: skeleton (built once) ───────── */
@@ -737,7 +649,7 @@ const Debug = {
       <div class="dbg-wrap">
         <div class="dbg-toolbar">
           <span class="dbg-title">⌁ Debug</span>
-          <span class="dbg-sub">live instrumentation — network · stream + buffered waveform · beat detection · player events</span>
+          <span class="dbg-sub">live instrumentation — network · stream + buffered waveform · player events</span>
           <button class="qa d" id="dbg-clear">Clear</button>
         </div>
 
@@ -749,7 +661,6 @@ const Debug = {
             <div class="dbg-seg-toggle" id="dbg-seg-toggle">
               <button class="dbg-seg-btn on" data-seg="off">Off</button>
               <button class="dbg-seg-btn" data-seg="seconds">Seconds</button>
-              <button class="dbg-seg-btn" data-seg="bpm">BPM</button>
             </div>
           </div>
           <canvas id="dbg-wave" class="dbg-wave-canvas"></canvas>
@@ -853,7 +764,6 @@ const Debug = {
       ['AudioContext', ctx ? `${ctx.state} · ${ctx.sampleRate}Hz` : '—'],
       ['Base/Output latency', ctx ? `${((ctx.baseLatency || 0) * 1000).toFixed(1)} / ${((ctx.outputLatency || 0) * 1000).toFixed(1)} ms` : '—'],
       ['Buffered ahead', this._fmtMaybeMs(this._bufferedAheadMs())],
-      ['Detected BPM', this._bpmLabel()],
       ['Avg request latency', this._fmtMaybeMs(netMs)],
       ['Dropouts logged', String(this.dropouts.length)],
       ['Preload / queue chunks', this._queueChunksLabel()],

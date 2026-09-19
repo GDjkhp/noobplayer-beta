@@ -82,5 +82,12 @@ const S = {
     micEnabled: false,
     lastServerState: null,
     relayGen: 0,        // last-seen LobbyRelay generation — bump means the server started a fresh Opus/Ogg session
+
+    // A natural gapless advance's `state` push is held here (see
+    // Engine._scheduleTrackSwap) until the previous track's still-buffered
+    // audio has actually finished playing, so "now playing" always
+    // matches what's audible instead of what the server has merely sent.
+    pendingTrackState: null,
+    pendingTrackTimer: null,
   },
 };

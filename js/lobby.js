@@ -219,6 +219,7 @@ const Lobby = {
   },
 
   async leave() {
+    Engine._cancelPendingTrackSwap();
     if (S.lobby.socket) { S.lobby.socket.disconnect(); S.lobby.socket = null; }
     if (S.lobby.pc) { S.lobby.pc.close(); S.lobby.pc = null; }
     if (S.lobby.micStream) { S.lobby.micStream.getTracks().forEach(t => t.stop()); S.lobby.micStream = null; }
@@ -233,7 +234,7 @@ const Lobby = {
     S.autoQueue = []; S.autoQueueCount = 0;
     S.history = [];
     S.mode = null;
-    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, pc:null, micStream:null, micEnabled:false, lastServerState:null, relayGen:0 };
+    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, pc:null, micStream:null, micEnabled:false, lastServerState:null, relayGen:0, pendingTrackState:null, pendingTrackTimer:null };
     document.getElementById('hdr-lobby').style.display = 'none';
     document.getElementById('tab-chat-btn').style.display = 'none';
     document.getElementById('chat-log').innerHTML = '';

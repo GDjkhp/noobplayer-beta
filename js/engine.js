@@ -906,7 +906,24 @@ const Engine = {
      genChanged doesn't (the <audio> element just keeps playing the same
      underlying stream, uninterrupted). The element only ever reconnects
      for a genuinely fresh encode session (explicit play/skip/seek/filter
-     change). */
+     change).
+
+     Buffered-lag note: the `state` push for a gapless advance fires the
+     instant the SERVER'S relay stitches the next track in — that's real
+     time on the server's own pacing clock, not on this listener's. The
+     browser's <audio> element buffers some amount of that already-sent
+     stream ahead of what's actually reaching the speakers, so applying
+     `state.currentTrack` immediately made the title/art/duration/progress
+     bar jump to the next track while the previous one was still audibly
+     playing out of that local buffer — the "current track" shown wasn't
+     actually server-driven, it was server-driven MINUS an unaccounted-for
+     client buffering delay. `_bufferedLagMs` measures that delay off the
+     element itself (`audio.buffered` vs `audio.currentTime`), and
+     `_scheduleTrackSwap` defers applying the new track's state by exactly
+     that long, so what's displayed always matches what's actually
+     audible. Nothing needs deferring on an explicit change (genChanged)
+     since reconnecting the element there (`audio.src = ...`) discards any
+     buffered tail immediately anyway — that IS a hard, instant cut. */
   async _lobbySync(state) {
     const audio = document.getElementById('lobby-audio');
     if (!S.player) S.player = new AudioElPlayer(audio);
@@ -924,10 +941,6 @@ const Engine = {
     UI.updateLoopButton();
     UI.updateQueueHeader();
 
-    const trackChanged = !S.current || !state.currentTrack || S.current.encoded !== state.currentTrack.encoded;
-    const genChanged = S.lobby.relayGen !== state.relayGen;
-    S.lobby.relayGen = state.relayGen;
-
     if (!state.currentTrack) {
       // Nothing queued right now — but the relay deliberately keeps this
       // SAME /live connection alive rather than tearing the session down
@@ -943,13 +956,73 @@ const Engine = {
       // just keeps quietly consuming silence until resume_or_start() (a
       // play, queue add, or "previous" on the server) hands it real audio
       // again — same connection, no reconnect either way.
+      this._cancelPendingTrackSwap();
       S.current = null;
       S.player.setAnchor(state.positionMs, true);  // freeze position reporting; don't touch audio.paused
       if (S.posTimer) { clearInterval(S.posTimer); S.posTimer = null; }
       UI.updatePlayerUI();
+      UI.renderQueue();
       return;
     }
 
+    const trackChanged = !S.current || S.current.encoded !== state.currentTrack.encoded;
+    const genChanged = S.lobby.relayGen !== state.relayGen;
+    S.lobby.relayGen = state.relayGen;
+
+    // The queue itself is authoritative the instant it changes — show it
+    // right away regardless of how far the listener's own <audio> buffer
+    // has actually played through (only "what's currently playing" needs
+    // the lag-aware deferral below).
+    UI.renderQueue();
+
+    if (trackChanged && !genChanged) {
+      const lagMs = this._bufferedLagMs(audio);
+      if (lagMs > 150) {
+        this._scheduleTrackSwap(state, lagMs);
+        return;
+      }
+    }
+
+    this._cancelPendingTrackSwap();
+    await this._applyLobbyTrackState(state, trackChanged, genChanged, audio);
+  },
+
+  // How much of the <audio> element's own buffer hasn't been played yet,
+  // in ms — a proxy for how far "what's audible right now" lags behind
+  // "what the server has transmitted". Same math as Debug's
+  // _bufferedAheadSec, kept separate since this one drives actual
+  // playback-state timing rather than just a stat card.
+  _bufferedLagMs(audio) {
+    try {
+      if (!audio || !audio.buffered || !audio.buffered.length) return 0;
+      const end = audio.buffered.end(audio.buffered.length - 1);
+      return Math.max(0, (end - audio.currentTime) * 1000);
+    } catch (_) { return 0; }
+  },
+
+  // Holds off applying a natural gapless advance's `state` until the
+  // previous track's still-buffered tail has actually finished playing.
+  // Keyed on the `state` object's own identity so a newer push (another
+  // advance, or the host taking an explicit action) can supersede a
+  // still-pending one instead of both firing.
+  _scheduleTrackSwap(state, lagMs) {
+    S.lobby.pendingTrackState = state;
+    if (S.lobby.pendingTrackTimer) clearTimeout(S.lobby.pendingTrackTimer);
+    S.lobby.pendingTrackTimer = setTimeout(() => {
+      if (S.lobby.pendingTrackState !== state) return; // superseded meanwhile
+      S.lobby.pendingTrackState = null;
+      S.lobby.pendingTrackTimer = null;
+      const audio = document.getElementById('lobby-audio');
+      this._applyLobbyTrackState(state, true, false, audio);
+    }, lagMs);
+  },
+
+  _cancelPendingTrackSwap() {
+    if (S.lobby.pendingTrackTimer) { clearTimeout(S.lobby.pendingTrackTimer); S.lobby.pendingTrackTimer = null; }
+    S.lobby.pendingTrackState = null;
+  },
+
+  async _applyLobbyTrackState(state, trackChanged, genChanged, audio) {
     if (trackChanged) {
       S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
     }
