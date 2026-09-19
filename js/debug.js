@@ -30,13 +30,28 @@
        reading S.player.getSpectrum()'s low-frequency bins every tick;
        see _beatSample/_recomputeBpm. Shown as a stat card and used to
        phase-lock the BPM segment grid.
-     - Buffered waveform → a second strip under the stream waveform.
-       Standalone: sampled straight from PCMPlayer.feed()'s incoming
-       bytes (patched below) plus a poll of S.preload.chunks, so it shows
-       audio that's arrived but hasn't played yet, stitched gapless into
-       whatever preloads next. Lobby: no raw PCM is available client-side
-       (encoded relay), so it falls back to an approximate buffered-
-       seconds fill — see _bufSample/_bufSampleServer.
+     - Buffered waveform → a single FIFO queue (_futureQueue) of real,
+       already-decided audio that hasn't reached the listener's ears yet.
+       Every tick, one slice drains off the front into _bufHistory —
+       decoupling bursty arrival (a big feed() chunk, a batch of server
+       peaks) from the strip's steady per-tick scroll, and naturally
+       catching up (draining extra) if something ever piles the queue up.
+       Where that future data actually comes from, in either mode:
+         - standalone: PCMPlayer.feed()'s own bytes, sampled the instant
+           they arrive (already decoded and scheduled onto the
+           AudioContext timeline, just not at `currentTime` yet) — plus a
+           poll of S.preload.chunks so the gapless-next-track's already-
+           fetched bytes queue up too, stitched with no seam.
+         - lobby: server.py's LobbyRelay.feed_chunk computes a peak for
+           every 20ms PCM frame as it's encoded — ahead of network
+           transit and the listener's own <audio> buffering, so it's
+           genuine lookahead, not reconstructed from audio.buffered.
+           Pushed as `wave_peaks` over the same debug socket subscription
+           every 150ms, only while this tab is open (see
+           LobbyRelay._wave_push_loop server-side).
+       A hard cut (PCMPlayer.cutOver, or a generation bump from the
+       server) drops whatever was still queued — it was stopped, not
+       played, so it shouldn't scroll through as if it were.
      - Audio element stalls/waits/playing (lobby)  → listeners attached
        straight to #lobby-audio.
      - Player action → time-to-audible latency  → Engine's public
@@ -54,6 +69,7 @@
 
 const NET_CAP = 40, EVT_CAP = 30;
 const WAVE_MAX_COLS = 360, WAVE_TICK_MS = 30;
+const FUTURE_QUEUE_MAX = 400;   // safety cap on _futureQueue — see _futureDrain
 const BEAT_MIN_GAP_MS = 250;    // debounce → caps detection at 240 BPM
 const BEAT_ENERGY_WINDOW = 43;  // ~1.3s of ticks — local average/variance window
 
@@ -70,7 +86,9 @@ const Debug = {
   audioElEvents: [],  // #lobby-audio DOM events
   nodelinkRequests: [], // backend → NodeLink calls, pushed live (lobby mode)
   _waveHistory: [],   // rolling waveform columns: {amp:0..1, dropout:bool, ts}, oldest first (index 0 = left edge)
-  _bufHistory: [],    // rolling BUFFERED (not-yet-played) columns, same shape — see "buffered waveform" below
+  _bufHistory: [],    // rolling BUFFERED (not-yet-played) columns, same shape — drained from _futureQueue
+  _futureQueue: [],   // FIFO of real, already-decided-but-unheard audio — see _futureDrain
+  _lastWaveGen: null, // last-seen server relay generation from wave_peaks — a change means a hard cut
 
   // segment overlay toggle for both strips — 'off' | 'seconds' | 'bpm'
   _segMode: 'off',
@@ -167,9 +185,10 @@ const Debug = {
       // Sample BEFORE origFeed schedules it — every byte handed to feed()
       // is, by definition, audio that hasn't reached the speaker yet
       // (PCMPlayer schedules it ahead on its own AudioContext timeline).
-      // This is the only external point that sees "buffered, not yet
-      // played" content without touching engine.js/pcm-player.js.
-      self._bufPushFromBytes(bytes);
+      // Enqueue it rather than pushing straight to history — _futureDrain
+      // paces it onto the strip one slice per tick instead of dumping a
+      // whole chunk's worth in at once.
+      self._futureEnqueueBytes(bytes);
 
       const result = origFeed.call(this, bytes);
 
@@ -191,6 +210,17 @@ const Debug = {
     PCMPlayer.prototype.pause = function (...args) {
       const r = origPause.apply(this, args);
       self.actionReady();
+      return r;
+    };
+
+    // A hard cut stops every scheduled source right now — whatever was
+    // still sitting in _futureQueue for the old track was stopped, not
+    // played, so it shouldn't keep scrolling through the buffered strip
+    // as if it were.
+    const origCutOver = PCMPlayer.prototype.cutOver;
+    PCMPlayer.prototype.cutOver = function (...args) {
+      const r = origCutOver.apply(this, args);
+      self._futureQueue.length = 0;
       return r;
     };
   },
@@ -321,6 +351,19 @@ const Debug = {
       socket.on('debug_stats', (snap) => { this.server = snap; });
       socket.on('nodelink_request', (entry) => { dbgPushCap(this.nodelinkRequests, entry, NET_CAP); });
       socket.on('nodelink_requests_backlog', (list) => { this.nodelinkRequests = (list || []).slice(0, NET_CAP); });
+      // Real, already-decided-but-unheard audio for the buffered
+      // waveform — see LobbyRelay._wave_push_loop / feed_chunk in
+      // server.py. `generation` changing mid-stream means a hard cut
+      // happened server-side (skip/seek/new track) — whatever's still
+      // sitting in the queue from before that is stale, drop it.
+      socket.on('wave_peaks', (payload) => {
+        if (!payload || !payload.peaks) return;
+        if (this._lastWaveGen !== null && payload.generation !== this._lastWaveGen) {
+          this._futureQueue.length = 0;
+        }
+        this._lastWaveGen = payload.generation;
+        for (const amp of payload.peaks) this._futureEnqueue(amp);
+      });
       // A reconnect gets a fresh sid server-side, so the server's
       // subscriber-by-sid entry from before the drop is gone — resubscribe.
       socket.on('connect', () => {
@@ -341,6 +384,7 @@ const Debug = {
     this._socketSub = false;
     this.server = null;
     this.nodelinkRequests = [];
+    this._lastWaveGen = null;
   },
 
   /* ───────── lifecycle ───────── */
@@ -359,6 +403,7 @@ const Debug = {
     this._stopWave();
     this._waveHistory = []; // fresh sweep next time the tab opens, rather than a stale gap stitched in
     this._bufHistory = [];
+    this._futureQueue = [];
     this._energyHistory = []; this._beatTimes = []; this._bpm = null; this._bpmTrackKey = null;
     this._lastPreloadRef = null; this._lastPreloadSampledCount = 0;
   },
@@ -368,6 +413,7 @@ const Debug = {
     this.nodelinkRequests = [];
     this._waveHistory = [];
     this._bufHistory = [];
+    this._futureQueue = [];
     this._energyHistory = []; this._beatTimes = []; this._bpm = null; this._bpmTrackKey = null;
     this._lastPreloadRef = null; this._lastPreloadSampledCount = 0;
     this.render();
@@ -441,24 +487,29 @@ const Debug = {
 
   /* ───────── buffered waveform ─────────
      Second strip, drawn under the stream waveform. Where the strip above
-     reads S.player.getWaveform() (i.e. audio actually reaching the
-     speaker right now), this one shows audio that has ARRIVED at the
-     client but hasn't played yet:
+     reads S.player.getWaveform() (audio actually reaching the speaker
+     right now), this one shows real, already-decided audio the listener
+     hasn't heard yet — fed through a single FIFO (_futureQueue) that
+     _futureDrain empties one slice per tick into _bufHistory, so a bursty
+     arrival (a big feed() chunk, a batch of server peaks) doesn't dump a
+     wall of columns in at once — it paces onto the strip the same way the
+     top strip does.
+
+     Where the queue actually gets filled, never fabricated:
        - standalone: every chunk passed to PCMPlayer.feed() (patched
          above) is sampled the instant it arrives, before scheduling —
-         that's the live track's buffered-ahead tail.
+         already decided, already on the AudioContext timeline, just not
+         at `currentTime` yet.
        - also standalone: S.preload.chunks (engine.js's background
          gapless prefetch for whatever plays next) is polled every tick
-         and any newly-arrived chunks get sampled too, appended right
-         after the current track's own buffered tail — so the next
-         track's audio shows up on this strip before the gapless splice
-         ever happens, with no seam at the join (same continuous
-         _bufHistory ring, never reset on track change).
-       - lobby/server mode has no raw PCM client-side at all (the relay
-         hands the browser an already-encoded Opus/Ogg stream via
-         <audio src>) — _bufSampleServer approximates it from
-         audio.buffered instead and flags those columns `approx: true`
-         so they render dimmer and the section hint can say so. */
+         and newly-arrived chunks get enqueued too, right after the
+         current track's own tail — so the next track's audio queues up
+         before the gapless splice ever happens, no seam at the join.
+       - lobby: server.py's LobbyRelay computes a real peak per 20ms PCM
+         frame as it encodes (see feed_chunk/_wave_push_loop server-side)
+         and pushes it over the debug socket as `wave_peaks` every 150ms
+         — genuine server-side lookahead, ahead of network transit and
+         the listener's own <audio> buffering, not a client-side guess. */
   _ampFromBytes(bytes) {
     if (!bytes || bytes.length < 2) return 0;
     let peak = 0;
@@ -471,14 +522,19 @@ const Debug = {
     return Math.min(1, peak / 32768);
   },
 
-  _bufPush(amp, extra) {
-    this._bufHistory.push(Object.assign({ amp, dropout: false, ts: performance.now() }, extra || {}));
-    if (this._bufHistory.length > WAVE_MAX_COLS) this._bufHistory.shift();
+  _futureEnqueue(amp) {
+    this._futureQueue.push({ amp, dropout: false, ts: performance.now() });
+    // Safety cap only — _futureDrain already catches up on its own each
+    // tick when the queue runs ahead; this just bounds worst-case memory
+    // if draining ever falls badly behind (e.g. the tab was backgrounded).
+    if (this._futureQueue.length > FUTURE_QUEUE_MAX * 2) {
+      this._futureQueue.splice(0, this._futureQueue.length - FUTURE_QUEUE_MAX * 2);
+    }
   },
 
-  _bufPushFromBytes(bytes) {
+  _futureEnqueueBytes(bytes) {
     if (S.mode !== 'standalone') return;
-    this._bufPush(this._ampFromBytes(bytes));
+    this._futureEnqueue(this._ampFromBytes(bytes));
   },
 
   _bufPollPreload() {
@@ -487,20 +543,32 @@ const Debug = {
     if (this._lastPreloadRef !== pre) { this._lastPreloadRef = pre; this._lastPreloadSampledCount = 0; }
     const chunks = pre.chunks;
     for (let i = this._lastPreloadSampledCount; i < chunks.length; i++) {
-      this._bufPush(this._ampFromBytes(chunks[i]));
+      this._futureEnqueue(this._ampFromBytes(chunks[i]));
     }
     this._lastPreloadSampledCount = chunks.length;
   },
 
-  _bufSampleServer() {
-    const audio = document.getElementById('lobby-audio');
-    const aheadSec = audio ? this._bufferedAheadSec(audio) : 0;
-    this._bufPush(Math.min(1, aheadSec / 6), { approx: true });
+  // Drains _futureQueue into _bufHistory — one slice per tick under
+  // normal conditions, matching the top strip's scroll rate. If the
+  // queue has piled up past FUTURE_QUEUE_MAX (a burst arrived faster
+  // than ticks can drain it), drains the excess too so the strip catches
+  // back up to "now" instead of permanently lagging.
+  _futureDrain() {
+    const q = this._futureQueue;
+    if (!q.length) return;
+    const excess = q.length - FUTURE_QUEUE_MAX;
+    const drainCount = 1 + Math.max(0, excess);
+    for (let i = 0; i < drainCount && q.length; i++) {
+      this._bufHistory.push(q.shift());
+    }
+    if (this._bufHistory.length > WAVE_MAX_COLS) {
+      this._bufHistory.splice(0, this._bufHistory.length - WAVE_MAX_COLS);
+    }
   },
 
   _bufSample() {
     if (S.mode === 'standalone') this._bufPollPreload();
-    else if (S.mode === 'server') this._bufSampleServer();
+    this._futureDrain();
   },
 
   /* ───────── beat / BPM detection ─────────
@@ -611,23 +679,21 @@ const Debug = {
       const x = startX + i * colW;
       if (x < -colW) continue;
       const h = Math.max(1, col.amp * (cssH / 2 - 4));
-      ctx.fillStyle = col.dropout ? 'rgba(248,81,73,.92)'
-        : col.approx ? opts.approxColor
-        : opts.color;
+      ctx.fillStyle = col.dropout ? 'rgba(248,81,73,.92)' : opts.color;
       ctx.fillRect(x, midY - h, Math.max(1, colW - 0.4), h * 2);
     }
   },
 
   _drawWave() {
-    this._drawStrip('dbg-wave', this._waveHistory, { color: 'rgba(91,156,246,.85)', approxColor: 'rgba(91,156,246,.4)' });
+    this._drawStrip('dbg-wave', this._waveHistory, { color: 'rgba(91,156,246,.85)' });
   },
 
   _drawBufWave() {
-    this._drawStrip('dbg-wave-buf', this._bufHistory, { color: 'rgba(167,139,250,.85)', approxColor: 'rgba(167,139,250,.35)' });
+    this._drawStrip('dbg-wave-buf', this._bufHistory, { color: 'rgba(167,139,250,.85)' });
   },
 
   // Vertical grid lines toggled via the Off/Seconds/BPM control. Anchored
-  // to real timestamps stored on each column (see _waveSample/_bufPush),
+  // to real timestamps stored on each column (see _waveSample/_futureEnqueue),
   // not to array index, so the grid scrolls smoothly and drift-free with
   // the bars instead of stepping. BPM mode phase-locks to the most
   // recently detected beat rather than an arbitrary offset, so lines
@@ -769,8 +835,8 @@ const Debug = {
     const el = document.getElementById('dbg-wave-buf-hint');
     if (!el) return;
     el.textContent = S.mode === 'server'
-      ? 'approx. — encoded relay has no raw PCM client-side, shown as buffered-seconds fill · scrolls right→left'
-      : 'raw PCM already fed to the player, not yet audible · scrolls right→left · stitched gapless into the next track';
+      ? 'server-computed lookahead, one peak per 20ms frame · pushed every 150ms · scrolls right→left'
+      : 'already fed to the player, not yet audible · scrolls right→left · stitched gapless into the next track';
   },
 
   _renderCards() {

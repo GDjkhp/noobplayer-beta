@@ -441,6 +441,17 @@ class LobbyRelay:
         self._debug_subscribers = set()   # sids
         self._debug_task = None
 
+        # ---- buffered-waveform lookahead (Socket.IO push, Debug tab only) ---
+        # Per-20ms-frame peak levels, computed right where feed_chunk
+        # already encodes each frame below — this is genuine lookahead
+        # (ahead of network transit AND the listener's own <audio>
+        # buffering), not a guess reconstructed from audio.buffered like a
+        # client-side heuristic would have to be. deque(maxlen=...) bounds
+        # it even if the push loop ever lags; only populated at all while
+        # someone actually has the Debug tab open (see feed_chunk).
+        self._wave_peaks = deque(maxlen=300)
+        self._wave_task = None
+
     # ---- listener management ----------------------------------------
     def add_listener(self):
         key = object()
@@ -510,11 +521,13 @@ class LobbyRelay:
         self._debug_subscribers.add(sid)
         if self._debug_task is None or self._debug_task.done():
             self._debug_task = asyncio.create_task(self._debug_push_loop())
+        if self._wave_task is None or self._wave_task.done():
+            self._wave_task = asyncio.create_task(self._wave_push_loop())
 
     def debug_unsubscribe(self, sid):
         self._debug_subscribers.discard(sid)
-        # No need to cancel the task explicitly — it checks the
-        # subscriber set itself each cycle and exits once empty.
+        # No need to cancel either task explicitly — both check the
+        # subscriber set themselves each cycle and exit once it's empty.
 
     async def _debug_push_loop(self):
         try:
@@ -528,6 +541,28 @@ class LobbyRelay:
                 await asyncio.sleep(1.5)
         finally:
             self._debug_task = None
+
+    # Drains self._wave_peaks (filled by feed_chunk, one entry per 20ms
+    # frame actually encoded) every 150ms and pushes it as one batch —
+    # real, already-decided audio the listener hasn't heard yet, in the
+    # exact order it'll play. `generation` rides along so the client can
+    # tell a hard cut (skip/seek/new track) apart from the normal gapless
+    # case, where peaks just keep flowing with no reset.
+    async def _wave_push_loop(self):
+        try:
+            while self._debug_subscribers:
+                if self._wave_peaks:
+                    peaks = list(self._wave_peaks)
+                    self._wave_peaks.clear()
+                    payload = {"peaks": peaks, "generation": self.generation}
+                    for sid in list(self._debug_subscribers):
+                        try:
+                            await sio.emit("wave_peaks", payload, room=sid)
+                        except Exception:
+                            self._debug_subscribers.discard(sid)
+                await asyncio.sleep(0.15)
+        finally:
+            self._wave_task = None
 
     def _broadcast_bytes(self, data):
         for listener in list(self.listeners.values()):
@@ -625,6 +660,7 @@ class LobbyRelay:
         self.generation += 1
         self._header_chunks = []
         self._header_chunks_done = False
+        self._wave_peaks.clear()  # hard cut — discard any pending lookahead from the old session
         self._close_all_listeners()
         self._resume_event.set()
         if track is None:
@@ -677,6 +713,7 @@ class LobbyRelay:
         self.generation += 1
         self._header_chunks = []
         self._header_chunks_done = False
+        self._wave_peaks.clear()
         self._close_all_listeners()
 
     # ---- the actual pipeline ----------------------------------------------
@@ -833,6 +870,14 @@ class LobbyRelay:
                 self.stats["pcm_bytes_in"] += len(frame_bytes)
                 self.stats["last_frame_ts"] = time.time()
                 self._header_chunks_done = True
+
+                # Buffered-waveform lookahead — see _wave_push_loop. Only
+                # computed at all while someone's actually subscribed
+                # (Debug tab open), same "don't run when nobody's
+                # watching" rule as the rest of this instrumentation.
+                if self._debug_subscribers:
+                    peak = float(np.abs(np.frombuffer(frame_bytes, dtype="<i2")).max()) / 32768.0
+                    self._wave_peaks.append(peak)
 
                 if not anchor_corrected:
                     # This is the first frame of audio actually ready to
