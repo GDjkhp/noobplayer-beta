@@ -761,10 +761,10 @@ class LobbyRelay:
                 if self.generation != my_generation:
                     return
                 self._idle = False
-                # Keep prefetching whatever's now predicted to play after
-                # cur_track — this refreshes on every loop iteration so it
-                # always reflects the current queue head.
-                self.ensure_preload()
+                # NOTE: prefetching whatever plays after cur_track is kicked
+                # off from inside _pump_track itself, right after it claims
+                # (or rules out) any preload matching cur_track — see the
+                # comment there for why it can't happen here.
 
                 result = await self._pump_track(
                     container, stream, cur_track, cur_pos, cur_filters, my_generation
@@ -863,6 +863,24 @@ class LobbyRelay:
         frame_dur = PCM_FRAME_SAMPLES / PCM_RATE  # 20ms
         anchor_corrected = False
 
+        async def flush_tail():
+            # feed_chunk only ever muxes whole PCM_FRAME_BYTES frames, so
+            # whatever's left in pcm_buf when the source genuinely ends
+            # (under one frame — under 20ms) never goes through it. Left
+            # alone that's silently dropped instead of played, same bug
+            # _encode_pcm_blocking already pads around for downloads (see
+            # its "remainder" handling) — pad it out to a full frame with
+            # silence and mux it here so a track's last few milliseconds
+            # actually reach listeners instead of being cut short.
+            if not pcm_buf:
+                return
+            frame_bytes = bytes(pcm_buf) + bytes(PCM_FRAME_BYTES - len(pcm_buf))
+            pcm_buf.clear()
+            frame = self._pcm_to_frame(frame_bytes)
+            for pkt in stream.encode(frame):
+                container.mux(pkt)
+            self._header_chunks_done = True
+
         async def feed_chunk(chunk):
             nonlocal anchor_corrected
             pcm_buf.extend(chunk)
@@ -946,9 +964,25 @@ class LobbyRelay:
             pre is not None and position_ms == 0
             and pre["track"].get("encoded") == track.get("encoded")
         )
-
         if use_preload:
             self._preload = None  # this track is live now, not "next" anymore
+
+        # Now that `track`'s own preload (if any) has been claimed above —
+        # so a fresh prediction below can't cancel it out from under us —
+        # it's safe to start prefetching whatever plays AFTER `track`.
+        # `self.lobby.current_track` already equals `track` here (every
+        # caller sets it before invoking us), so ensure_preload()'s
+        # prediction correctly looks one track further ahead rather than
+        # re-predicting `track` itself. Calling this any earlier (at the
+        # top of _run's loop, or right when lobby.current_track was first
+        # set to `track`) raced with the claim above and kept cancelling
+        # the very preload this function was about to consume — which is
+        # why the Debug tab's preload stat read "nothing preloaded" even
+        # with Gapless on, and every transition fell through to a blocking
+        # live NodeLink fetch instead.
+        self.ensure_preload()
+
+        if use_preload:
             idx = 0
             try:
                 while True:
@@ -969,6 +1003,7 @@ class LobbyRelay:
             except Exception:
                 traceback.print_exc()
                 return "error"
+            await flush_tail()
             return "ended"
 
         # Normal live fetch — first track of a session, or the preload
@@ -996,6 +1031,7 @@ class LobbyRelay:
         except (asyncio.TimeoutError, aiohttp.ClientError) as e:
             print(f"[relay {self.lobby.code}] NodeLink stream dropped: {e!r}")
             return "error"
+        await flush_tail()
         return "ended"
 
     @staticmethod
@@ -1035,7 +1071,16 @@ class LobbyRelay:
             lobby.anchor_time = time.time()
             lobby.paused = False
             await broadcast(lobby, "state", lobby.public_state())
-            self.ensure_preload()
+            # NOTE: deliberately NOT calling ensure_preload() here. `nxt`
+            # itself may already have a preload sitting ready (fetched
+            # while the track that just ended was still playing) — that's
+            # exactly what _pump_track is about to consume for `nxt`. Any
+            # call to ensure_preload() at this point would predict PAST
+            # nxt (lobby.current_track is already nxt, so peek_next_track()
+            # answers "what's after nxt", not "what's nxt") and cancel that
+            # still-needed preload before it's ever used. _pump_track calls
+            # ensure_preload() itself right after claiming nxt's preload,
+            # once it's actually safe to look further ahead.
             await populate_recommendations(lobby)
             return nxt
         else:
