@@ -28,18 +28,17 @@
        strips, with a scrolling time label per line — see _drawSegments.
      - Buffered waveform → a single FIFO queue (_futureQueue) of real,
        already-decided audio that hasn't reached the listener's ears yet,
-       front = soonest to play. Every tick, unless a dropout is being
-       simulated (_bufFrozen — see below), one item is popped off the
-       front and discarded — it has now "become" the stream waveform's
-       newest sample, so it drops out of the buffered strip rather than
-       piling up. _bufHistory is just a live look at whatever's left at
-       the front of the queue (capped to the strip width), so index 0
-       (soonest, "now") always sits at the buffered strip's LEFT edge —
-       exactly where the stream strip's RIGHT edge ("now") is — and the
-       two scroll at the same per-tick rate, so lining the two strips up
-       edge-to-edge shows one continuous waveform. Freezing on a dropout
-       (instead of continuing to pop) simulates nothing being consumed
-       while playback is stalled.
+       front = soonest to play. Rather than scrolling, this strip draws
+       like an oscilloscope sweep: unless a dropout is being simulated
+       (_bufFrozen — see below), one item is popped off the front of
+       _futureQueue per tick and APPENDED to _bufHistory at the next free
+       column, left to right, and every column already drawn stays put —
+       nothing shifts. Once _bufHistory fills the strip edge-to-edge
+       (there's no free column left to draw the next one into), it's
+       cleared outright and the sweep starts over from the left edge —
+       see _bufSweepTick. Freezing on a dropout (instead of continuing to
+       pop) simulates nothing being consumed while playback is stalled,
+       so the sweep just pauses in place rather than skipping ahead.
        Where that future data actually comes from, in either mode:
          - standalone: PCMPlayer.feed()'s own bytes, sampled the instant
            they arrive (already decoded and scheduled onto the
@@ -54,8 +53,8 @@
            every 150ms, only while this tab is open (see
            LobbyRelay._wave_push_loop server-side).
        A hard cut (PCMPlayer.cutOver, or a generation bump from the
-       server) drops whatever was still queued — it was stopped, not
-       played, so it shouldn't scroll through as if it were.
+       server) drops whatever was still queued and wipes the sweep — it
+       was stopped, not played, so it shouldn't stay drawn as if it were.
      - Audio element stalls/waits/playing (lobby)  → listeners attached
        straight to #lobby-audio.
      - Player action → time-to-audible latency  → Engine's public
@@ -73,7 +72,7 @@
 
 const NET_CAP = 40, EVT_CAP = 30;
 const WAVE_MAX_COLS = 360, WAVE_TICK_MS = 30;
-const FUTURE_QUEUE_MAX = 400;   // hard memory cap on _futureQueue — see _futureEnqueue (NOT a scroll-speed threshold; _futurePop always advances by exactly one)
+const FUTURE_QUEUE_MAX = 400;   // hard memory cap on _futureQueue — see _futureEnqueue (NOT a sweep-speed threshold; _bufSweepTick always advances by exactly one)
 
 function dbgPushCap(arr, item, cap) {
   arr.unshift(item);
@@ -88,10 +87,10 @@ const Debug = {
   audioElEvents: [],  // #lobby-audio DOM events
   nodelinkRequests: [], // backend → NodeLink calls, pushed live (lobby mode)
   _waveHistory: [],   // rolling waveform columns: {amp:0..1, dropout:bool, ts}, oldest first (index 0 = left edge = oldest, last index = right edge = "now")
-  _bufHistory: [],    // live window onto the FRONT of _futureQueue: index 0 = soonest-to-play ("now", flush against the stream strip's right edge), last index = furthest into the future (right edge) — recomputed every tick in _bufSample, not accumulated
+  _bufHistory: [],    // the buffered strip's current sweep frame: columns accumulate left→right, fixed in place once drawn, and the whole array is cleared (not shifted) once it fills — see _bufSweepTick
   _futureQueue: [],   // FIFO of real, already-decided-but-unheard audio, front = soonest to play — see _bufSample
   _lastWaveGen: null, // last-seen server relay generation from wave_peaks — a change means a hard cut
-  _bufFrozen: false,      // true while a stall is live — freezes the buffered strip's scroll (nothing is being "consumed" while playback is stalled). Recomputed live every tick in _bufSample — see _isPlaybackStalled.
+  _bufFrozen: false,      // true while a stall is live — pauses the buffered strip's sweep in place (nothing is being "consumed" while playback is stalled). Recomputed live every tick in _bufSample — see _isPlaybackStalled.
   _audioElWaiting: false, // lobby mode: live "is #lobby-audio currently buffering" flag, set directly by the waiting/stalled/playing listeners — see _isPlaybackStalled
 
   // segment overlay toggle for the STREAM strip only — 'off' | 'seconds'
@@ -182,8 +181,8 @@ const Debug = {
       // Sample BEFORE origFeed schedules it — every byte handed to feed()
       // is, by definition, audio that hasn't reached the speaker yet
       // (PCMPlayer schedules it ahead on its own AudioContext timeline).
-      // Enqueue it rather than pushing straight to history — _futurePop
-      // paces it onto the strip one slice per tick instead of dumping a
+      // Enqueue it rather than pushing straight to history — _bufSweepTick
+      // paces it onto the strip one column per tick instead of dumping a
       // whole chunk's worth in at once.
       self._futureEnqueueBytes(bytes);
 
@@ -212,7 +211,7 @@ const Debug = {
 
     // A hard cut stops every scheduled source right now — whatever was
     // still sitting in _futureQueue for the old track was stopped, not
-    // played, so it shouldn't keep scrolling through the buffered strip
+    // played, so it shouldn't stay drawn on the buffered strip's sweep
     // as if it were.
     const origCutOver = PCMPlayer.prototype.cutOver;
     PCMPlayer.prototype.cutOver = function (...args) {
@@ -523,15 +522,15 @@ const Debug = {
      hasn't heard yet — held in a single FIFO (_futureQueue), front =
      soonest to play.
 
-     Every tick (unless _bufFrozen — see _isPlaybackStalled), the front item is
-     popped off and discarded: it has effectively "become" the stream
-     waveform's newest sample now, so it drops out of the buffered strip
-     rather than piling up on it. _bufHistory is just a live snapshot of
-     whatever's left at the front of the queue, so index 0 (soonest,
-     "now") always sits at the buffered strip's LEFT edge — exactly where
-     the stream strip's RIGHT edge ("now") is — and both strips scroll at
-     the same per-tick rate. Line the two strips up edge-to-edge and it's
-     one continuous waveform, past on the left, future on the right.
+     Unlike the stream strip, this one does NOT scroll. It sweeps: every
+     tick (unless _bufFrozen — see _isPlaybackStalled), the front item is
+     popped off _futureQueue and appended to _bufHistory at the next free
+     column, left to right — see _bufSweepTick. Every column, once drawn,
+     stays exactly where it was drawn; nothing already on the strip ever
+     moves. When _bufHistory fills the strip edge-to-edge and there's no
+     free column left to draw into, it's cleared outright and the sweep
+     starts over from the left edge — like an oscilloscope retracing
+     rather than a ticker scrolling past.
 
      Where the queue actually gets filled, never fabricated:
        - standalone: every chunk passed to PCMPlayer.feed() (patched
@@ -562,9 +561,10 @@ const Debug = {
 
   _futureEnqueue(amp) {
     this._futureQueue.push({ amp, dropout: false, ts: performance.now() });
-    // Safety cap only — _futurePop already catches up on its own each
-    // tick when the queue runs ahead; this just bounds worst-case memory
-    // if draining ever falls badly behind (e.g. the tab was backgrounded).
+    // Safety cap only — _bufSweepTick already drains one per tick on its
+    // own regardless of how far ahead the queue gets; this just bounds
+    // worst-case memory if draining ever falls badly behind (e.g. the tab
+    // was backgrounded).
     if (this._futureQueue.length > FUTURE_QUEUE_MAX * 2) {
       this._futureQueue.splice(0, this._futureQueue.length - FUTURE_QUEUE_MAX * 2);
     }
@@ -586,33 +586,36 @@ const Debug = {
     this._lastPreloadSampledCount = chunks.length;
   },
 
-  // Pops exactly one item off the FRONT of _futureQueue per tick — it has
-  // just reached "now" and is about to be audible, so it's discarded
-  // rather than kept around (keeping it would mean the buffered strip
-  // still showed audio that's already playing). Skipped entirely while
+  // Pops exactly one item off the FRONT of _futureQueue per tick and
+  // appends it to _bufHistory at the next free column — it has just
+  // reached "now" and is about to be audible, so it "becomes" the next
+  // drawn bar rather than sliding the strip. Skipped entirely while
   // _bufFrozen (set live, per tick, in _bufSample — see
   // _isPlaybackStalled): while a stall is actually happening, nothing is
-  // being consumed, so nothing should pop either — that's what keeps the
-  // queue and real time in sync and avoids a fast-forward once the stall
-  // ends. Deliberately always exactly one, never more: the strip's
-  // scroll speed has to stay constant and match the stream strip's, so
-  // "now" (the left edge — see _bufSample) never jumps or fast-forwards
-  // no matter how full the queue gets. A queue that's building up faster
-  // than real-time just grows further past the visible window instead of
-  // being caught up on — the safety cap in _futureEnqueue bounds that,
-  // not this.
-  _futurePop() {
+  // being consumed, so the sweep shouldn't advance either — it just
+  // pauses in place until the stall clears, rather than continuing to
+  // fill in columns for audio that hasn't actually arrived yet.
+  // Deliberately always exactly one, never more: the sweep's pace has to
+  // stay constant and match the stream strip's per-tick rate. A queue
+  // that's building up faster than real-time just grows further ahead of
+  // where the sweep currently is instead of being caught up on — the
+  // safety cap in _futureEnqueue bounds that, not this.
+  //
+  // Once _bufHistory has a column for every position the strip can show,
+  // there's nowhere left to append the next one: clear the whole strip
+  // and start the sweep over from the left edge, then draw the item that
+  // just arrived as the sweep's new first column.
+  _bufSweepTick() {
     if (this._bufFrozen) return;
-    if (this._futureQueue.length) this._futureQueue.shift();
+    if (!this._futureQueue.length) return; // nothing new arrived this tick — leave the strip exactly as it is
+    if (this._bufHistory.length >= WAVE_MAX_COLS) this._bufHistory = [];
+    this._bufHistory.push(this._futureQueue.shift());
   },
 
   _bufSample() {
     if (S.mode === 'standalone') this._bufPollPreload();
     this._bufFrozen = this._isPlaybackStalled();
-    this._futurePop();
-    // Live view of whatever's left, soonest-first — index 0 (left edge)
-    // is always "now". No accumulation, no history to cap/splice.
-    this._bufHistory = this._futureQueue.slice(0, WAVE_MAX_COLS);
+    this._bufSweepTick();
   },
 
   // Shared renderer for both strips — stream waveform and buffered
@@ -736,7 +739,7 @@ const Debug = {
         </div>
 
         <div class="dbg-section">
-          <div class="dbg-section-title">Buffered waveform <span class="dbg-lane-hint" id="dbg-wave-buf-hint">received, not yet played · scrolls right→left</span></div>
+          <div class="dbg-section-title">Buffered waveform <span class="dbg-lane-hint" id="dbg-wave-buf-hint">received, not yet played · sweeps left→right, clears, repeats</span></div>
           <canvas id="dbg-wave-buf" class="dbg-wave-canvas dbg-wave-canvas-buf"></canvas>
         </div>
 
@@ -815,8 +818,8 @@ const Debug = {
     const el = document.getElementById('dbg-wave-buf-hint');
     if (!el) return;
     el.textContent = S.mode === 'server'
-      ? 'server-computed lookahead, one peak per 20ms frame · pushed every 150ms · scrolls right→left'
-      : 'already fed to the player, not yet audible · scrolls right→left · stitched gapless into the next track';
+      ? 'server-computed lookahead, one peak per 20ms frame · pushed every 150ms · sweeps left→right, clears, repeats'
+      : 'already fed to the player, not yet audible · sweeps left→right, clears, repeats · stitched gapless into the next track';
   },
 
   _renderCards() {

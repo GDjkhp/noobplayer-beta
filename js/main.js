@@ -16,6 +16,7 @@ const Main = {
     UI.updatePlayerUI();
     UI.renderQueue();
     UI.updateFilterStatus();
+    UI.updateGaplessButton();
   },
 
   async autoStart() {
@@ -26,6 +27,7 @@ const Main = {
       displayName = `Guest${Math.floor(1000 + Math.random() * 9000)}`;
       localStorage.setItem('nl_display_name', displayName);
     }
+    try { S.gaplessEnabled = localStorage.getItem('nl_gapless') === '1'; } catch (_) {}
     await Lobby.create('New Lobby', false, displayName);
   },
 };
@@ -57,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (S.player) Engine.seekTo(Math.min(S.current?.info.length || 0, S.player.getPositionMs() + 10000));
   });
   document.getElementById('loop-btn').addEventListener('click', () => Engine.cycleLoop());
+  document.getElementById('gapless-btn').addEventListener('click', () => Engine.toggleGapless());
   document.getElementById('btn-shuf').addEventListener('click', () => Engine.shuffleQueue());
 
   document.getElementById('btn-qshuf').addEventListener('click', () => Engine.shuffleQueue());

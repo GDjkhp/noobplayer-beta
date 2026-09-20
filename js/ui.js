@@ -39,6 +39,24 @@ const UI = {
     btn.classList.toggle('on', S.loopMode !== 'none');
   },
 
+  // Gapless is a standalone-only setting (see Engine.toggleGapless) —
+  // lobby mode's equivalent is always on server-side, so the button just
+  // reflects that as a fixed, non-interactive "ON" instead of following
+  // S.gaplessEnabled (which is never touched by lobby mode).
+  updateGaplessButton() {
+    const btn = document.getElementById('gapless-btn');
+    if (!btn) return;
+    if (S.mode === 'server') {
+      btn.textContent = 'GAPLESS';
+      btn.classList.add('on');
+      btn.title = 'Gapless is always on in lobby mode — it runs server-side';
+    } else {
+      btn.textContent = S.gaplessEnabled ? 'GAPLESS ON' : 'GAPLESS OFF';
+      btn.classList.toggle('on', S.gaplessEnabled);
+      btn.title = 'Gapless playback (standalone mode) — preloads and splices in the next track with no gap';
+    }
+  },
+
   updateQueueHeader() {
     const count = S.queue.length;
     const totalMs = S.queue.reduce((a, t) => a + (t.info?.length || 0), 0);

@@ -1942,9 +1942,11 @@ async def lobby_skip(code):
 
 @app.route("/api/lobby/<code>/stop", methods=["POST"])
 async def lobby_stop(code):
-    """Host-only: stop playback outright and clear the queue. Unlike skip,
-    this does NOT advance to whatever's next — it mirrors standalone mode's
-    Stop button (Engine.stop() there just empties S.current/S.queue)."""
+    """Host-only: stop playback outright and clear the queue, along with
+    the recommendation pool behind Autoplay/Smart Shuffle (auto_queue).
+    Unlike skip, this does NOT advance to whatever's next — it mirrors
+    standalone mode's Stop button (Engine.stop() there empties
+    S.current/S.queue/S.autoQueue)."""
     lobby = get_lobby_or_404(code)
     if not lobby:
         return jsonify({"error": "not found"}), 404
@@ -1953,6 +1955,7 @@ async def lobby_stop(code):
         return jsonify({"error": "host only"}), 403
     lobby.current_track = None
     lobby.queue = []
+    lobby.auto_queue = []
     lobby.paused = True
     lobby.position_anchor_ms = 0
     lobby.anchor_time = time.time()
@@ -2211,8 +2214,10 @@ async def lobby_queue_shuffle(code):
 
 @app.route("/api/lobby/<code>/queue/clear", methods=["POST"])
 async def lobby_queue_clear(code):
-    """Host-only: empty the shared queue. The current track keeps playing —
-    this clears what's lined up behind it, not what's on air."""
+    """Host-only: empty the shared queue, and with it the recommendation
+    pool behind Autoplay/Smart Shuffle (auto_queue). The current track
+    keeps playing — this clears what's lined up behind it, not what's on
+    air."""
     lobby = get_lobby_or_404(code)
     if not lobby:
         return jsonify({"error": "not found"}), 404
@@ -2221,6 +2226,7 @@ async def lobby_queue_clear(code):
         return jsonify({"error": "host only"}), 403
     removed = len(lobby.queue)
     lobby.queue = []
+    lobby.auto_queue = []
     lobby.relay.ensure_preload()
     state = lobby.public_state()
     await broadcast(lobby, "state", state)

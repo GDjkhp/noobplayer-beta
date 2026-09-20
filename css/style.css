@@ -257,6 +257,7 @@ body::after {
 #ctrls-sec { display: flex; align-items: center; gap: 8px; }
 .hsep { width: 1px; height: 18px; background: var(--brd2); flex-shrink: 0; }
 #loop-btn { font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .05em; padding: 0 8px; width: auto; min-width: 44px; justify-content: center; }
+#gapless-btn { font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .05em; padding: 0 8px; width: auto; min-width: 44px; justify-content: center; }
 #vol-row { flex: 1; display: flex; align-items: center; gap: 6px; }
 .vol-ico { color: var(--muted); flex-shrink: 0; }
 #vol-sl { flex: 1; -webkit-appearance: none; appearance: none; height: 3px; background: var(--brd2); outline: none; cursor: pointer; border-radius: 2px; }

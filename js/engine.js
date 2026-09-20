@@ -3,13 +3,18 @@
    Engine — playback control.
 
    Standalone mode: public methods act directly on the local PCMPlayer,
-   fed by this client's own PCM fetch from NodeLink. Gapless playback
-   works by predicting whatever track will play next (from the queue /
-   loop mode), prefetching its PCM in the background while the current
-   track is still playing, and — when the current track's stream runs
-   out — splicing the prefetched bytes straight onto the SAME AudioContext
-   timeline instead of tearing the player down and starting fresh. See
-   `_ensurePreload` / `_spliceGapless` below.
+   fed by this client's own PCM fetch from NodeLink. Gapless playback is
+   an OPT-IN client setting (S.gaplessEnabled, default off — see
+   Engine.toggleGapless / UI.updateGaplessButton), because prefetching a
+   predicted next track costs bandwidth/data whether or not it ends up
+   playing. When on, it works by predicting whatever track will play next
+   (from the queue / loop mode), prefetching its PCM in the background
+   while the current track is still playing, and — when the current
+   track's stream runs out — splicing the prefetched bytes straight onto
+   the SAME AudioContext timeline instead of tearing the player down and
+   starting fresh. See `_ensurePreload` / `_spliceGapless` below. When
+   off, track changes always go through the plain hard-cut path
+   (`_localPlay`), same as before this setting existed.
 
    Server mode: public methods (for the host) send REST control calls to
    the lobby; actual audio comes from ONE server-side Opus/Ogg relay per
@@ -274,8 +279,11 @@ const Engine = {
   // Call after ANY change that could affect what plays next: queue add /
   // remove / move / shuffle / clear, loop-mode cycling, or a track
   // actually starting. Cheap no-op if the prediction hasn't changed.
+  // No-op entirely (and drops any preload already in flight) while
+  // S.gaplessEnabled is off — see Engine.toggleGapless.
   _ensurePreload() {
     if (S.mode === 'server') return;
+    if (!S.gaplessEnabled) { this._cancelPreload(); return; }
     const next = this._computeNextTrack();
     const wantKey = next ? next.encoded + '|' + JSON.stringify(S.filters) : null;
     const haveKey = S.preload ? S.preload.track.encoded + '|' + JSON.stringify(S.preload.filters) : null;
@@ -323,6 +331,7 @@ const Engine = {
   // actually finish, then hard-cut to the next track.
   _handleStreamExhausted(gen) {
     if (gen !== S.playGen) return;
+    if (!S.gaplessEnabled) { S.player.scheduleEnd(() => { if (gen === S.playGen) this._onTrackEnd(); }); return; }
     const next = this._computeNextTrack();
     const pre = S.preload;
     if (next && pre && pre.track.encoded === next.encoded && !pre.error
@@ -437,6 +446,7 @@ const Engine = {
   // nothing usable preloaded — e.g. the very first track of a session, or
   // skipping again before the preload for THIS jump had a chance to start.
   async _playNowGapless(track, filters) {
+    if (!S.gaplessEnabled) { await this._localPlay(track, 0, filters); return; }
     const pre = S.preload;
     const usable = pre && S.player && S.player.ctx && !pre.error && (pre.reader || pre.done)
       && pre.track.encoded === track.encoded
@@ -620,7 +630,8 @@ const Engine = {
     }
     this._stopLocal();
     S.current = null; S.queue = [];
-    UI.updatePlayerUI(); UI.renderQueue();
+    S.autoQueue = []; S.autoQueueCount = 0;
+    UI.updatePlayerUI(); UI.renderQueue(); UI.updateQueueHeader();
   },
 
   async seekTo(posMs) {
@@ -820,7 +831,9 @@ const Engine = {
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
-    S.queue = []; UI.renderQueue(); toast('Queue cleared', 'info', 1500);
+    S.queue = [];
+    S.autoQueue = []; S.autoQueueCount = 0;
+    UI.renderQueue(); UI.updateQueueHeader(); toast('Queue cleared', 'info', 1500);
     this._ensurePreload();
   },
 
@@ -867,6 +880,22 @@ const Engine = {
     UI.updateQueueHeader();
     this._ensurePreload();
     toast(`Autoplay: ${next}`, 'info', 1500);
+  },
+
+  // Gapless preload/splice — standalone mode only (see the "gapless
+  // preload / splice" section up top; lobby mode's equivalent is
+  // always-on server-side and isn't affected by this). Defaults OFF;
+  // persisted in localStorage so the choice survives a reload. Turning
+  // it on immediately kicks off a preload for whatever's predicted to
+  // play next; turning it off drops whatever was in flight so a stale
+  // preload doesn't get spliced in later after being re-enabled.
+  toggleGapless() {
+    if (S.mode === 'server') { toast('Gapless is always on in lobby mode — it runs server-side', 'info', 3000); return; }
+    S.gaplessEnabled = !S.gaplessEnabled;
+    try { localStorage.setItem('nl_gapless', S.gaplessEnabled ? '1' : '0'); } catch (_) {}
+    if (S.gaplessEnabled) this._ensurePreload(); else this._cancelPreload();
+    UI.updateGaplessButton();
+    toast(`Gapless playback: ${S.gaplessEnabled ? 'ON' : 'OFF'}`, 'info', 1500);
   },
 
   async applyFilters(filters) {
