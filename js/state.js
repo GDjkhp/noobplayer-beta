@@ -19,12 +19,14 @@ const S = {
   autoQueueCount: 0,     // size of that pool, whichever side owns it
   recPending: false,     // a recommendation fetch is in flight
 
-  // Gapless preload/splice (standalone mode only — see Engine's
-  // "gapless preload / splice" section in engine.js; lobby mode's
-  // equivalent is always-on server-side, in LobbyRelay, and isn't
-  // controlled by this flag). Defaults OFF — opt-in via the player's
-  // Gapless button (see UI.updateGaplessButton / Engine.toggleGapless).
-  // Persisted across sessions in localStorage under 'nl_gapless'.
+  // Gapless preload/splice. In lobby mode this MIRRORS the server's
+  // authoritative Lobby.gapless (see Engine._lobbySync) — the host
+  // changes it through the same /gapless control endpoint as loop mode
+  // and autoplay, same pattern as the block above. In standalone mode
+  // this client owns it outright, persisted in localStorage under
+  // 'nl_gapless' so the choice survives a reload. Defaults OFF either
+  // way — opt-in via the player's Gapless button (see
+  // UI.updateGaplessButton / Engine.toggleGapless).
   gaplessEnabled: false,
 
   // PCM engine

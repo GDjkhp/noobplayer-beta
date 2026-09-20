@@ -20,7 +20,7 @@ const UI = {
     // now (see Lobby.peek_next_track / advance_track in server.py), so they
     // follow the same host rule as every other playback control rather than
     // being switched off for everyone including the host.
-    ['btn-shuf','loop-btn','btn-qshuf','btn-qclr','btn-qsmart','btn-qfair','btn-autoplay']
+    ['btn-shuf','loop-btn','gapless-btn','btn-qshuf','btn-qclr','btn-qsmart','btn-qfair','btn-autoplay']
       .forEach(id => { const el = document.getElementById(id); if (el) el.disabled = locked; });
 
     document.querySelectorAll('.add-btn.pnow').forEach(b => b.disabled = locked);
@@ -39,22 +39,18 @@ const UI = {
     btn.classList.toggle('on', S.loopMode !== 'none');
   },
 
-  // Gapless is a standalone-only setting (see Engine.toggleGapless) —
-  // lobby mode's equivalent is always on server-side, so the button just
-  // reflects that as a fixed, non-interactive "ON" instead of following
-  // S.gaplessEnabled (which is never touched by lobby mode).
+  // Gapless mirrors S.gaplessEnabled in both modes now — lobby mode's
+  // value comes from the server (see Engine._lobbySync), standalone's
+  // is owned locally (see Engine.toggleGapless). Host-lock for lobby
+  // mode is handled by applyLockState, same as loop-btn.
   updateGaplessButton() {
     const btn = document.getElementById('gapless-btn');
     if (!btn) return;
-    if (S.mode === 'server') {
-      btn.textContent = 'GAPLESS';
-      btn.classList.add('on');
-      btn.title = 'Gapless is always on in lobby mode — it runs server-side';
-    } else {
-      btn.textContent = S.gaplessEnabled ? 'GAPLESS ON' : 'GAPLESS OFF';
-      btn.classList.toggle('on', S.gaplessEnabled);
-      btn.title = 'Gapless playback (standalone mode) — preloads and splices in the next track with no gap';
-    }
+    btn.textContent = S.gaplessEnabled ? 'GAPLESS ON' : 'GAPLESS OFF';
+    btn.classList.toggle('on', S.gaplessEnabled);
+    btn.title = S.mode === 'server'
+      ? 'Gapless playback (host-controlled, shared by the whole lobby)'
+      : 'Gapless playback (standalone mode)';
   },
 
   updateQueueHeader() {

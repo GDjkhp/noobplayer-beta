@@ -23,11 +23,18 @@
    no local PCM stream, no drift correction, and no per-client NodeLink
    fetch: Lobby.onState() calling Engine._lobbySync() just keeps that
    <audio> element (and the reused PCMPlayer-shaped UI hooks) in sync
-   with the server's authoritative state. Gapless preloading + stitching
-   for that mode happens server-side (LobbyRelay.ensure_preload /
-   _pump_track in server.py) — the relay keeps muxing into the SAME
-   Opus/Ogg session across the track boundary, so relayGen doesn't bump
-   and the client's <audio> element never has to reconnect.
+   with the server's authoritative state. Gapless is a lobby-wide,
+   host-controlled setting there too (Lobby.gapless in server.py,
+   mirrored into S.gaplessEnabled the same way loop mode/autoplay are —
+   see _lobbySync below and Engine.toggleGapless), also OFF by default.
+   Either way, the Ogg/Opus session and the client's <audio> connection
+   are untouched by the setting — the relay always keeps muxing into the
+   SAME session across a track boundary, so relayGen never bumps and
+   nobody reconnects. What the setting actually controls server-side is
+   whether the NEXT track's audio was already buffered ahead of time
+   (LobbyRelay.ensure_preload) — off just means the boundary goes quiet
+   for a moment while a fresh NodeLink fetch catches up, instead of
+   picking up on the next track's audio instantly.
 ═══════════════════════════════════════════ */
 const Engine = {
 
@@ -882,15 +889,23 @@ const Engine = {
     toast(`Autoplay: ${next}`, 'info', 1500);
   },
 
-  // Gapless preload/splice — standalone mode only (see the "gapless
-  // preload / splice" section up top; lobby mode's equivalent is
-  // always-on server-side and isn't affected by this). Defaults OFF;
-  // persisted in localStorage so the choice survives a reload. Turning
-  // it on immediately kicks off a preload for whatever's predicted to
-  // play next; turning it off drops whatever was in flight so a stale
-  // preload doesn't get spliced in later after being re-enabled.
-  toggleGapless() {
-    if (S.mode === 'server') { toast('Gapless is always on in lobby mode — it runs server-side', 'info', 3000); return; }
+  // Gapless preload/splice. Standalone mode: client-local (see the
+  // "gapless preload / splice" section up top). Lobby mode: the SAME
+  // setting lives server-side (Lobby.gapless in server.py) — the host
+  // toggles it through a control endpoint and it's mirrored to everyone
+  // via state, exactly like loop mode / autoplay (see Engine._lobbySync).
+  // Defaults OFF either way; the standalone side is persisted in
+  // localStorage so the choice survives a reload.
+  async toggleGapless() {
+    if (S.mode === 'server') {
+      if (!S.lobby.isHost) { toast('Only the host can change gapless playback', 'warn'); return; }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'gapless', { clientId: S.lobby.clientId, enabled: !S.gaplessEnabled });
+        Lobby.applyControlResult(r);
+        toast(`Gapless playback: ${r.state.gapless ? 'ON' : 'OFF'}`, 'info', 1500);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      return;
+    }
     S.gaplessEnabled = !S.gaplessEnabled;
     try { localStorage.setItem('nl_gapless', S.gaplessEnabled ? '1' : '0'); } catch (_) {}
     if (S.gaplessEnabled) this._ensurePreload(); else this._cancelPreload();
@@ -967,7 +982,14 @@ const Engine = {
     S.loopMode = state.loopMode || 'none';
     S.autoplay = state.autoplay || 'enabled';
     S.autoQueueCount = state.autoQueueCount || 0;
+    // Gapless is the SERVER's setting in lobby mode too (see server.py's
+    // Lobby.gapless / LobbyRelay.ensure_preload) — the host toggles it
+    // through the same control endpoint as loop/autoplay, and every
+    // client's Gapless button just mirrors whatever comes back, same
+    // reasoning as the two lines above.
+    S.gaplessEnabled = !!state.gapless;
     UI.updateLoopButton();
+    UI.updateGaplessButton();
     UI.updateQueueHeader();
 
     if (!state.currentTrack) {

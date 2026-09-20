@@ -385,7 +385,13 @@ class LobbyRelay:
         # streaming — so when the current track's NodeLink stream ends
         # naturally, _pump_track can start feeding the next track's audio
         # into the SAME ongoing Ogg/Opus mux session immediately, with no
-        # dead air and no listener reconnect (relayGen doesn't bump).
+        # dead air. Host-controlled per lobby (self.lobby.gapless — see
+        # the /gapless route); ensure_preload() no-ops entirely while it's
+        # off, so a natural advance falls through to _pump_track's live
+        # NodeLink fetch instead, which is what actually produces the
+        # gap — the Ogg session itself and the listener's connection
+        # (relayGen) are untouched either way; only the boundary is quiet
+        # rather than instant.
         # Shape: {"track": dict, "chunks": [bytes], "done": bool, "task": Task}
         self._preload = None
 
@@ -597,9 +603,15 @@ class LobbyRelay:
         return self.lobby.peek_next_track()
 
     def ensure_preload(self):
-        """Call whenever the queue changes (add/remove/move) or a track
-        starts, so the prefetch always targets whatever will actually
-        play next. Cheap no-op if the prediction hasn't changed."""
+        """Call whenever the queue changes (add/remove/move), a track
+        starts, or the host flips the Gapless toggle, so the prefetch
+        always targets whatever will actually play next. Cheap no-op if
+        the prediction hasn't changed. No-op entirely (and drops any
+        preload already in flight) while the lobby's Gapless setting is
+        off — see the /gapless route."""
+        if not self.lobby.gapless:
+            self._cancel_preload()
+            return
         next_track = self._predict_next_track()
         want_id = next_track.get("encoded") if next_track else None
         have_id = self._preload["track"].get("encoded") if self._preload else None
@@ -1226,6 +1238,11 @@ class Lobby:
         self.auto_queue = []           # recommendation pool (get_rekt equivalent)
         self.rec_task = None           # in-flight recommendation fetch
 
+        # Gapless preload — shared lobby-wide, host-controlled (see the
+        # /gapless route), mirrors the standalone client's own toggle.
+        # Off by default, same as standalone. See LobbyRelay.ensure_preload.
+        self.gapless = False
+
         self.relay = LobbyRelay(self)
 
     def current_position_ms(self):
@@ -1333,6 +1350,7 @@ class Lobby:
             "autoplay": self.autoplay,
             "autoQueueCount": len(self.auto_queue),
             "historyCount": len(self.history),
+            "gapless": self.gapless,
         }
 
     def participant_list(self):
@@ -2035,6 +2053,31 @@ async def lobby_autoplay(code):
     else:
         await populate_recommendations(lobby, broadcast_state=False)
     lobby.relay.ensure_preload()
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
+
+
+@app.route("/api/lobby/<code>/gapless", methods=["POST"])
+async def lobby_gapless(code):
+    """Host-only: turn the relay's gapless preload/splice on or off for
+    the whole lobby — mirrors the standalone client's own Gapless toggle
+    (Engine.toggleGapless), except this one is shared state instead of a
+    per-client preference, same as loop mode and autoplay. Off doesn't
+    force a hard reconnect at each track boundary (the Ogg/Opus session
+    stays open either way — see LobbyRelay._run) — it just stops
+    prefetching the next track ahead of time, so a natural advance has to
+    open a fresh NodeLink connection right at the boundary instead of
+    already having bytes buffered, which is what makes the transition
+    non-instant."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    lobby.gapless = bool(data.get("enabled"))
+    lobby.relay.ensure_preload()  # ON: start prefetching now; OFF: drop whatever was in flight
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
