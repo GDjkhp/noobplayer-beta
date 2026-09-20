@@ -1007,12 +1007,30 @@ const Engine = {
       // just keeps quietly consuming silence until resume_or_start() (a
       // play, queue add, or "previous" on the server) hands it real audio
       // again — same connection, no reconnect either way.
+      //
+      // That fixed the AUDIO. It didn't fix the DISPLAY: this state push
+      // fires the instant the server's own real-time clock finishes the
+      // track, which is earlier than the moment it's actually audible —
+      // the element can easily still have a second or more of that same
+      // real audio sitting in its buffer (see _bufferedLagMs), same as a
+      // natural gapless advance below. Switching to "Nothing playing"
+      // right here made the UI (and, if the next thing played arrived
+      // before that tail drained, the NEXT track's title/art) jump ahead
+      // of what was still coming out of the speakers — which is exactly
+      // what looked like the track cutting off early, even though the
+      // audio itself was fine. Defer it by that same buffered lag,
+      // reusing the identical pending-swap mechanism below so a real
+      // track arriving in the meantime (someone hits play) cleanly
+      // supersedes the idle switch instead of both firing.
+      if (S.current) {
+        const lagMs = this._bufferedLagMs(audio);
+        if (lagMs > 150) {
+          this._scheduleIdleSwitch(state, lagMs);
+          return;
+        }
+      }
       this._cancelPendingTrackSwap();
-      S.current = null;
-      S.player.setAnchor(state.positionMs, true);  // freeze position reporting; don't touch audio.paused
-      if (S.posTimer) { clearInterval(S.posTimer); S.posTimer = null; }
-      UI.updatePlayerUI();
-      UI.renderQueue();
+      this._goIdle(state);
       return;
     }
 
@@ -1037,6 +1055,34 @@ const Engine = {
     this._cancelPendingTrackSwap();
     await this._applyLobbyTrackState(state, trackChanged, genChanged, audio);
   },
+
+  // Actually switches the UI to Idle — pulled out of _lobbySync so both
+  // the immediate path (lag already negligible) and the deferred path
+  // (_scheduleIdleSwitch, below) apply it the same way.
+  _goIdle(state) {
+    S.current = null;
+    S.player.setAnchor(state.positionMs, true);  // freeze position reporting; don't touch audio.paused
+    if (S.posTimer) { clearInterval(S.posTimer); S.posTimer = null; }
+    UI.updatePlayerUI();
+    UI.renderQueue();
+  },
+
+  // Holds off switching to Idle until the previous track's still-buffered
+  // tail has actually finished playing — the idle counterpart of
+  // _scheduleTrackSwap below, sharing its pending-state fields so whichever
+  // of the two happens second (a real track arriving vs. the idle switch
+  // firing) cleanly supersedes the other instead of both applying.
+  _scheduleIdleSwitch(state, lagMs) {
+    S.lobby.pendingTrackState = state;
+    if (S.lobby.pendingTrackTimer) clearTimeout(S.lobby.pendingTrackTimer);
+    S.lobby.pendingTrackTimer = setTimeout(() => {
+      if (S.lobby.pendingTrackState !== state) return; // superseded meanwhile
+      S.lobby.pendingTrackState = null;
+      S.lobby.pendingTrackTimer = null;
+      this._goIdle(state);
+    }, lagMs);
+  },
+
 
   // How much of the <audio> element's own buffer hasn't been played yet,
   // in ms — a proxy for how far "what's audible right now" lags behind

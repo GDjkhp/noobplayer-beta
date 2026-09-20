@@ -343,8 +343,22 @@ OPUS_BITRATE = 96000
 # seconds of real cushion; a still-slow listener after this many still
 # genuinely can't keep up and dropping for them is correct.
 LISTENER_QUEUE_MAX = 150
-IDLE_KEEPALIVE_SECONDS = 15   # silence frame cadence while the queue is empty — must stay
-                              # comfortably under any reverse-proxy idle-read timeout in front
+# How often the idle loop wakes to top up silence while the queue is
+# empty. This used to be a single 20ms frame every 15 seconds — fine for
+# keeping the TCP connection alive through a reverse-proxy idle-read
+# timeout, but it meant that the INSTANT a track ended with nothing
+# queued, every listener's <audio> buffer (which typically only has a
+# second or so of real margin, same as during normal playback) ran
+# completely dry and sat there with literally nothing arriving for up to
+# 15 seconds. That's what made "no next track" sound like the song itself
+# got cut off, instead of the smooth, uninterrupted continuation a queued
+# next track gets (there's never a gap in that case — real audio just
+# keeps flowing). Waking far more often bounds that worst-case gap to
+# something a listener's buffer margin can absorb. _feed_silence itself
+# always makes up exactly however much wall-clock time has actually
+# elapsed (see its own comment) — this constant only controls how promptly
+# it's given the chance to do that, not how much silence gets fed.
+IDLE_KEEPALIVE_SECONDS = 1.0
 
 
 class _CallbackIO:
@@ -402,9 +416,12 @@ class LobbyRelay:
         # next had to open a brand new one (see resume_or_start below).
         # Now _run instead parks itself in an idle wait right where it is:
         # same task, same still-open Ogg container, same /live connection
-        # every listener is already attached to. A silence frame every
-        # IDLE_KEEPALIVE_SECONDS keeps that connection warm through any
-        # reverse-proxy idle-read timeout in front of this server.
+        # every listener is already attached to. _feed_silence tops that
+        # connection up at exactly real-time speed (see its own comment for
+        # why "exactly" matters) every IDLE_KEEPALIVE_SECONDS, which both
+        # keeps a listener's <audio> buffer from ever running dry and keeps
+        # the connection warm through any reverse-proxy idle-read timeout
+        # in front of this server.
         self._idle = False               # True while parked in the idle wait below
         self._idle_event = asyncio.Event()
         self._pending = None             # (track, position_ms, filters) waiting to resume with
@@ -818,11 +835,15 @@ class LobbyRelay:
                 # a moment before it actually finished.
                 #
                 # Instead: stay right here. Container stays open, task stays
-                # alive, generation doesn't change, nobody reconnects. A
-                # silence frame every IDLE_KEEPALIVE_SECONDS keeps the Ogg
-                # bitstream continuous and the connection warm through any
-                # reverse-proxy idle-read timeout. resume_or_start() is what
-                # wakes this back up — see lobby_play / queue/add.
+                # alive, generation doesn't change, nobody reconnects. Waking
+                # every IDLE_KEEPALIVE_SECONDS and letting _feed_silence make
+                # up exactly however much real time has passed keeps a
+                # listener's <audio> buffer continuously topped up at 1x (so
+                # idle never itself sounds like a dropout, and never builds
+                # up a backlog either) and keeps the Ogg bitstream + the
+                # connection warm through any reverse-proxy idle-read timeout.
+                # resume_or_start() is what wakes this back up — see
+                # lobby_play / queue/add.
                 self._idle = True
                 self._cancel_preload()  # nothing to predict past — re-established on resume
                 self._idle_event.clear()
@@ -1043,15 +1064,44 @@ class LobbyRelay:
         return frame
 
     def _feed_silence(self, container, stream):
-        """One frame of digital silence, muxed exactly like real audio. Used
-        only during the idle wait (see _run) so the gap actually sounds
-        like silence instead of the connection just stalling, AND so the
-        Ogg logical bitstream stays continuous — when a real track resumes
-        it's muxed into this same still-open stream with no break, same as
-        any other gapless transition."""
-        frame = self._pcm_to_frame(bytes(PCM_FRAME_BYTES))  # zero-filled s16 = silence
-        for pkt in stream.encode(frame):
-            container.mux(pkt)
+        """Enough digital silence to keep the SAME real-time clock feed_chunk
+        uses (self._pace_next) caught up to wall time — muxed exactly like
+        real audio, back-to-back with no per-frame sleep between them (it's
+        inaudible filler, nothing for a listener to sync against, so there's
+        no reason to pace it out one frame at a time the way real audio has
+        to be).
+
+        This has to land on exactly 1x real time, not just "some amount
+        periodically" — an earlier version of this fed a fixed multi-second
+        burst on every wake, which oversupplied relative to wall-clock time.
+        That silently built up an ever-growing backlog the whole time the
+        queue stayed empty: a listener's <audio> buffer kept getting further
+        and further ahead, so after any decently long idle stretch, resuming
+        real playback meant sitting through minutes of already-buffered
+        silence before reaching the resumed track, at 1x. Computing the
+        frame count from self._pace_next instead means exactly as much
+        silence is muxed as time has actually elapsed — no drift either way
+        — and it's the same clock feed_chunk resumes on, so the handoff back
+        to real audio in either direction (silence -> real, real -> silence)
+        never has a seam.
+        """
+        frame_dur = PCM_FRAME_SAMPLES / PCM_RATE
+        now = time.monotonic()
+        if self._pace_next is None or now - self._pace_next > frame_dur * 2:
+            # No schedule yet, or a gap big enough that catching it up
+            # would mean firehosing frames that were never really owed
+            # (mirrors feed_chunk's identical fallback) — start fresh.
+            self._pace_next = now
+        frame_count = 0
+        while self._pace_next <= now:
+            frame_count += 1
+            self._pace_next += frame_dur
+        if frame_count == 0:
+            return
+        silent_bytes = bytes(PCM_FRAME_BYTES)
+        for _ in range(frame_count):
+            for pkt in stream.encode(self._pcm_to_frame(silent_bytes)):
+                container.mux(pkt)
         self._header_chunks_done = True
 
     async def _advance_for_gapless(self, my_generation):
