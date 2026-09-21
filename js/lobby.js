@@ -273,8 +273,8 @@ const Lobby = {
               urls: 'stun:stun.cloudflare.com:3478'
             }
           ],
-          // iceTransportPolicy: 'all', // Explicitly allow host, srflx (STUN) paths
-          // iceCandidatePoolSize: 4    // Pre-gather local interfaces early to avoid slow timeouts
+          iceTransportPolicy: 'all', // Explicitly allow host, srflx (STUN) paths
+          iceCandidatePoolSize: 4    // Pre-gather local interfaces early to avoid slow timeouts
         }
       );
       S.lobby.pc = pc;
