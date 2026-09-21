@@ -266,7 +266,7 @@ const Lobby = {
      disturb music playback already flowing through this connection. */
   async _connectMedia() {
     try {
-      const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }] });
       S.lobby.pc = pc;
       S.lobby.micStream = null;
       S.lobby.micEnabled = false;
