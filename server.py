@@ -126,20 +126,6 @@ asgi_app = socketio.ASGIApp(sio, other_asgi_app=app)
 NL_HOST = config.NODELINK_HOST.rstrip("/")
 NL_PASS = config.NODELINK_PASSWORD
 load_dotenv()
-ice_servers = [
-    RTCIceServer(
-        urls=[
-            "stun:stun.cloudflare.com:3478",
-            # "turn:turn.cloudflare.com:3478?transport=udp",
-            # "turn:turn.cloudflare.com:3478?transport=tcp",
-            # "turns:turn.cloudflare.com:5349?transport=tcp",
-            # "turn:turn.cloudflare.com:80?transport=tcp",
-            # "turns:turn.cloudflare.com:443?transport=tcp"
-        ],
-        # username = os.getenv("TURN_USER"),
-        # credential = os.getenv("TURN_PASS"),
-    )
-]
 
 
 http_session: aiohttp.ClientSession | None = None
@@ -2821,7 +2807,20 @@ async def webrtc_offer(code):
             except Exception:
                 traceback.print_exc()
 
-        ice_servers = [RTCIceServer(urls=["stun:stun.cloudflare.com:3478"])]
+        ice_servers = [
+            RTCIceServer(
+                urls=[
+                    "stun:stun.cloudflare.com:3478",
+                    "turn:turn.cloudflare.com:3478?transport=udp",
+                    "turn:turn.cloudflare.com:3478?transport=tcp",
+                    "turns:turn.cloudflare.com:5349?transport=tcp",
+                    "turn:turn.cloudflare.com:80?transport=tcp",
+                    "turns:turn.cloudflare.com:443?transport=tcp"
+                ],
+                username = os.getenv("TURN_USER"),
+                credential = os.getenv("TURN_PASS"),
+            )
+        ]
         pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers))
         participant.pc = pc
         participant.mic_track = None
