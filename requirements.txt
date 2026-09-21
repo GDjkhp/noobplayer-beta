@@ -6,3 +6,4 @@ av
 numpy
 uvicorn
 python-socketio
+python-dotenv
