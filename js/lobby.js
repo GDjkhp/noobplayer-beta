@@ -276,9 +276,9 @@ const Lobby = {
 
       pc.ontrack = (ev) => {
         const stream = ev.streams[0] || new MediaStream([ev.track]);
-        let audioEl = null;
-        if (ev.track.id === S.lobby.musicTrackId) audioEl = document.getElementById('lobby-audio');
-        else if (ev.track.id === S.lobby.voiceTrackId) audioEl = document.getElementById('voice-audio');
+        const transceivers = pc.getTransceivers().filter(t => t.receiver && t.receiver.track && t.receiver.track.kind === 'audio');
+        const idx = transceivers.findIndex(t => t.receiver.track === ev.track);
+        const audioEl = document.getElementById(idx === 0 ? 'lobby-audio' : 'voice-audio');
         if (audioEl && audioEl.srcObject !== stream) audioEl.srcObject = stream;
       };
 

@@ -2804,7 +2804,7 @@ async def webrtc_offer(code):
             except Exception:
                 traceback.print_exc()
 
-        ice_servers = [RTCIceServer(urls=u) for u in config.ICE_SERVERS]
+        ice_servers = [RTCIceServer(urls=["stun:stun.l.google.com:19302"])]
         pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers))
         participant.pc = pc
         participant.mic_track = None
