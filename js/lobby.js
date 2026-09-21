@@ -270,7 +270,7 @@ const Lobby = {
         {
           iceServers: [
             {
-              urls: 'stun:://google.com'
+              urls: 'stun:stun.cloudflare.com:3478'
             }
           ],
           iceTransportPolicy: 'all', // Explicitly allow host, srflx (STUN) paths
