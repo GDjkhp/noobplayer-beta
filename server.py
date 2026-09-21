@@ -76,7 +76,7 @@ import fractions
 import io
 import json
 import random
-import re
+import re, os
 import string
 import struct
 import time
@@ -93,6 +93,7 @@ from quart import Quart, Response, jsonify, request, send_from_directory
 from quart_cors import cors
 
 import config
+from dotenv import load_dotenv
 
 try:
     from aiortc import MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
@@ -124,6 +125,22 @@ asgi_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
 NL_HOST = config.NODELINK_HOST.rstrip("/")
 NL_PASS = config.NODELINK_PASSWORD
+load_dotenv()
+ice_servers = [
+    RTCIceServer(
+        urls=[
+            "stun:stun.cloudflare.com:3478",
+            "turn:turn.cloudflare.com:3478?transport=udp",
+            "turn:turn.cloudflare.com:3478?transport=tcp",
+            "turns:turn.cloudflare.com:5349?transport=tcp",
+            "turn:turn.cloudflare.com:80?transport=tcp",
+            "turns:turn.cloudflare.com:443?transport=tcp"
+        ],
+        username = os.getenv("TURN_USER"),
+        credential = os.getenv("TURN_PASS"),
+    )
+]
+
 
 http_session: aiohttp.ClientSession | None = None
 
