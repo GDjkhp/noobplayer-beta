@@ -2,14 +2,15 @@
 /* ═══════════════════════════════════════════
    AudioElPlayer — wraps a plain <audio> element so it satisfies the same
    interface as PCMPlayer (getPositionMs/isPaused/getLevels/setVolume/
-   pause/resume/destroy). Used for lobby (server) mode, where playback is
-   now a server-side Opus/Ogg relay and the client is just <audio src=...>
-   — no local PCM decode/scheduling. Keeping the same interface as
-   PCMPlayer means ui.js (progress bar, EQ, level meter, play/pause
-   icons) works completely unchanged regardless of which mode is active.
+   pause/resume/destroy). Used for lobby (server) mode, where playback
+   arrives over WebRTC (see Lobby._connectMedia in lobby.js) and the
+   client just sets `audio.srcObject` to the incoming MediaStream — no
+   local PCM decode/scheduling. Keeping the same interface as PCMPlayer
+   means ui.js (progress bar, EQ, level meter, play/pause icons) works
+   completely unchanged regardless of which mode is active.
 
    Position is intentionally NOT read from audio.currentTime: a listener
-   who joins mid-track only starts receiving bytes from "now" (it's a
+   who joins mid-track only starts receiving frames from "now" (it's a
    live relay, not a seekable file), so audio.currentTime would read
    from 0 at connect time, not the track's true elapsed position. The
    server already computes and broadcasts the authoritative position
@@ -79,12 +80,12 @@ class AudioElPlayer {
 
   // ── visualizer feeds ── (identical surface to PCMPlayer's)
   //
-  // Caveat worth knowing: WebAudio refuses to analyse a cross-origin media
-  // element unless it was loaded with CORS, and silently hands back zeros
-  // instead of erroring. The lobby <audio> element therefore carries
-  // crossorigin="anonymous" (see index.html) and the server sends
-  // Access-Control-Allow-Origin on /live — without both, visualizers go
-  // flat-lined the moment you point the app at a non-same-origin server.
+  // Caveat worth knowing: WebAudio's cross-origin restriction only ever
+  // applied to a *fetched* media resource (the old HTTP `/live` relay).
+  // lobby-audio's source is now a WebRTC MediaStream (see
+  // Lobby._connectMedia in lobby.js), which WebAudio can always analyse
+  // regardless of the server's origin — no crossorigin attribute or
+  // CORS header needed on either side anymore.
   get binCount() { return this.analyser ? this.analyser.frequencyBinCount : 0; }
 
   getSpectrum(out) {
@@ -106,6 +107,7 @@ class AudioElPlayer {
   async destroy() {
     this.audio.pause();
     this.audio.removeAttribute('src');
+    this.audio.srcObject = null;
     try { this.audio.load(); } catch (_) {}
     try { this.srcNode && this.srcNode.disconnect(); } catch (_) {}
     try { this.analyser && this.analyser.disconnect(); } catch (_) {}

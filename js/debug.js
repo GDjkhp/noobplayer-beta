@@ -984,13 +984,11 @@ const Debug = {
     const cards = [
       ['Generation', s.generation],
       ['Idle', s.idle ? 'yes (silence keepalive)' : 'no'],
-      ['Listeners', s.listeners],
-      ['Frames encoded', s.framesEncoded],
-      ['Encode ms (avg/max)', `${s.encodeMsAvg ?? '—'} / ${s.encodeMsMax ?? '—'}`],
+      ['Listeners (WebRTC)', s.listeners],
+      ['Frames sent', s.framesSent],
       ['Pace drift ms (avg/max)', `${s.paceDriftMsAvg ?? '—'} / ${s.paceDriftMsMax ?? '—'}`],
-      ['Listener queue drops', s.listenerDrops],
-      ['Encode sessions started', s.sessionsStarted],
-      ['PCM in / Opus out', `${this._fmtBytes(s.pcmBytesIn)} / ${this._fmtBytes(s.opusBytesOut)}`],
+      ['Sessions started', s.sessionsStarted],
+      ['PCM produced', this._fmtBytes(s.pcmBytesIn)],
       ['Last frame age', s.lastFrameAgeMs == null ? '—' : `${Math.round(s.lastFrameAgeMs)}ms`],
       ['Participants / Queue len', `${s.participants ?? '—'} / ${s.queueLength ?? '—'}`],
     ];

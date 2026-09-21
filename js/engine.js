@@ -17,21 +17,22 @@
    (`_localPlay`), same as before this setting existed.
 
    Server mode: public methods (for the host) send REST control calls to
-   the lobby; actual audio comes from ONE server-side Opus/Ogg relay per
-   lobby (see server.py's LobbyRelay), and every client — host included —
-   is just an <audio> element pointed at it (see AudioElPlayer). There's
-   no local PCM stream, no drift correction, and no per-client NodeLink
-   fetch: Lobby.onState() calling Engine._lobbySync() just keeps that
-   <audio> element (and the reused PCMPlayer-shaped UI hooks) in sync
-   with the server's authoritative state. Gapless is a lobby-wide,
+   the lobby; actual audio comes from ONE server-side WebRTC relay per
+   lobby (see server.py's LobbyRelay / MusicSourceTrack), and every
+   client — host included — has an <audio> element whose srcObject is
+   that relay's MediaStream (see AudioElPlayer, Lobby._connectMedia).
+   There's no local PCM stream, no drift correction, and no per-client
+   NodeLink fetch: Lobby.onState() calling Engine._lobbySync() just keeps
+   that <audio> element (and the reused PCMPlayer-shaped UI hooks) in
+   sync with the server's authoritative state. Gapless is a lobby-wide,
    host-controlled setting there too (Lobby.gapless in server.py,
    mirrored into S.gaplessEnabled the same way loop mode/autoplay are —
    see _lobbySync below and Engine.toggleGapless), also OFF by default.
-   Either way, the Ogg/Opus session and the client's <audio> connection
-   are untouched by the setting — the relay always keeps muxing into the
-   SAME session across a track boundary, so relayGen never bumps and
-   nobody reconnects. What the setting actually controls server-side is
-   whether the NEXT track's audio was already buffered ahead of time
+   Either way, the WebRTC track and the client's connection are untouched
+   by the setting — the relay always keeps pushing into the SAME
+   music_track across a track boundary, so nobody reconnects regardless.
+   What the setting actually controls server-side is whether the NEXT
+   track's audio was already buffered ahead of time
    (LobbyRelay.ensure_preload) — off just means the boundary goes quiet
    for a moment while a fresh NodeLink fetch catches up, instead of
    picking up on the next track's audio instantly.
@@ -935,39 +936,27 @@ const Engine = {
 
   /* ───────── called by Lobby.onState() to drive the shared <audio> element off server-authoritative state ─────────
      Lobby mode no longer runs a local PCM stream at all — the server
-     transcodes the track to Opus/Ogg once and relays it to everyone, so
-     the client here is just pointing an <audio> element at that relay
-     and reflecting play/pause. There's no drift correction because
-     there's nothing to drift: the server IS the single source of the
-     actual audio bytes, not just a position number every client has to
-     independently chase with its own PCM fetch.
+     produces the track's PCM once and relays it to everyone over WebRTC
+     (see MusicSourceTrack in server.py), so the client here is just an
+     <audio> element whose srcObject is that relay's MediaStream (see
+     Lobby._connectMedia), and this just reflects play/pause. There's no
+     drift correction because there's nothing to drift: the server IS the
+     single source of the actual audio, not just a position number every
+     client has to independently chase with its own PCM fetch.
 
-     Gapless note: `trackChanged` and `genChanged` are tracked
-     separately on purpose. A gapless server-side advance (current track
-     ends naturally and LobbyRelay stitches the next one into the SAME
-     Opus/Ogg session — see server.py) changes `currentTrack` WITHOUT
-     bumping `relayGen`, so trackChanged fires (lyrics/UI update) but
-     genChanged doesn't (the <audio> element just keeps playing the same
-     underlying stream, uninterrupted). The element only ever reconnects
-     for a genuinely fresh encode session (explicit play/skip/seek/filter
-     change).
-
-     Buffered-lag note: the `state` push for a gapless advance fires the
-     instant the SERVER'S relay stitches the next track in — that's real
-     time on the server's own pacing clock, not on this listener's. The
-     browser's <audio> element buffers some amount of that already-sent
-     stream ahead of what's actually reaching the speakers, so applying
-     `state.currentTrack` immediately made the title/art/duration/progress
-     bar jump to the next track while the previous one was still audibly
-     playing out of that local buffer — the "current track" shown wasn't
-     actually server-driven, it was server-driven MINUS an unaccounted-for
-     client buffering delay. `_bufferedLagMs` measures that delay off the
-     element itself (`audio.buffered` vs `audio.currentTime`), and
-     `_scheduleTrackSwap` defers applying the new track's state by exactly
-     that long, so what's displayed always matches what's actually
-     audible. Nothing needs deferring on an explicit change (genChanged)
-     since reconnecting the element there (`audio.src = ...`) discards any
-     buffered tail immediately anyway — that IS a hard, instant cut. */
+     Gapless note: a gapless server-side advance (current track ends
+     naturally and LobbyRelay stitches the next one into the SAME
+     WebRTC session — see server.py) changes `currentTrack` without any
+     reconnect on this end at all — `lobby-audio`'s `srcObject` never
+     changes, WebRTC just keeps delivering more audio through the same
+     connection. Nor does a hard cut (skip/seek/filter change,
+     `relayGen` bumping): the old HTTP relay needed the <audio> element
+     to reconnect for those (a fresh Ogg container), which is what the
+     buffered-lag deferred-swap dance below used to compensate for —
+     WebRTC's own jitter buffer is small and roughly constant (tens of
+     ms, not the second-plus an HTTP buffer could accumulate), so state
+     from the server is applied here as soon as it arrives, with no
+     equivalent buffering-lag estimate needed or available. */
   async _lobbySync(state) {
     const audio = document.getElementById('lobby-audio');
     if (!S.player) S.player = new AudioElPlayer(audio);
@@ -991,162 +980,33 @@ const Engine = {
     UI.updateLoopButton();
     UI.updateGaplessButton();
     UI.updateQueueHeader();
+    UI.renderQueue();
 
     if (!state.currentTrack) {
-      // Nothing queued right now — but the relay deliberately keeps this
-      // SAME /live connection alive rather than tearing the session down
-      // (it feeds silence frames instead; see the idle wait in server.py's
-      // LobbyRelay._run). So don't touch audio.src here.
-      //
-      // Killing it used to be exactly what caused a queue's last track (or
-      // a lobby's only track) to cut off abruptly a moment before it
-      // actually finished: whatever audio the element still had sitting in
-      // its own playback buffer got thrown away the instant this update
-      // arrived, rather than being allowed to finish playing out. Leaving
-      // the element alone lets that buffered tail play through, then it
-      // just keeps quietly consuming silence until resume_or_start() (a
-      // play, queue add, or "previous" on the server) hands it real audio
-      // again — same connection, no reconnect either way.
-      //
-      // That fixed the AUDIO. It didn't fix the DISPLAY: this state push
-      // fires the instant the server's own real-time clock finishes the
-      // track, which is earlier than the moment it's actually audible —
-      // the element can easily still have a second or more of that same
-      // real audio sitting in its buffer (see _bufferedLagMs), same as a
-      // natural gapless advance below. Switching to "Nothing playing"
-      // right here made the UI (and, if the next thing played arrived
-      // before that tail drained, the NEXT track's title/art) jump ahead
-      // of what was still coming out of the speakers — which is exactly
-      // what looked like the track cutting off early, even though the
-      // audio itself was fine. Defer it by that same buffered lag,
-      // reusing the identical pending-swap mechanism below so a real
-      // track arriving in the meantime (someone hits play) cleanly
-      // supersedes the idle switch instead of both firing.
-      if (S.current) {
-        const lagMs = this._bufferedLagMs(audio);
-        if (lagMs > 150) {
-          this._scheduleIdleSwitch(state, lagMs);
-          return;
-        }
-      }
-      this._cancelPendingTrackSwap();
-      this._goIdle(state);
+      // Nothing queued right now — but the relay deliberately keeps the
+      // SAME WebRTC track flowing rather than tearing the session down
+      // (it feeds silence frames instead; see the idle wait in
+      // server.py's LobbyRelay._run), so there's nothing to reconnect
+      // here either.
+      S.current = null;
+      S.player.setAnchor(state.positionMs, true);  // freeze position reporting; don't touch audio.paused
+      if (S.posTimer) { clearInterval(S.posTimer); S.posTimer = null; }
+      UI.updatePlayerUI();
       return;
     }
 
     const trackChanged = !S.current || S.current.encoded !== state.currentTrack.encoded;
-    const genChanged = S.lobby.relayGen !== state.relayGen;
-    S.lobby.relayGen = state.relayGen;
-
-    // The queue itself is authoritative the instant it changes — show it
-    // right away regardless of how far the listener's own <audio> buffer
-    // has actually played through (only "what's currently playing" needs
-    // the lag-aware deferral below).
-    UI.renderQueue();
-
-    if (trackChanged && !genChanged) {
-      const lagMs = this._bufferedLagMs(audio);
-      if (lagMs > 150) {
-        this._scheduleTrackSwap(state, lagMs);
-        return;
-      }
-    }
-
-    this._cancelPendingTrackSwap();
-    await this._applyLobbyTrackState(state, trackChanged, genChanged, audio);
-  },
-
-  // Actually switches the UI to Idle — pulled out of _lobbySync so both
-  // the immediate path (lag already negligible) and the deferred path
-  // (_scheduleIdleSwitch, below) apply it the same way.
-  _goIdle(state) {
-    S.current = null;
-    S.player.setAnchor(state.positionMs, true);  // freeze position reporting; don't touch audio.paused
-    if (S.posTimer) { clearInterval(S.posTimer); S.posTimer = null; }
-    UI.updatePlayerUI();
-    UI.renderQueue();
-  },
-
-  // Holds off switching to Idle until the previous track's still-buffered
-  // tail has actually finished playing — the idle counterpart of
-  // _scheduleTrackSwap below, sharing its pending-state fields so whichever
-  // of the two happens second (a real track arriving vs. the idle switch
-  // firing) cleanly supersedes the other instead of both applying.
-  _scheduleIdleSwitch(state, lagMs) {
-    S.lobby.pendingTrackState = state;
-    if (S.lobby.pendingTrackTimer) clearTimeout(S.lobby.pendingTrackTimer);
-    S.lobby.pendingTrackTimer = setTimeout(() => {
-      if (S.lobby.pendingTrackState !== state) return; // superseded meanwhile
-      S.lobby.pendingTrackState = null;
-      S.lobby.pendingTrackTimer = null;
-      this._goIdle(state);
-    }, lagMs);
-  },
-
-
-  // How much of the <audio> element's own buffer hasn't been played yet,
-  // in ms — a proxy for how far "what's audible right now" lags behind
-  // "what the server has transmitted". Same math as Debug's
-  // _bufferedAheadSec, kept separate since this one drives actual
-  // playback-state timing rather than just a stat card.
-  _bufferedLagMs(audio) {
-    try {
-      if (!audio || !audio.buffered || !audio.buffered.length) return 0;
-      const end = audio.buffered.end(audio.buffered.length - 1);
-      return Math.max(0, (end - audio.currentTime) * 1000);
-    } catch (_) { return 0; }
-  },
-
-  // Holds off applying a natural gapless advance's `state` until the
-  // previous track's still-buffered tail has actually finished playing.
-  // Keyed on the `state` object's own identity so a newer push (another
-  // advance, or the host taking an explicit action) can supersede a
-  // still-pending one instead of both firing.
-  _scheduleTrackSwap(state, lagMs) {
-    S.lobby.pendingTrackState = state;
-    if (S.lobby.pendingTrackTimer) clearTimeout(S.lobby.pendingTrackTimer);
-    S.lobby.pendingTrackTimer = setTimeout(() => {
-      if (S.lobby.pendingTrackState !== state) return; // superseded meanwhile
-      S.lobby.pendingTrackState = null;
-      S.lobby.pendingTrackTimer = null;
-      const audio = document.getElementById('lobby-audio');
-      this._applyLobbyTrackState(state, true, false, audio);
-    }, lagMs);
-  },
-
-  _cancelPendingTrackSwap() {
-    if (S.lobby.pendingTrackTimer) { clearTimeout(S.lobby.pendingTrackTimer); S.lobby.pendingTrackTimer = null; }
-    S.lobby.pendingTrackState = null;
-  },
-
-  async _applyLobbyTrackState(state, trackChanged, genChanged, audio) {
+    S.lobby.relayGen = state.relayGen;  // diagnostic only now — see Debug tab; nothing client-side reacts to it changing
     if (trackChanged) {
       S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
     }
     S.current = state.currentTrack;
-
-    if (genChanged) {
-      // A fresh encode session started server-side (new track, seek, or
-      // filter change) — old connection would only serve stale/ended
-      // bytes, so point the element at a new one. This is the only time
-      // lobby playback "reconnects"; pause/resume never do, and neither
-      // does a gapless natural advance (see note above).
-      UI.setBuffering(true);
-      audio.src = LobbyAPI.liveUrl(S.lobby.code, state.relayGen);
-      audio.load();
-      const cleanup = () => { audio.removeEventListener('playing', onReady); audio.removeEventListener('error', onError); };
-      const onReady = () => { UI.setBuffering(false); cleanup(); };
-      const onError = () => { UI.setBuffering(false); cleanup(); toast('Playback stream error — will retry on the next update', 'warn', 4000); };
-      audio.addEventListener('playing', onReady);
-      audio.addEventListener('error', onError);
-    }
 
     S.player.setAnchor(state.positionMs, state.paused);
     if (state.paused) S.player.pause();
     else { try { await S.player.resume(); } catch (_) {} }
 
     UI.updatePlayerUI();
-    if (trackChanged) UI.renderQueue();
     UI.startPosTimer();
   },
 };

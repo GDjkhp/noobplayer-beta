@@ -154,10 +154,6 @@ const LobbyAPI = {
     return res.json();
   },
 
-  liveUrl(code, relayGen) {
-    return `${this.base()}/api/lobby/${code}/live?g=${relayGen}`;
-  },
-
   webrtcOfferUrl(code) {
     return `${this.base()}/api/lobby/${code}/webrtc/offer`;
   },

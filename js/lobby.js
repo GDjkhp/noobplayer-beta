@@ -3,7 +3,9 @@
    Lobby — server mode. Talks to the Flask backend for:
      - lobby create/join/browse (REST)
      - shared playback state + chat (Socket.IO push)
-     - voice chat (WebRTC via aiortc, server-side mixed per listener)
+     - music + voice chat, both over ONE WebRTC connection per client
+       (real UDP transport — ICE/DTLS/SRTP — replacing the old HTTP
+       `/live` relay entirely; server-side mixing/relay via aiortc)
 ═══════════════════════════════════════════ */
 const Lobby = {
 
@@ -76,6 +78,7 @@ const Lobby = {
     document.getElementById('sdot')?.classList.add('ok');
 
     this._connectSocket(code, clientId);
+    this._connectMedia();  // fire-and-forget — establishes music (+ mixed voice) over WebRTC; see below
     UI.applyLockState();
     UI.renderConfigTab();
     toast(`Joined lobby ${code}${isHost ? ' as host' : ''}`, 'success');
@@ -219,10 +222,13 @@ const Lobby = {
   },
 
   async leave() {
-    Engine._cancelPendingTrackSwap();
     if (S.lobby.socket) { S.lobby.socket.disconnect(); S.lobby.socket = null; }
     if (S.lobby.pc) { S.lobby.pc.close(); S.lobby.pc = null; }
     if (S.lobby.micStream) { S.lobby.micStream.getTracks().forEach(t => t.stop()); S.lobby.micStream = null; }
+    const lobbyAudio = document.getElementById('lobby-audio');
+    if (lobbyAudio) lobbyAudio.srcObject = null;
+    const voiceAudio = document.getElementById('voice-audio');
+    if (voiceAudio) voiceAudio.srcObject = null;
     if (S.lobby.code) await LobbyAPI.leave(S.lobby.code, S.lobby.clientId);
     Engine._stopLocal();
     S.current = null; S.queue = [];
@@ -234,7 +240,7 @@ const Lobby = {
     S.autoQueue = []; S.autoQueueCount = 0;
     S.history = [];
     S.mode = null;
-    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, pc:null, micStream:null, micEnabled:false, lastServerState:null, relayGen:0, pendingTrackState:null, pendingTrackTimer:null };
+    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, pc:null, musicTrackId:null, voiceTrackId:null, micStream:null, micEnabled:false, lastServerState:null, relayGen:0 };
     document.getElementById('hdr-lobby').style.display = 'none';
     document.getElementById('tab-chat-btn').style.display = 'none';
     document.getElementById('chat-log').innerHTML = '';
@@ -246,34 +252,77 @@ const Lobby = {
     UI.renderConfigTab();
   },
 
-  /* ───────── WebRTC voice (aiortc relay/mixer on the server) ───────── */
+  /* ───────── WebRTC — music + voice, one connection per client ─────────
+     _connectMedia() runs once, right on joining the lobby: it opens the
+     RTCPeerConnection and declares two RECVONLY transceivers up front —
+     [0] the shared music relay, [1] the mixed voice mix — which the
+     server fills via pc.addTrack() on its side (see webrtc_offer in
+     server.py). That's the standard WebRTC pattern for "I want to
+     receive N things I'm not sending anything on yet".
+
+     Enabling the mic later (_enableMic) adds a THIRD, sendonly,
+     transceiver via renegotiation on the SAME pc — deliberately not
+     reusing either of the two recvonly ones, so toggling voice can never
+     disturb music playback already flowing through this connection. */
+  async _connectMedia() {
+    try {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      S.lobby.pc = pc;
+      S.lobby.micStream = null;
+      S.lobby.micEnabled = false;
+
+      pc.addTransceiver('audio', { direction: 'recvonly' }); // music
+      pc.addTransceiver('audio', { direction: 'recvonly' }); // mixed voice
+
+      pc.ontrack = (ev) => {
+        const stream = ev.streams[0] || new MediaStream([ev.track]);
+        let audioEl = null;
+        if (ev.track.id === S.lobby.musicTrackId) audioEl = document.getElementById('lobby-audio');
+        else if (ev.track.id === S.lobby.voiceTrackId) audioEl = document.getElementById('voice-audio');
+        if (audioEl && audioEl.srcObject !== stream) audioEl.srcObject = stream;
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await this._waitIceComplete(pc);
+
+      const res = await fetch(LobbyAPI.webrtcOfferUrl(S.lobby.code), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: S.lobby.clientId, sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const answer = await res.json();
+      // Must be known BEFORE setRemoteDescription — that's what fires
+      // `ontrack` above, and it needs these to route the two incoming
+      // tracks correctly. See webrtc_offer in server.py for where they
+      // come from.
+      S.lobby.musicTrackId = answer.musicTrackId;
+      S.lobby.voiceTrackId = answer.voiceTrackId;
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    } catch (e) {
+      toast(`Playback connection error: ${e.message}`, 'error', 6000);
+    }
+  },
+
   async toggleMic() {
-    if (!S.lobby.pc) {
-      await this._startVoice();
+    if (!S.lobby.micStream) {
+      await this._enableMic();
     } else {
       S.lobby.micEnabled = !S.lobby.micEnabled;
-      if (S.lobby.micStream) {
-        S.lobby.micStream.getAudioTracks().forEach(t => t.enabled = S.lobby.micEnabled);
-      }
+      S.lobby.micStream.getAudioTracks().forEach(t => t.enabled = S.lobby.micEnabled);
       this._updateMicBtn();
     }
   },
 
-  async _startVoice() {
+  async _enableMic() {
+    const pc = S.lobby.pc;
+    if (!pc) { toast('Still connecting — try again in a moment', 'warn'); return; }
     try {
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       S.lobby.micStream = micStream;
       S.lobby.micEnabled = true;
 
-      const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-      S.lobby.pc = pc;
-
-      pc.addTransceiver(micStream.getAudioTracks()[0], { direction: 'sendrecv', streams: [micStream] });
-
-      pc.ontrack = (ev) => {
-        const audioEl = document.getElementById('voice-audio');
-        if (audioEl.srcObject !== ev.streams[0]) audioEl.srcObject = ev.streams[0];
-      };
+      pc.addTransceiver(micStream.getAudioTracks()[0], { direction: 'sendonly', streams: [micStream] });
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -288,10 +337,12 @@ const Lobby = {
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
 
       this._updateMicBtn();
-      toast('🎤 Voice connected', 'success', 2000);
+      toast('🎤 Mic on', 'success', 2000);
     } catch (e) {
-      toast(`Voice error: ${e.message}`, 'error', 5000);
-      if (S.lobby.pc) { S.lobby.pc.close(); S.lobby.pc = null; }
+      toast(`Mic error: ${e.message}`, 'error', 5000);
+      S.lobby.micEnabled = false;
+      if (S.lobby.micStream) { S.lobby.micStream.getTracks().forEach(t => t.stop()); S.lobby.micStream = null; }
+      this._updateMicBtn();
     }
   },
 

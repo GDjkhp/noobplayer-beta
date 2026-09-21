@@ -20,18 +20,17 @@ Architecture
 ------------
 - Music playback: the server holds *authoritative* playback state per lobby
   (current track, paused/playing, a position anchor + server timestamp,
-  active filters, queue) AND now owns the actual audio pipeline too. For
-  each lobby, ONE background task (LobbyRelay, below) pulls raw PCM from
-  NodeLink, transcodes it to Opus/Ogg in real time, and fans the encoded
-  bytes out to every connected listener over plain HTTP (GET
-  /api/lobby/<code>/live). Clients are dumb — an <audio> element pointed
-  at that URL, no local PCM decode/scheduling/drift-correction. A slow
-  listener's queue just drops old frames (graceful degradation) instead
-  of the whole track getting cut short or skipped, and a track's actual
-  progress no longer depends on any one client's network. Bandwidth is
-  ~12x lower than the old raw-PCM-per-client design (Opus @ ~96kbps vs
-  PCM @ ~1.5Mbps) AND flat regardless of listener count (NodeLink is only
-  fetched once per track, not once per client).
+  active filters, queue) AND owns the actual audio pipeline too. For each
+  lobby, ONE background task (LobbyRelay, below) pulls raw PCM from
+  NodeLink, real-time-paces it, and pushes it into a single per-lobby
+  MusicSourceTrack. Every connected client gets their own
+  `MediaRelay.subscribe()` of that ONE track over WebRTC (real UDP —
+  ICE/DTLS/SRTP, the SAME peer connection voice chat uses) — no HTTP, no
+  browser-side decode logic, aiortc handles the Opus encoding internally.
+  A slow/absent listener never affects the relay itself or any other
+  listener, and a track's actual progress no longer depends on any one
+  client's network. NodeLink is fetched once per track regardless of
+  listener count, same as before.
 
 - State sync + chat: pushed to clients over Socket.IO (WebSocket, with
   automatic long-polling fallback and automatic client-side reconnection).
@@ -40,16 +39,21 @@ Architecture
   each Lobby tracks which sockets are currently live for a participant,
   which drives the same disconnect-grace-period logic that used to key
   off the old SSE connection (see _schedule_disconnect_check below).
-  `public_state()` includes `relayGen`, which bumps every time the relay
-  starts a fresh Opus/Ogg encode session (new track, seek, or filter
-  change) — the frontend watches this to know when to point its <audio>
-  element at a fresh /live connection vs. just leave it playing.
+  `public_state()` still includes `relayGen` (bumps on a hard cut —
+  skip/seek/filter change) for the Debug tab's benefit; playback clients
+  no longer need to watch it for anything, since music_track just keeps
+  flowing across a generation bump instead of needing a reconnect.
 
-- Voice chat: real audio, so it goes over WebRTC (aiortc). Each client
-  opens ONE RTCPeerConnection to the server carrying their mic (send) and
-  receiving a personalized *mixed* track (server sums every other
-  participant's audio for them, live). New participants are simply
-  included in everyone's mix on the fly — no renegotiation needed.
+- Voice + music, one connection: each client opens ONE RTCPeerConnection
+  to the server, established as soon as they join the lobby (not gated
+  behind enabling their mic) — see webrtc_offer. It carries the shared
+  music track (send, server -> client) and a personalized *mixed* voice
+  track (send, server -> client, sums every other participant's mic for
+  them live — new participants are simply included in everyone's mix on
+  the fly, no renegotiation needed for that part). Enabling their OWN mic
+  later adds a third, client -> server, m-line to the SAME connection —
+  one renegotiation (a fresh offer/answer on the existing pc), not a new
+  connection.
 
 Run (dev)
 ---------
@@ -96,7 +100,11 @@ try:
     WEBRTC_AVAILABLE = True
 except ImportError:
     WEBRTC_AVAILABLE = False
-    print("[!] aiortc not installed — voice chat will be disabled. Run: pip install aiortc")
+    # No longer just voice chat — since /live was removed, music playback
+    # itself is delivered over this same WebRTC pipeline now (see
+    # MusicSourceTrack and webrtc_offer below), so this is no longer
+    # optional the way it used to be.
+    print("[!] aiortc not installed — voice chat AND music playback will both be disabled. Run: pip install aiortc")
 
 # ═══════════════════════════════════════════════════════════════════
 # App setup
@@ -298,57 +306,46 @@ if WEBRTC_AVAILABLE:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Live music relay — one continuous Opus/Ogg encode per lobby, fanned
-# out to every listener over plain HTTP. Replaces the old design where
-# each client independently pulled raw PCM from NodeLink and paced it
-# against a wall-clock anchor: a client whose network couldn't sustain
-# ~1.5 Mbps of raw PCM would fall behind, get forcibly reseeked back onto
-# the anchor by the old client-side drift correction (cutting out
-# whatever audio it hadn't caught up on yet), and could get skipped to
-# the next track entirely once the host's own (unaffected) stream
-# reached the end.
+# Live music relay — one continuous PCM pipeline per lobby, fanned out to
+# every listener over WebRTC (real UDP transport — ICE/DTLS/SRTP, the
+# SAME peer connection voice chat already uses; see MusicSourceTrack and
+# webrtc_offer). Replaces the old design where each client independently
+# pulled raw PCM from NodeLink and paced it against a wall-clock anchor:
+# a client whose network couldn't sustain ~1.5 Mbps of raw PCM would fall
+# behind, get forcibly reseeked back onto the anchor by the old
+# client-side drift correction (cutting out whatever audio it hadn't
+# caught up on yet), and could get skipped to the next track entirely
+# once the host's own (unaffected) stream reached the end. It also
+# replaces a LATER design (plain HTTP chunked `/live`, Ogg/Opus muxed
+# server-side) — that one fixed the per-client-fetch problem above, but
+# still needed a browser-visible reconnect (a fresh Ogg container) on
+# every hard cut (skip/seek/filter change), and ran over TCP, which head-
+# of-line-blocks the WHOLE stream behind a single retransmit. WebRTC's
+# audio transport already solves both: SRTP/DTLS-over-UDP has no head-of-
+# line blocking (a lost packet is just a lost packet, never blocks later
+# ones), Opus encoding happens inside aiortc's own RTP pipeline (nothing
+# to mux/reconnect), and MusicSourceTrack's `flush()` handles a hard cut
+# by discarding stale queued frames rather than tearing down and
+# reconnecting anything.
 #
-# Now the server does exactly ONE NodeLink fetch per track (not one per
-# listener), transcodes it to Opus (~12x smaller than raw PCM, so far
-# more connections can keep up), and fans the encoded bytes out. A slow
-# listener just has old frames dropped from their own queue — nobody
-# else, and the track's own progress, are affected at all.
-#
-# Ogg/Opus specifically (rather than e.g. raw Opus packets) because it's
-# natively supported by <audio> elements in every modern browser with
-# zero client-side code, and a late-joining listener can be brought up
-# to speed just by replaying the two small cached header pages (Opus ID
-# + comment) ahead of the live tail — exactly how Icecast-style internet
-# radio relays work. Verified empirically: PyAV's ogg muxer emits those
-# two header pages as the very first writes, and a decoder fed only
-# [headers + an arbitrary later page] decodes fine, skipping cleanly to
-# wherever the live edge currently is.
+# The server still does exactly ONE NodeLink fetch per track (not one per
+# listener) — every listener's WebRTC track is a `MediaRelay.subscribe()`
+# of the SAME MusicSourceTrack (see webrtc_offer), so the PCM itself is
+# only ever produced once regardless of listener count, same cost profile
+# as the old Ogg relay.
 # ═══════════════════════════════════════════════════════════════════
 PCM_RATE = 48000
 PCM_CHANNELS = 2
 PCM_FRAME_SAMPLES = 960                                     # 20ms @ 48kHz
 PCM_FRAME_BYTES = PCM_FRAME_SAMPLES * PCM_CHANNELS * 2      # s16le
-OPUS_BITRATE = 96000
-# Chunks; a slow client gets its OLDEST buffered chunk dropped to make
-# room, not a growing backlog. That drop is destructive for that
-# listener though — it's a permanent hole in their Ogg byte stream, not
-# a retransmittable gap, and browsers don't recover gracefully from
-# missing bytes mid-container (typically a glitch or stall, not a clean
-# skip). 8 was thin enough that ordinary network jitter — not just a
-# genuinely stalled client — triggered it constantly, which is the most
-# likely source of frequent audio dropouts. Each queued item is one
-# `sink_write` call (roughly one flushed Ogg page, well under 100ms of
-# audio), so 8 was only ~1s of slack for the WHOLE relay pipeline,
-# shared across every listener independently. Bumped to give a few
-# seconds of real cushion; a still-slow listener after this many still
-# genuinely can't keep up and dropping for them is correct.
-LISTENER_QUEUE_MAX = 150
+OPUS_BITRATE = 96000   # still used by the separate full-track /api/download encoder (see _encode_pcm_blocking) — unrelated to the live relay now
 # How often the idle loop wakes to top up silence while the queue is
 # empty. This used to be a single 20ms frame every 15 seconds — fine for
-# keeping the TCP connection alive through a reverse-proxy idle-read
-# timeout, but it meant that the INSTANT a track ended with nothing
-# queued, every listener's <audio> buffer (which typically only has a
-# second or so of real margin, same as during normal playback) ran
+# keeping a TCP connection alive through a reverse-proxy idle-read
+# timeout (no longer a concern over WebRTC/UDP, there's no idle-read
+# timeout to dodge), but it meant that the INSTANT a track ended with
+# nothing queued, every listener's playback buffer (which typically only
+# has a second or so of real margin, same as during normal playback) ran
 # completely dry and sat there with literally nothing arriving for up to
 # 15 seconds. That's what made "no next track" sound like the song itself
 # got cut off, instead of the smooth, uninterrupted continuation a queued
@@ -361,36 +358,88 @@ LISTENER_QUEUE_MAX = 150
 IDLE_KEEPALIVE_SECONDS = 1.0
 
 
-class _CallbackIO:
-    """Minimal writable file-like object PyAV can mux an Ogg container
-    into — forwards every write straight to a callback instead of
-    buffering to a real file."""
-    def __init__(self, write_cb):
-        self._write_cb = write_cb
+if WEBRTC_AVAILABLE:
 
-    def write(self, data):
-        self._write_cb(data)
-        return len(data)
+    class MusicSourceTrack(MediaStreamTrack):
+        """One continuous audio track per lobby carrying the SAME
+        real-time-paced PCM the relay produces (see LobbyRelay.feed_chunk
+        / _feed_silence) straight into WebRTC. Every listener gets their
+        own `relay.subscribe()` of this ONE track (see webrtc_offer) — a
+        single push here, from a single NodeLink fetch, fans out to
+        however many listeners are connected, same shape as
+        MixedAudioTrack above and the global `relay` (MediaRelay) it
+        already shares with mic tracks.
 
+        Frames arrive already real-time-paced by the caller (feed_chunk's
+        sleep-to-deadline loop) — recv() just blocks on the next one, so
+        aiortc's own RTP pacing rides the same clock the relay already
+        computed. No separate pacing logic needed here.
+        """
+        kind = "audio"
 
-class _Listener:
-    __slots__ = ("queue",)
-    def __init__(self):
-        self.queue = asyncio.Queue(maxsize=LISTENER_QUEUE_MAX)
+        def __init__(self):
+            super().__init__()
+            # ~1s of slack (50 * 20ms). Bounded + drop-oldest, same
+            # reasoning as the old LISTENER_QUEUE_MAX: this is the ONE
+            # shared queue feeding every listener (via MediaRelay), so a
+            # stalled consumer must never be able to back the relay's
+            # own real-time pacing loop up — it just loses its own old
+            # frames instead.
+            self._queue = asyncio.Queue(maxsize=50)
+            self._ts = 0
+            self._rate = PCM_RATE
+
+        def push(self, pcm_bytes):
+            """Called by the relay for every real 20ms PCM frame AND
+            every silence frame — same shape either way, so this never
+            needs to know which it's getting."""
+            if self._queue.full():
+                try:
+                    self._queue.get_nowait()  # drop oldest — never block the relay itself
+                except asyncio.QueueEmpty:
+                    pass
+            try:
+                self._queue.put_nowait(pcm_bytes)
+            except asyncio.QueueFull:
+                pass
+
+        def flush(self):
+            """Hard cut (skip/seek/new track/filter change) — discard
+            whatever's still queued so a listener doesn't hear a stale
+            tail before the new track's audio arrives. The RTP timestamp
+            keeps counting up uninterrupted; unlike the old Ogg relay,
+            nothing here needs a listener to reconnect for this."""
+            while not self._queue.empty():
+                try:
+                    self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+        async def recv(self):
+            pcm_bytes = await self._queue.get()
+            pts, time_base = self._ts, fractions.Fraction(1, self._rate)
+            self._ts += PCM_FRAME_SAMPLES
+            arr = np.frombuffer(pcm_bytes, dtype="<i2").reshape(1, -1)
+            frame = av.AudioFrame.from_ndarray(arr, format="s16", layout="stereo")
+            frame.sample_rate = self._rate
+            frame.pts = pts
+            frame.time_base = time_base
+            return frame
 
 
 class LobbyRelay:
-    """Owns the single live NodeLink -> Opus/Ogg pipeline for one lobby."""
+    """Owns the single live NodeLink -> PCM -> WebRTC pipeline for one lobby."""
 
     def __init__(self, lobby):
         self.lobby = lobby
-        self.generation = 0          # bumped on every fresh encode session
-        self.listeners = {}          # opaque key -> _Listener
+        self.generation = 0          # bumped on every fresh session (skip/seek/filter change)
+        # The single shared WebRTC source every listener's peer connection
+        # subscribes a relayed copy of (see webrtc_offer) — replaces the
+        # old per-listener HTTP `_Listener` queue dict entirely.
+        self.music_track = MusicSourceTrack() if WEBRTC_AVAILABLE else None
         self._task = None
         self._resume_event = asyncio.Event()
         self._resume_event.set()     # not paused by default
-        self._header_chunks = []     # cached Ogg header pages for the CURRENT generation
-        self._header_chunks_done = False
 
         # ---- gapless preload ----------------------------------------
         # Whatever track is predicted to play next (see
@@ -398,30 +447,26 @@ class LobbyRelay:
         # its raw PCM buffered here WHILE the current track is still
         # streaming — so when the current track's NodeLink stream ends
         # naturally, _pump_track can start feeding the next track's audio
-        # into the SAME ongoing Ogg/Opus mux session immediately, with no
-        # dead air. Host-controlled per lobby (self.lobby.gapless — see
-        # the /gapless route); ensure_preload() no-ops entirely while it's
-        # off, so a natural advance falls through to _pump_track's live
-        # NodeLink fetch instead, which is what actually produces the
-        # gap — the Ogg session itself and the listener's connection
-        # (relayGen) are untouched either way; only the boundary is quiet
+        # into music_track immediately, with no dead air. Host-controlled
+        # per lobby (self.lobby.gapless — see the /gapless route);
+        # ensure_preload() no-ops entirely while it's off, so a natural
+        # advance falls through to _pump_track's live NodeLink fetch
+        # instead, which is what actually produces the gap — music_track
+        # itself is untouched either way; only the boundary is quiet
         # rather than instant.
         # Shape: {"track": dict, "chunks": [bytes], "done": bool, "task": Task}
         self._preload = None
 
         # ---- idle keep-alive ----------------------------------------
-        # When the queue naturally runs dry, _run used to flush the Opus
-        # stream and return, ending the task entirely — which meant every
-        # listener's <audio> connection went dead, AND whatever played
-        # next had to open a brand new one (see resume_or_start below).
-        # Now _run instead parks itself in an idle wait right where it is:
-        # same task, same still-open Ogg container, same /live connection
-        # every listener is already attached to. _feed_silence tops that
-        # connection up at exactly real-time speed (see its own comment for
-        # why "exactly" matters) every IDLE_KEEPALIVE_SECONDS, which both
-        # keeps a listener's <audio> buffer from ever running dry and keeps
-        # the connection warm through any reverse-proxy idle-read timeout
-        # in front of this server.
+        # When the queue naturally runs dry, _run used to just return,
+        # ending the task entirely — which meant every listener's audio
+        # went dead, AND whatever played next had to establish a fresh
+        # connection (see resume_or_start below). Now _run instead parks
+        # itself in an idle wait right where it is: same task, same
+        # music_track, nobody reconnects. _feed_silence tops it up at
+        # exactly real-time speed (see its own comment for why "exactly"
+        # matters) every IDLE_KEEPALIVE_SECONDS, which keeps a listener's
+        # playback buffer from ever running dry.
         self._idle = False               # True while parked in the idle wait below
         self._idle_event = asyncio.Event()
         self._pending = None             # (track, position_ms, filters) waiting to resume with
@@ -445,12 +490,9 @@ class LobbyRelay:
         # observational — nothing here changes playback behaviour, and a
         # deque(maxlen=...) means it can never grow unbounded.
         self.stats = {
-            "frames_encoded": 0,
+            "frames_sent": 0,
             "pcm_bytes_in": 0,
-            "opus_bytes_out": 0,
-            "encode_ms": deque(maxlen=200),
             "pace_drift_ms": deque(maxlen=200),
-            "listener_drops": 0,
             "sessions_started": 0,
             "last_frame_ts": None,
         }
@@ -475,56 +517,24 @@ class LobbyRelay:
         self._wave_peaks = deque(maxlen=300)
         self._wave_task = None
 
-    # ---- listener management ----------------------------------------
-    def add_listener(self):
-        key = object()
-        listener = _Listener()
-        self.listeners[key] = listener
-        # Replay this generation's cached header pages immediately, so a
-        # mid-track joiner's decoder has the Opus ID/comment pages before
-        # any audio data — then everything after is just the live tail,
-        # same as every other listener gets.
-        for chunk in self._header_chunks:
-            self._push(listener, chunk)
-        return key, listener.queue
-
-    def remove_listener(self, key):
-        self.listeners.pop(key, None)
-
-    def _push(self, listener, data):
-        q = listener.queue
-        if q.full():
-            try:
-                q.get_nowait()  # drop the oldest chunk to make room — never block the relay for one slow listener
-                self.stats["listener_drops"] += 1
-            except asyncio.QueueEmpty:
-                pass
-        try:
-            q.put_nowait(data)
-        except asyncio.QueueFull:
-            pass
-
     def debug_snapshot(self):
         """Read-only stats snapshot for the client Debug tab. Safe to call
         from any task — only ever reads the bounded counters above."""
-        enc = list(self.stats["encode_ms"])
         drift = list(self.stats["pace_drift_ms"])
         avg = lambda xs: round(sum(xs) / len(xs), 3) if xs else None
         last_ts = self.stats["last_frame_ts"]
         return {
             "generation": self.generation,
             "idle": self._idle,
-            "listeners": len(self.listeners),
+            # "Listener" now means a participant whose WebRTC peer
+            # connection is actually up (subscribed to music_track via
+            # MediaRelay) — not just present in the lobby.
+            "listeners": sum(1 for p in self.lobby.participants.values() if p.pc is not None),
             "hasPreload": self._preload is not None,
-            "framesEncoded": self.stats["frames_encoded"],
+            "framesSent": self.stats["frames_sent"],
             "pcmBytesIn": self.stats["pcm_bytes_in"],
-            "opusBytesOut": self.stats["opus_bytes_out"],
-            "encodeMsAvg": avg(enc),
-            "encodeMsLast": round(enc[-1], 3) if enc else None,
-            "encodeMsMax": round(max(enc), 3) if enc else None,
             "paceDriftMsAvg": avg(drift),
             "paceDriftMsMax": round(max(drift), 3) if drift else None,
-            "listenerDrops": self.stats["listener_drops"],
             "sessionsStarted": self.stats["sessions_started"],
             "lastFrameAgeMs": round((time.time() - last_ts) * 1000, 1) if last_ts else None,
             "participants": len(self.lobby.participants),
@@ -586,28 +596,6 @@ class LobbyRelay:
                 await asyncio.sleep(0.15)
         finally:
             self._wave_task = None
-
-    def _broadcast_bytes(self, data):
-        for listener in list(self.listeners.values()):
-            self._push(listener, data)
-
-    def _close_all_listeners(self):
-        """Push the end-of-response sentinel to every currently attached
-        listener so their HTTP connection ends immediately — used when a
-        new encode session starts, since old listeners must reconnect to
-        get valid Ogg headers for the new session rather than receiving
-        a second logical stream chained onto their existing connection
-        (technically legal Ogg, but unreliably supported by browsers)."""
-        for listener in list(self.listeners.values()):
-            while not listener.queue.empty():
-                try:
-                    listener.queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-            try:
-                listener.queue.put_nowait(None)
-            except asyncio.QueueFull:
-                pass
 
     # ---- gapless preload ------------------------------------------------
     def _predict_next_track(self):
@@ -672,14 +660,15 @@ class LobbyRelay:
 
     # ---- session control ----------------------------------------------
     async def start_track(self, track, position_ms, filters):
-        """(Re)start the encode session for `track` at `position_ms` with
-        `filters`. Bumps `generation`, which the frontend watches (via
-        state.relayGen) to know when to point its <audio> element at a
-        fresh /live connection. This is for explicit, deliberate track
-        changes (play/skip/seek/filters) — a NATURAL end-of-track advance
-        does NOT go through here; see _run's internal loop, which stitches
-        the next track into the same session instead (gapless), and
-        resume_or_start below, which does the same across an idle gap."""
+        """(Re)start the pipeline for `track` at `position_ms` with
+        `filters`. Bumps `generation` and flushes music_track's queue —
+        WebRTC listeners just hear the cut instantly, no reconnect
+        involved (unlike the old HTTP/Ogg relay, which needed one here).
+        This is for explicit, deliberate track changes (play/skip/seek/
+        filters) — a NATURAL end-of-track advance does NOT go through
+        here; see _run's internal loop, which stitches the next track
+        into the same session instead (gapless), and resume_or_start
+        below, which does the same across an idle gap."""
         self._cancel_task()
         self._cancel_preload()
         self._idle = False
@@ -687,10 +676,9 @@ class LobbyRelay:
         self._pending = None
         self._pace_next = None
         self.generation += 1
-        self._header_chunks = []
-        self._header_chunks_done = False
         self._wave_peaks.clear()  # hard cut — discard any pending lookahead from the old session
-        self._close_all_listeners()
+        if self.music_track:
+            self.music_track.flush()
         self._resume_event.set()
         if track is None:
             return
@@ -706,12 +694,10 @@ class LobbyRelay:
         """Cheap path back from silence. If the pipeline is still alive and
         sitting in the idle wait (queue ran dry but nothing tore the
         session down — see _run), hand it this track and wake it up: same
-        generation, same still-open Ogg container, same /live connection
-        every listener is already attached to, so nobody reconnects.
-        Falls back to a full start_track() (new generation, forced
-        reconnect) whenever that shortcut doesn't apply — most commonly
-        the very first track ever played in a fresh lobby, where there's
-        no pipeline running yet to resume."""
+        generation, nobody reconnects. Falls back to a full start_track()
+        (new generation) whenever that shortcut doesn't apply — most
+        commonly the very first track ever played in a fresh lobby, where
+        there's no pipeline running yet to resume."""
         if self._task is not None and not self._task.done() and self._idle:
             self._pending = (track, position_ms, filters if filters is not None else self.lobby.filters)
             self._idle = False
@@ -740,36 +726,21 @@ class LobbyRelay:
         self._idle_event.clear()
         self._pending = None
         self.generation += 1
-        self._header_chunks = []
-        self._header_chunks_done = False
         self._wave_peaks.clear()
-        self._close_all_listeners()
+        if self.music_track:
+            self.music_track.flush()
 
     # ---- the actual pipeline ----------------------------------------------
     # Runs for an entire GENERATION, not just one track: as long as tracks
-    # keep advancing naturally (queue autoplay), this stays in ONE av.open
-    # session and just keeps muxing more Opus packets into it — that's
-    # what makes the transition gapless (no new container, no generation
+    # keep advancing naturally (queue autoplay), this stays in ONE pipeline
+    # and just keeps pushing more PCM frames into music_track — that's
+    # what makes the transition gapless (no new WebRTC track, no generation
     # bump, no listener reconnect). It only returns (ending the
     # generation) when the queue truly runs dry or something external
     # bumps `generation` out from under it (explicit play/skip/seek/
     # filters, which go through start_track instead).
     async def _run(self, track, position_ms, filters, my_generation):
-        container = stream = None
-
-        def sink_write(data):
-            if self.generation != my_generation:
-                return
-            data = bytes(data)
-            if not self._header_chunks_done:
-                self._header_chunks.append(data)
-            self._broadcast_bytes(data)
-
         try:
-            container = av.open(_CallbackIO(sink_write), mode="w", format="ogg")
-            stream = container.add_stream("libopus", rate=PCM_RATE)
-            stream.layout = "stereo"
-            stream.bit_rate = OPUS_BITRATE
             self.stats["sessions_started"] += 1
 
             cur_track, cur_pos, cur_filters = track, position_ms, filters
@@ -784,7 +755,7 @@ class LobbyRelay:
                 # comment there for why it can't happen here.
 
                 result = await self._pump_track(
-                    container, stream, cur_track, cur_pos, cur_filters, my_generation
+                    cur_track, cur_pos, cur_filters, my_generation
                 )
                 if self.generation != my_generation:
                     return
@@ -826,22 +797,20 @@ class LobbyRelay:
                     continue
 
                 # Queue (and autoplay) are genuinely empty. The OLD behaviour
-                # here flushed the Opus stream and returned, which finalized
-                # the Ogg logical bitstream and ended this task — every
-                # listener's <audio> connection died right then, mid- (or
-                # right at the very end of) whatever was still sitting in
-                # their own playback buffer, which is what made the last
-                # track of a queue (or a lobby's only track) cut off abruptly
-                # a moment before it actually finished.
+                # here returned, ending this task — every listener's <audio>
+                # connection died right then, mid- (or right at the very end
+                # of) whatever was still sitting in their own playback
+                # buffer, which is what made the last track of a queue (or a
+                # lobby's only track) cut off abruptly a moment before it
+                # actually finished.
                 #
-                # Instead: stay right here. Container stays open, task stays
-                # alive, generation doesn't change, nobody reconnects. Waking
-                # every IDLE_KEEPALIVE_SECONDS and letting _feed_silence make
-                # up exactly however much real time has passed keeps a
-                # listener's <audio> buffer continuously topped up at 1x (so
-                # idle never itself sounds like a dropout, and never builds
-                # up a backlog either) and keeps the Ogg bitstream + the
-                # connection warm through any reverse-proxy idle-read timeout.
+                # Instead: stay right here. Task stays alive, generation
+                # doesn't change, music_track keeps flowing, nobody
+                # reconnects. Waking every IDLE_KEEPALIVE_SECONDS and letting
+                # _feed_silence make up exactly however much real time has
+                # passed keeps a listener's playback buffer continuously
+                # topped up at 1x (so idle never itself sounds like a
+                # dropout, and never builds up a backlog either).
                 # resume_or_start() is what wakes this back up — see
                 # lobby_play / queue/add.
                 self._idle = True
@@ -856,7 +825,7 @@ class LobbyRelay:
                     except asyncio.TimeoutError:
                         if self.generation != my_generation:
                             return
-                        self._feed_silence(container, stream)
+                        self._feed_silence()
                 if self.generation != my_generation:
                     return
                 cur_track, cur_pos, cur_filters = self._pending
@@ -865,42 +834,35 @@ class LobbyRelay:
             pass
         except Exception:
             traceback.print_exc()
-        finally:
-            if container is not None:
-                try:
-                    container.close()
-                except Exception:
-                    traceback.print_exc()
 
-    async def _pump_track(self, container, stream, track, position_ms, filters, my_generation):
-        """Streams ONE track's PCM into the ongoing Opus/Ogg mux session.
-        Returns "ended" if the track's audio source ended naturally (caller
-        should advance to whatever's next), "interrupted" if the session
-        changed out from under it (caller should stop silently — something
-        else, e.g. an explicit skip, is already handling it), or "error" if
-        the NodeLink connection itself failed/dropped (caller should
-        reconnect and retry rather than treating it like a real track end)."""
+    async def _pump_track(self, track, position_ms, filters, my_generation):
+        """Streams ONE track's PCM into music_track (and onward to every
+        WebRTC listener via MediaRelay). Returns "ended" if the track's
+        audio source ended naturally (caller should advance to whatever's
+        next), "interrupted" if the session changed out from under it
+        (caller should stop silently — something else, e.g. an explicit
+        skip, is already handling it), or "error" if the NodeLink
+        connection itself failed/dropped (caller should reconnect and
+        retry rather than treating it like a real track end)."""
         pcm_buf = bytearray()
         frame_dur = PCM_FRAME_SAMPLES / PCM_RATE  # 20ms
         anchor_corrected = False
 
         async def flush_tail():
-            # feed_chunk only ever muxes whole PCM_FRAME_BYTES frames, so
+            # feed_chunk only ever pushes whole PCM_FRAME_BYTES frames, so
             # whatever's left in pcm_buf when the source genuinely ends
             # (under one frame — under 20ms) never goes through it. Left
             # alone that's silently dropped instead of played, same bug
             # _encode_pcm_blocking already pads around for downloads (see
             # its "remainder" handling) — pad it out to a full frame with
-            # silence and mux it here so a track's last few milliseconds
+            # silence and push it here so a track's last few milliseconds
             # actually reach listeners instead of being cut short.
             if not pcm_buf:
                 return
             frame_bytes = bytes(pcm_buf) + bytes(PCM_FRAME_BYTES - len(pcm_buf))
             pcm_buf.clear()
-            frame = self._pcm_to_frame(frame_bytes)
-            for pkt in stream.encode(frame):
-                container.mux(pkt)
-            self._header_chunks_done = True
+            if self.music_track:
+                self.music_track.push(frame_bytes)
 
         async def feed_chunk(chunk):
             nonlocal anchor_corrected
@@ -908,19 +870,11 @@ class LobbyRelay:
             while len(pcm_buf) >= PCM_FRAME_BYTES:
                 frame_bytes = bytes(pcm_buf[:PCM_FRAME_BYTES])
                 del pcm_buf[:PCM_FRAME_BYTES]
-                frame = self._pcm_to_frame(frame_bytes)
-                _t0 = time.monotonic()
-                for pkt in stream.encode(frame):
-                    container.mux(pkt)
-                    try:
-                        self.stats["opus_bytes_out"] += pkt.size
-                    except Exception:
-                        pass
-                self.stats["encode_ms"].append((time.monotonic() - _t0) * 1000)
-                self.stats["frames_encoded"] += 1
+                if self.music_track:
+                    self.music_track.push(frame_bytes)
+                self.stats["frames_sent"] += 1
                 self.stats["pcm_bytes_in"] += len(frame_bytes)
                 self.stats["last_frame_ts"] = time.time()
-                self._header_chunks_done = True
 
                 # Buffered-waveform lookahead — see _wave_push_loop. Only
                 # computed at all while someone's actually subscribed
@@ -1063,13 +1017,13 @@ class LobbyRelay:
         frame.sample_rate = PCM_RATE
         return frame
 
-    def _feed_silence(self, container, stream):
+    def _feed_silence(self):
         """Enough digital silence to keep the SAME real-time clock feed_chunk
-        uses (self._pace_next) caught up to wall time — muxed exactly like
-        real audio, back-to-back with no per-frame sleep between them (it's
-        inaudible filler, nothing for a listener to sync against, so there's
-        no reason to pace it out one frame at a time the way real audio has
-        to be).
+        uses (self._pace_next) caught up to wall time — pushed to
+        music_track exactly like real audio, back-to-back with no
+        per-frame sleep between them (it's inaudible filler, nothing for a
+        listener to sync against, so there's no reason to pace it out one
+        frame at a time the way real audio has to be).
 
         This has to land on exactly 1x real time, not just "some amount
         periodically" — an earlier version of this fed a fixed multi-second
@@ -1098,11 +1052,11 @@ class LobbyRelay:
             self._pace_next += frame_dur
         if frame_count == 0:
             return
+        if not self.music_track:
+            return
         silent_bytes = bytes(PCM_FRAME_BYTES)
         for _ in range(frame_count):
-            for pkt in stream.encode(self._pcm_to_frame(silent_bytes)):
-                container.mux(pkt)
-        self._header_chunks_done = True
+            self.music_track.push(silent_bytes)
 
     async def _advance_for_gapless(self, my_generation):
         """A track's audio source just ended naturally. Pop the next one
@@ -1303,8 +1257,16 @@ class Participant:
     def __init__(self, pid, name):
         self.id = pid
         self.name = name
-        self.pc = None          # RTCPeerConnection
-        self.mic_track = None   # relayed incoming mic track
+        self.pc = None              # RTCPeerConnection — established on join, carries music + mixed voice + (once enabled) this participant's own mic
+        self.mic_track = None       # relayed incoming mic track
+        # IDs of the two server -> client tracks this participant's pc was
+        # given at connection time (see webrtc_offer) — returned to the
+        # client alongside the SDP answer so its `pc.ontrack` handler can
+        # tell the shared music stream apart from its personalized mixed-
+        # voice stream (both are just "an audio track" to the browser
+        # otherwise; see Lobby._connectMedia in lobby.js).
+        self.music_track_id = None
+        self.voice_track_id = None
 
 
 class Lobby:
@@ -1914,35 +1876,12 @@ def _require_host(lobby, client_id):
 
 @app.route("/api/lobby/<code>/live")
 async def lobby_live(code):
-    """Listener endpoint — one Opus/Ogg byte stream, shared across every
-    connected client via LobbyRelay. Plain chunked HTTP so a browser
-    <audio src="..."> just works with zero client-side decode logic."""
-    lobby = get_lobby_or_404(code)
-    if not lobby:
-        return jsonify({"error": "not found"}), 404
+    """Removed — music now reaches clients over WebRTC (see webrtc_offer),
+    not this HTTP relay. Kept as a stub (410 Gone) rather than deleted
+    outright so an old cached/bookmarked client gets a clear signal
+    instead of a silent connection failure."""
+    return jsonify({"error": "gone — music now streams over WebRTC, see /api/lobby/<code>/webrtc/offer"}), 410
 
-    key, queue = lobby.relay.add_listener()
-
-    async def gen():
-        try:
-            while True:
-                data = await queue.get()
-                if data is None:  # relay started a new session — end this response, client reconnects fresh
-                    return
-                yield data
-        except asyncio.CancelledError:
-            pass
-        finally:
-            lobby.relay.remove_listener(key)
-
-    r = Response(
-        gen(),
-        mimetype="audio/ogg",
-        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
-    )
-    r.timeout = None # remove 60 sec limit timeout
-
-    return r
 
 @app.route("/api/lobby/<code>/play", methods=["POST"])
 async def lobby_play(code):
@@ -1954,9 +1893,9 @@ async def lobby_play(code):
     if not _require_host(lobby, client_id):
         return jsonify({"error": "host only"}), 403
     # Resuming from true silence (nothing currently playing) reuses the
-    # existing /live connection if the relay is still parked idle-alive;
-    # interrupting a track that's actively playing still needs a hard
-    # restart, since there's a live NodeLink fetch to abandon mid-stream.
+    # existing pipeline if the relay is still parked idle-alive; interrupting
+    # a track that's actively playing still needs a hard restart, since
+    # there's a live NodeLink fetch to abandon mid-stream.
     was_idle = lobby.current_track is None
     if lobby.current_track:
         lobby.history.append(lobby.current_track)
@@ -2822,12 +2761,18 @@ async def viz_install(vid):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# WebRTC voice — now just plain `await`s, no thread bridge required
+# WebRTC — music (recvonly, always) + voice (mixed recvonly, always, plus
+# this participant's own mic once they enable it). One RTCPeerConnection
+# per participant, established the moment they join the lobby (see
+# Lobby._connectMedia in lobby.js calling this immediately on
+# _enterLobby, not just on a mic toggle like before) and reused across
+# renegotiations rather than torn down and recreated — every `await`,
+# no thread bridge required, same as voice chat always was.
 # ═══════════════════════════════════════════════════════════════════
 @app.route("/api/lobby/<code>/webrtc/offer", methods=["POST"])
 async def webrtc_offer(code):
     if not WEBRTC_AVAILABLE:
-        return jsonify({"error": "Voice chat unavailable — install aiortc, av, numpy on the server"}), 503
+        return jsonify({"error": "Playback unavailable — install aiortc, av, numpy on the server"}), 503
 
     lobby = get_lobby_or_404(code)
     if not lobby:
@@ -2838,35 +2783,56 @@ async def webrtc_offer(code):
     if not participant:
         return jsonify({"error": "not in lobby"}), 403
 
-    if participant.pc:
-        try:
-            await participant.pc.close()
-        except Exception:
-            traceback.print_exc()
-            pass
-
-    ice_servers = [RTCIceServer(urls=u) for u in config.ICE_SERVERS]
-    pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers))
-    participant.pc = pc
-
-    @pc.on("track")
-    def on_track(track):
-        if track.kind == "audio":
-            participant.mic_track = relay.subscribe(track)
-
-    @pc.on("connectionstatechange")
-    async def on_state_change():
-        if pc.connectionState in ("failed", "closed"):
-            participant.mic_track = None
-
-    def sources_getter():
-        return {cid: p.mic_track for cid, p in lobby.participants.items()}
-
-    mixed_track = MixedAudioTrack(sources_getter, exclude_id=client_id)
-    pc.addTrack(mixed_track)
-
     try:
         offer = RTCSessionDescription(sdp=data["sdp"], type=data["type"])
+    except Exception as e:
+        return jsonify({"error": f"bad offer: {e}"}), 400
+
+    # A participant's FIRST offer (on joining) sets up the pc and its two
+    # always-on outgoing tracks (music + mixed voice). Any LATER offer
+    # from the same participant — e.g. enabling their mic, which adds a
+    # new client -> server m-line and triggers renegotiation client-side
+    # (see Lobby.toggleMic in lobby.js) — reuses the SAME pc instead of
+    # tearing it down, or every mic toggle would cut the music they're
+    # currently listening to.
+    pc = participant.pc
+    is_renegotiation = pc is not None and pc.connectionState not in ("closed", "failed")
+    if not is_renegotiation:
+        if pc:
+            try:
+                await pc.close()
+            except Exception:
+                traceback.print_exc()
+
+        ice_servers = [RTCIceServer(urls=u) for u in config.ICE_SERVERS]
+        pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers))
+        participant.pc = pc
+        participant.mic_track = None
+
+        @pc.on("track")
+        def on_track(track):
+            # Fires for whichever m-line the client is sending on —
+            # today that's only ever their mic, whether it arrived in
+            # this first offer or a later renegotiated one.
+            if track.kind == "audio":
+                participant.mic_track = relay.subscribe(track)
+
+        @pc.on("connectionstatechange")
+        async def on_state_change():
+            if pc.connectionState in ("failed", "closed"):
+                participant.mic_track = None
+
+        def sources_getter():
+            return {cid: p.mic_track for cid, p in lobby.participants.items()}
+
+        music_out = relay.subscribe(lobby.relay.music_track)
+        voice_out = MixedAudioTrack(sources_getter, exclude_id=client_id)
+        pc.addTrack(music_out)
+        pc.addTrack(voice_out)
+        participant.music_track_id = music_out.id
+        participant.voice_track_id = voice_out.id
+
+    try:
         await pc.setRemoteDescription(offer)
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
@@ -2874,7 +2840,12 @@ async def webrtc_offer(code):
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-    return jsonify({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+    return jsonify({
+        "sdp": pc.localDescription.sdp,
+        "type": pc.localDescription.type,
+        "musicTrackId": participant.music_track_id,
+        "voiceTrackId": participant.voice_track_id,
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════

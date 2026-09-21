@@ -87,17 +87,12 @@ const S = {
     displayName: '',
     participants: [],
     socket: null,       // Socket.IO client
-    pc: null,           // RTCPeerConnection
+    pc: null,           // RTCPeerConnection — carries music (recvonly), mixed voice (recvonly), and this client's own mic (sendonly, once enabled)
+    musicTrackId: null, // server-assigned WebRTC track id for the shared music relay (see Lobby._connectMedia)
+    voiceTrackId: null, // server-assigned WebRTC track id for this participant's personalized mixed-voice track
     micStream: null,
     micEnabled: false,
     lastServerState: null,
-    relayGen: 0,        // last-seen LobbyRelay generation — bump means the server started a fresh Opus/Ogg session
-
-    // A natural gapless advance's `state` push is held here (see
-    // Engine._scheduleTrackSwap) until the previous track's still-buffered
-    // audio has actually finished playing, so "now playing" always
-    // matches what's audible instead of what the server has merely sent.
-    pendingTrackState: null,
-    pendingTrackTimer: null,
+    relayGen: 0,        // last-seen LobbyRelay generation — bumps on a hard cut (skip/seek/filter change); the music track itself keeps flowing across this, nothing client-side needs to react to it anymore
   },
 };

@@ -10,11 +10,13 @@
 <body>
 
 <audio id="voice-audio" autoplay style="display:none"></audio>
-<!-- crossorigin: without it WebAudio silently returns an all-zero spectrum
-     for a cross-origin stream, so visualizers flat-line whenever the app is
-     pointed at a Flask server on a different origin. The server sends
-     Access-Control-Allow-Origin on /live to match. -->
-<audio id="lobby-audio" autoplay crossorigin="anonymous" style="display:none"></audio>
+<!-- lobby-audio's source is a WebRTC MediaStream (see Lobby._connectMedia
+     in lobby.js), not a fetched URL — WebAudio has no cross-origin
+     restriction on that (crossorigin/CORS only ever applied to the old
+     HTTP `/live` relay, which this replaced), so no crossorigin attribute
+     is needed here even when the app is pointed at a Flask server on a
+     different origin. -->
+<audio id="lobby-audio" autoplay style="display:none"></audio>
 
 <!-- ═══ MAIN APP ═══ -->
 <div id="app" style="display:block">
