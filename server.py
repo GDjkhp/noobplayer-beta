@@ -9,8 +9,8 @@ music playback and text chat remain in lobby mode.
 
 Why Quart instead of Flask
 ---------------------------
-Even without aiortc, PyAV's container muxing and the NodeLink stream proxy
-are naturally expressed as async generators/coroutines, and Quart is an
+PyAV's in-process AAC encoding and the NodeLink stream proxy are
+naturally expressed as async generators/coroutines, and Quart is an
 async-first, (mostly) drop-in replacement for Flask that suits that well —
 routes are `async def`, no thread bridge needed for any of it.
 
@@ -21,14 +21,15 @@ Architecture
   active filters, queue) AND owns the actual audio pipeline too. For each
   lobby, ONE background task (LobbyRelay, below) pulls raw PCM from
   NodeLink, real-time-paces it, and feeds it into a per-lobby HLSMuxer,
-  which encodes it to AAC and writes a rolling, short-segment HLS
-  playlist (live.m3u8 + .ts segments) to disk. Every connected client
-  just points an <audio> element at that lobby's live.m3u8 via hls.js
-  (or native HLS support) — no signaling handshake, no per-listener
-  server-side state, plain HTTP GETs the reverse proxy / CDN can cache
-  transparently. A slow/absent listener never affects the relay itself
-  or any other listener, and a track's actual progress no longer depends
-  on any one client's network. NodeLink is fetched once per track
+  which encodes it to AAC in-process (via PyAV) and holds a rolling,
+  short-segment HLS playlist (live.m3u8 + AAC segments) entirely in
+  memory — nothing is ever written to disk for this. Every connected
+  client just points an <audio> element at that lobby's live.m3u8 via
+  hls.js (or native HLS support) — no signaling handshake, no
+  per-listener server-side state, plain HTTP GETs the reverse proxy / CDN
+  can cache transparently. A slow/absent listener never affects the relay
+  itself or any other listener, and a track's actual progress no longer
+  depends on any one client's network. NodeLink is fetched once per track
   regardless of listener count, same as before.
 
   HLS trades a little latency for that simplicity: segments are kept
@@ -67,12 +68,10 @@ with zero extra configuration.
 """
 
 import asyncio
-import fractions
 import io
 import json
 import random
 import re
-import shutil
 import string
 import struct
 import time
@@ -83,6 +82,7 @@ from pathlib import Path
 
 import aiohttp
 import av
+import fractions
 import numpy as np
 import socketio
 from quart import Quart, Response, jsonify, request, send_from_directory
@@ -260,10 +260,10 @@ OPUS_BITRATE = 96000   # still used by the separate full-track /api/download enc
 # latency needs LL-HLS (partial segments, blocking playlist reload) or a
 # WebRTC-style transport — deliberately not what this is; see the module
 # docstring.
-HLS_ROOT = STATIC_DIR / "_hls_live"      # per-lobby subdirectories, never served by static_files
 HLS_SEGMENT_SECONDS = getattr(config, "HLS_SEGMENT_SECONDS", 1)
-HLS_LIST_SIZE = getattr(config, "HLS_LIST_SIZE", 6)      # rolling window of segments kept on disk + in the playlist
+HLS_LIST_SIZE = getattr(config, "HLS_LIST_SIZE", 6)      # rolling window of segments kept in memory + in the playlist
 HLS_BITRATE = getattr(config, "HLS_BITRATE", 128000)
+AAC_FRAME_SAMPLES = 1024   # fixed, per the AAC spec — every ADTS frame is exactly this many samples/channel
 # How often the idle loop wakes to top up silence while the queue is
 # empty. This used to be a single 20ms frame every 15 seconds — fine back
 # when this was one long-held streaming connection per listener (an idle
@@ -286,56 +286,112 @@ HLS_BITRATE = getattr(config, "HLS_BITRATE", 128000)
 IDLE_KEEPALIVE_SECONDS = 1.0
 
 
+_ADTS_SAMPLE_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350]
+
+
+def _adts_header(payload_len, sample_rate, channels):
+    """Builds the 7-byte ADTS header (no CRC — protection_absent=1) for
+    one raw AAC frame PyAV's encoder gave us. A bare CodecContext (see
+    HLSMuxer, no container involved) hands back just the raw encoded
+    bitstream with no framing at all — a muxer would normally be the
+    thing adding this, but we ARE the muxer here, by hand, since it's
+    only 7 bytes and means every segment we hand out is a
+    self-describing, independently-parseable ADTS stream (see AAC LC /
+    ADTS format, ISO/IEC 13818-7)."""
+    freq_idx = _ADTS_SAMPLE_RATES.index(sample_rate)
+    frame_len = payload_len + 7
+    buffer_fullness = 0x7FF  # VBR / unknown — the standard value when there's no meaningful bit reservoir to report
+    profile = 1              # AAC LC (object type 2) encoded as (object_type - 1)
+    h = bytearray(7)
+    h[0] = 0xFF
+    h[1] = 0xF1                                                         # syncword low nibble + MPEG-4 + Layer 00 + protection_absent=1
+    h[2] = (profile << 6) | (freq_idx << 2) | ((channels >> 2) & 0x1)
+    h[3] = ((channels & 0x3) << 6) | ((frame_len >> 11) & 0x3)
+    h[4] = (frame_len >> 3) & 0xFF
+    h[5] = ((frame_len & 0x7) << 5) | ((buffer_fullness >> 6) & 0x1F)
+    h[6] = (buffer_fullness & 0x3F) << 2                                # + number_of_raw_data_blocks_in_frame=0 (1 AAC frame per ADTS frame)
+    return bytes(h)
+
+
 class HLSMuxer:
     """Feeds the SAME real-time-paced PCM the relay produces (see
-    LobbyRelay.feed_chunk / _feed_silence) into a continuously-running
-    AAC encode, writing a live .m3u8 playlist + rolling .ts segments to
-    HLS_ROOT/<lobby code> (served by lobby_hls_file below). Replaces
-    MusicSourceTrack (WebRTC) — same push-one-frame-at-a-time shape, so
-    LobbyRelay's real-time pacing loop needed no changes at all, only
-    where each frame ends up.
+    LobbyRelay.feed_chunk / _feed_silence) into a bare PyAV AAC
+    CodecContext — in-process encoding, no ffmpeg subprocess, no
+    container/muxer at all. Each encoded packet PyAV hands back is
+    exactly one complete AAC frame (AAC_FRAME_SAMPLES samples), so
+    there's no need to re-derive frame boundaries by parsing bytes the
+    way a continuous byte stream off a subprocess would require —
+    _adts_header just wraps each packet with its own 7-byte ADTS header
+    and that's a complete, independently-parseable unit. Consecutive
+    frames get grouped into ~HLS_SEGMENT_SECONDS "segments" purely in
+    memory — a dict of {filename: raw AAC bytes} plus a generated
+    .m3u8 playlist string, both served straight out of RAM by
+    lobby_hls_file below. Nothing is ever written to disk for this — no
+    per-lobby directory, nothing under _hls_live or anywhere else, by
+    design. "Packed audio" (raw ADTS) HLS segments like this are
+    explicitly part of the HLS spec (RFC 8216 §3.4) — no MPEG-TS
+    container needed for audio-only content.
 
-    One instance per lobby, opened once at Lobby creation and kept open
-    for the lobby's entire life — a lull in pushed frames (paused, or the
-    idle keepalive falling behind) just means the current segment stops
-    growing for a moment, not a reconnect, matching how the WebRTC track
-    used to just sit blocked in recv(). close() finalizes the encode and
-    deletes the directory; only called when the whole lobby goes away
-    (see LobbyRelay.shutdown / _finalize_leave), never on an ordinary
+    Same push-one-frame-at-a-time shape as the old WebRTC
+    MusicSourceTrack — LobbyRelay's real-time pacing loop needed no
+    changes at all, only where each frame ends up. Also no background
+    thread needed this time (unlike the earlier ffmpeg-subprocess
+    version) — push() runs the encode inline, synchronously, same as
+    LobbyRelay's other per-frame work already does.
+
+    One instance per lobby, opened once at Lobby creation and kept
+    alive for the lobby's entire life — a lull in pushed frames (paused,
+    or the idle keepalive falling behind) just means the in-flight
+    segment stops growing for a moment, not a reconnect, matching how
+    the WebRTC track used to just sit blocked in recv(). close() closes
+    the encoder; only called when the whole lobby goes away (see
+    LobbyRelay.shutdown / _finalize_leave), never on an ordinary
     stop/pause.
     """
 
     def __init__(self, code):
-        self.dir = HLS_ROOT / code
-        self.dir.mkdir(parents=True, exist_ok=True)
-        self.playlist_path = self.dir / "live.m3u8"
-        self.container = None
-        self.stream = None
-        self.resampler = None
+        self.code = code
         self.ok = False
+        self.playlist_text = None       # str once at least one segment exists, else None
+        self.segments = {}              # filename -> raw AAC bytes, in memory only
+        self._order = deque()           # (filename, duration) in playlist order, oldest first — mirrors self.segments' keys
+        self._seq = 0                   # next segment's sequence number
+        self._first_seq = 0             # sequence number of the OLDEST segment still in the playlist (EXT-X-MEDIA-SEQUENCE)
+        self._cur_frames = []           # ADTS-wrapped AAC frames accumulated for the in-flight (not yet closed) segment
+        self._target_frames = max(1, round(0.2 * PCM_RATE / AAC_FRAME_SAMPLES))   # short first segment
+        self._ts = 0                    # running sample count fed to the encoder — see push()
+        self._pcm_time_base = fractions.Fraction(1, PCM_RATE)
+        self.encoder = None
+        self.resampler = None
         try:
-            self.container = av.open(
-                str(self.playlist_path), mode="w", format="hls",
-                options={
-                    "hls_time": str(HLS_SEGMENT_SECONDS),
-                    "hls_list_size": str(HLS_LIST_SIZE),
-                    "hls_flags": "delete_segments+independent_segments+append_list",
-                    "hls_segment_filename": str(self.dir / "seg_%08d.ts"),
-                    "hls_allow_cache": "0",
-                },
-            )
-            self.stream = self.container.add_stream("aac", rate=PCM_RATE)
-            self.stream.bit_rate = HLS_BITRATE
-            self.stream.layout = "stereo"
-            self.resampler = av.AudioResampler(
-                format=self.stream.codec_context.format,
-                layout=self.stream.codec_context.layout,
-                rate=self.stream.codec_context.rate,
-            )
+            self.encoder = av.CodecContext.create("aac", "w")
+            self.encoder.sample_rate = PCM_RATE
+            self.encoder.format = "fltp"     # the format libavcodec's built-in aac encoder actually wants
+            self.encoder.layout = "stereo"
+            self.encoder.bit_rate = HLS_BITRATE
+            self.encoder.time_base = self._pcm_time_base
+            try:
+                self.encoder.open()  # some PyAV versions open lazily on first encode() instead — harmless either way
+            except AttributeError:
+                pass
+            self.resampler = av.AudioResampler(format="fltp", layout="stereo", rate=PCM_RATE)
             self.ok = True
+            # Prime the playlist immediately: nothing else pushes into
+            # this until a track actually starts playing (see
+            # LobbyRelay). Without this, a client joining (or even just
+            # racing the very first play) could ask for live.m3u8 before
+            # a single segment exists in memory yet.
+            warmup_frames = int(round(PCM_RATE / PCM_FRAME_SAMPLES * 0.5))
+            silent_bytes = bytes(PCM_FRAME_BYTES)
+            for _ in range(warmup_frames):
+                self.push(silent_bytes)
+            if self.playlist_text is not None:
+                print(f"[hls {code}] ready — first segment in memory")
+            else:
+                print(f"[hls {code}] WARNING: no segment ready after warm-up — encoder may need more than {warmup_frames} frames to produce its first packet (AAC encoders have some priming delay); this should resolve itself once real playback starts and keeps feeding it")
         except Exception:
             traceback.print_exc()
-            print(f"[hls {code}] failed to open HLS output — is libav built with the hls muxer + an AAC encoder?")
+            print(f"[hls {code}] failed to open PyAV AAC encoder for HLS output — is `av` built with an AAC encoder?")
             self.ok = False
 
     def push(self, pcm_bytes):
@@ -348,29 +404,80 @@ class HLSMuxer:
             arr = np.frombuffer(pcm_bytes, dtype="<i2").reshape(1, -1)
             frame = av.AudioFrame.from_ndarray(arr, format="s16", layout="stereo")
             frame.sample_rate = PCM_RATE
+            frame.pts = self._ts
+            frame.time_base = self._pcm_time_base
+            self._ts += frame.samples
             for rframe in self.resampler.resample(frame):
-                for packet in self.stream.encode(rframe):
-                    self.container.mux(packet)
+                for packet in self.encoder.encode(rframe):
+                    self._on_aac_packet(bytes(packet))
         except Exception:
             traceback.print_exc()
             self.ok = False
 
+    def _on_aac_packet(self, raw_aac):
+        """One fully-encoded AAC frame (no framing yet) straight from
+        the encoder — wrap it in its own ADTS header and add it to the
+        in-flight segment, closing that segment once it's hit its
+        target length."""
+        self._cur_frames.append(_adts_header(len(raw_aac), PCM_RATE, PCM_CHANNELS) + raw_aac)
+        if len(self._cur_frames) >= self._target_frames:
+            self._close_segment()
+
+    def _close_segment(self):
+        """Finalizes the in-flight segment into self.segments +
+        self.playlist_text, evicting the oldest if the rolling window is
+        full."""
+        frames = self._cur_frames
+        self._cur_frames = []
+        self._target_frames = max(1, round(HLS_SEGMENT_SECONDS * PCM_RATE / AAC_FRAME_SAMPLES))  # every segment AFTER the first uses the real target
+        if not frames:
+            return
+        filename = f"seg_{self._seq:08d}.aac"
+        duration = len(frames) * AAC_FRAME_SAMPLES / PCM_RATE
+        new_segments = dict(self.segments)
+        new_segments[filename] = b"".join(frames)
+        self._order.append((filename, duration))
+        while len(self._order) > HLS_LIST_SIZE:
+            old_name, _ = self._order.popleft()
+            new_segments.pop(old_name, None)
+            self._first_seq += 1
+        self.segments = new_segments  # whole-object reassignment — safe to read from a request handler without a lock (CPython GIL makes a single reference swap atomic)
+        self._seq += 1
+
+        lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:3",
+            f"#EXT-X-TARGETDURATION:{max(1, round(HLS_SEGMENT_SECONDS))}",
+            f"#EXT-X-MEDIA-SEQUENCE:{self._first_seq}",
+        ]
+        for name, dur in self._order:
+            lines.append(f"#EXTINF:{dur:.3f},")
+            lines.append(name)
+        self.playlist_text = "\n".join(lines) + "\n"  # no #EXT-X-ENDLIST — this is a live, ongoing playlist
+
     def close(self):
-        if self.container is None:
+        if self.encoder is None:
             return
         try:
-            if self.ok and self.stream:
+            # Flush whatever's left buffered inside the encoder/resampler
+            # into one final (possibly short) segment rather than just
+            # dropping it.
+            if self.ok and self.resampler:
                 for rframe in self.resampler.resample(None):
-                    for packet in self.stream.encode(rframe):
-                        self.container.mux(packet)
-                for packet in self.stream.encode(None):
-                    self.container.mux(packet)
-            self.container.close()
+                    for packet in self.encoder.encode(rframe):
+                        self._on_aac_packet(bytes(packet))
+            if self.ok and self.encoder:
+                for packet in self.encoder.encode(None):
+                    self._on_aac_packet(bytes(packet))
+            self._close_segment()
         except Exception:
             traceback.print_exc()
         finally:
-            self.container = None
-            shutil.rmtree(self.dir, ignore_errors=True)
+            self.encoder = None
+            self.resampler = None
+            self.ok = False
+            self.segments = {}
+            self.playlist_text = None
 
 
 class LobbyRelay:
@@ -1814,26 +1921,36 @@ def _require_host(lobby, client_id):
 @app.route("/api/lobby/<code>/hls/<path:filename>")
 async def lobby_hls_file(code, filename):
     """Serves one lobby's live HLS output — live.m3u8 and its rolling
-    .ts segments (see HLSMuxer) — straight off disk. This IS the music
-    transport now (see Lobby._connectMedia in lobby.js): every listener's
-    <audio> element points hls.js at .../hls/live.m3u8 and the browser
-    does the rest with plain HTTP GETs, no signaling involved."""
+    AAC segments (see HLSMuxer) — straight out of memory, nothing ever
+    touches disk for this. This IS the music transport now (see
+    Lobby._connectMedia in lobby.js): every listener's <audio> element
+    points hls.js at .../hls/live.m3u8 and the browser does the rest
+    with plain HTTP GETs, no signaling involved."""
     lobby = get_lobby_or_404(code)
     if not lobby or not lobby.relay.hls.ok:
         return jsonify({"error": "not found"}), 404
+    hls = lobby.relay.hls
     norm = filename.replace("\\", "/")
     if ".." in norm or "/" in norm:
         return jsonify({"error": "not found"}), 404
-    path = lobby.relay.hls.dir / norm
-    if not path.is_file():
+
+    if norm == "live.m3u8":
+        playlist = hls.playlist_text
+        if playlist is None:
+            return jsonify({"error": "not ready yet"}), 404
+        # The playlist rewrites on every segment — a cached copy is a
+        # stale (or, worse, half-evicted-segment) one.
+        return Response(playlist, mimetype="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
+
+    data = hls.segments.get(norm)
+    if data is None:
         return jsonify({"error": "not found"}), 404
-    resp = await send_from_directory(lobby.relay.hls.dir, norm)
-    # The playlist rewrites on every segment — a cached copy is a stale
-    # (or, worse, half-evicted-segment) one. Segments themselves are
-    # immutable once written (a new filename every time), so those are
-    # safe to let a browser/CDN cache briefly.
-    resp.headers["Cache-Control"] = "no-store" if norm.endswith(".m3u8") else "public, max-age=30"
-    return resp
+    # Segments themselves are immutable once written (a new filename
+    # every time), so a short cache is safe — but they DO get evicted
+    # from memory once HLS_LIST_SIZE segments have passed them, so keep
+    # this well under how long that eviction typically takes.
+    return Response(data, mimetype="audio/aac", headers={"Cache-Control": "public, max-age=10"})
+
 
 
 @app.route("/api/lobby/<code>/play", methods=["POST"])
