@@ -266,25 +266,7 @@ const Lobby = {
      disturb music playback already flowing through this connection. */
   async _connectMedia() {
     try {
-      const pc = new RTCPeerConnection(
-        {
-          iceServers: [
-            {
-              urls: [
-                "stun:stun.cloudflare.com:3478",
-                "turn:turn.cloudflare.com:3478?transport=udp",
-                "turn:turn.cloudflare.com:3478?transport=tcp",
-                "turns:turn.cloudflare.com:5349?transport=tcp",
-                "turn:turn.cloudflare.com:80?transport=tcp",
-                "turns:turn.cloudflare.com:443?transport=tcp",
-              ],
-              "username": "g0a65a212e35d812043535a8506985fa879734e6815399dbd68355ffef5a863a",
-              "credential": "db9f834ae9392075b16d511e1ef5c2f9ec1b9983cca2a1e765fbea4e2e1ce8a5",
-              // good job finding this
-            }
-          ],
-        }
-      );
+      const pc = new RTCPeerConnection();
       S.lobby.pc = pc;
       S.lobby.micStream = null;
       S.lobby.micEnabled = false;
