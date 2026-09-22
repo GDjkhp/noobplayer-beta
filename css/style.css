@@ -142,7 +142,6 @@ body::after {
 .hdr-btn:hover { border-color: var(--accent); color: var(--accent); }
 .hdr-btn.ghost { border-color: transparent; }
 .hdr-btn.danger:hover { border-color: var(--red); color: var(--red); }
-.hdr-btn.mic-on { border-color: var(--green); color: var(--green); }
 #sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted2); flex-shrink: 0; }
 #sdot.ok { background: var(--green); animation: blink 2.4s ease-in-out infinite; }
 #sdot.err { background: var(--red); }
@@ -162,11 +161,6 @@ body::after {
 }
 .pchip:first-child { margin-left: 0; }
 .pchip.is-host { border-color: var(--accent); }
-.pchip .mic-dot {
-  position: absolute; bottom: -1px; right: -1px; width: 8px; height: 8px;
-  border-radius: 50%; background: var(--green); border: 1.5px solid var(--surf); display: none;
-}
-.pchip.speaking .mic-dot { display: block; }
 
 #cors-note {
   display: none; background: rgba(251,191,36,.07); border: 1px solid rgba(251,191,36,.25);

@@ -9,14 +9,15 @@
 </head>
 <body>
 
-<audio id="voice-audio" autoplay style="display:none"></audio>
-<!-- lobby-audio's source is a WebRTC MediaStream (see Lobby._connectMedia
-     in lobby.js), not a fetched URL — WebAudio has no cross-origin
-     restriction on that (crossorigin/CORS only ever applied to the old
-     HTTP `/live` relay, which this replaced), so no crossorigin attribute
-     is needed here even when the app is pointed at a Flask server on a
-     different origin. -->
-<audio id="lobby-audio" autoplay style="display:none"></audio>
+<!-- lobby-audio's source is a fetched HLS playlist/segments (see
+     Lobby._connectMedia in lobby.js, via hls.js or native HLS support),
+     so crossorigin="anonymous" is required for WebAudio (the EQ/level
+     meter/visualizer feeds in audio-el-player.js) to be able to read
+     from it when the app is pointed at a Flask server on a different
+     origin — see the comment in audio-el-player.js for what silently
+     breaks without it. server.py's CORS wrapper already sends the
+     matching Access-Control-Allow-Origin header on the /hls/ route. -->
+<audio id="lobby-audio" autoplay crossorigin="anonymous" style="display:none"></audio>
 
 <!-- ═══ MAIN APP ═══ -->
 <div id="app" style="display:block">
@@ -36,7 +37,6 @@
     <button id="btn-copy-code" class="hdr-btn ghost" title="Copy invite code">Copy</button>
     <span class="hdr-fill"></span>
     <div id="participants-strip"></div>
-    <button id="btn-mic" class="hdr-btn" title="Toggle microphone">🎤 Off</button>
     <button id="btn-leave-lobby" class="hdr-btn danger">Leave</button>
   </div>
 
@@ -563,6 +563,11 @@
 <div id="toasts"></div>
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<!-- Lobby mode's music transport — see Lobby._connectMedia in lobby.js.
+     Browsers with native HLS support (Safari) don't need this at all;
+     it's only actually used when window.Hls is present AND
+     Hls.isSupported() passes. -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 <script src="js/pcm-player.js"></script>
 <script src="js/audio-el-player.js"></script>
 <script src="js/utils.js"></script>

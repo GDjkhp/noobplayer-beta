@@ -6,7 +6,7 @@
    audio-el-player.js, lobby.js or api.js. Everything here is either a
    monkey-patch (wrap a function on an existing prototype/object and call
    the original) or a direct DOM listener on elements that already exist
-   in index.html (#lobby-audio, #voice-audio). That keeps every other
+   in index.html (#lobby-audio). That keeps every other
    module's diff to ~nothing and means this file can be deleted with zero
    side effects on the rest of the app.
 
@@ -984,7 +984,7 @@ const Debug = {
     const cards = [
       ['Generation', s.generation],
       ['Idle', s.idle ? 'yes (silence keepalive)' : 'no'],
-      ['Listeners (WebRTC)', s.listeners],
+      ['Listeners (participants)', s.listeners],
       ['Frames sent', s.framesSent],
       ['Pace drift ms (avg/max)', `${s.paceDriftMsAvg ?? '—'} / ${s.paceDriftMsMax ?? '—'}`],
       ['Sessions started', s.sessionsStarted],

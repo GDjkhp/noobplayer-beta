@@ -3,9 +3,12 @@
    Lobby — server mode. Talks to the Flask backend for:
      - lobby create/join/browse (REST)
      - shared playback state + chat (Socket.IO push)
-     - music + voice chat, both over ONE WebRTC connection per client
-       (real UDP transport — ICE/DTLS/SRTP — replacing the old HTTP
-       `/live` relay entirely; server-side mixing/relay via aiortc)
+     - music over a live HLS stream (see Lobby._connectMedia) — a plain
+       HTTP GET of the lobby's rolling .m3u8 playlist, played back via
+       hls.js (native HLS in Safari). Replaces the old WebRTC relay:
+       no signaling, no ICE/TURN, but a couple of seconds behind the
+       live edge instead of sample-accurate (see server.py's HLSMuxer).
+       Voice chat has been removed along with WebRTC.
 ═══════════════════════════════════════════ */
 const Lobby = {
 
@@ -78,7 +81,7 @@ const Lobby = {
     document.getElementById('sdot')?.classList.add('ok');
 
     this._connectSocket(code, clientId);
-    this._connectMedia();  // fire-and-forget — establishes music (+ mixed voice) over WebRTC; see below
+    this._connectMedia();  // fire-and-forget — points #lobby-audio at the lobby's live HLS stream; see below
     UI.applyLockState();
     UI.renderConfigTab();
     toast(`Joined lobby ${code}${isHost ? ' as host' : ''}`, 'success');
@@ -165,7 +168,7 @@ const Lobby = {
     const strip = document.getElementById('participants-strip');
     strip.innerHTML = list.slice(0, 8).map(p => {
       const initial = (p.name || '?').trim().charAt(0).toUpperCase() || '?';
-      return `<div class="pchip ${p.isHost ? 'is-host' : ''}" title="${esc(p.name)}${p.isHost ? ' (host)' : ''}">${esc(initial)}<span class="mic-dot"></span></div>`;
+      return `<div class="pchip ${p.isHost ? 'is-host' : ''}" title="${esc(p.name)}${p.isHost ? ' (host)' : ''}">${esc(initial)}</div>`;
     }).join('');
     UI.renderChatUsers(list);
   },
@@ -223,12 +226,9 @@ const Lobby = {
 
   async leave() {
     if (S.lobby.socket) { S.lobby.socket.disconnect(); S.lobby.socket = null; }
-    if (S.lobby.pc) { S.lobby.pc.close(); S.lobby.pc = null; }
-    if (S.lobby.micStream) { S.lobby.micStream.getTracks().forEach(t => t.stop()); S.lobby.micStream = null; }
+    if (S.lobby.hls) { try { S.lobby.hls.destroy(); } catch (_) {} S.lobby.hls = null; }
     const lobbyAudio = document.getElementById('lobby-audio');
-    if (lobbyAudio) lobbyAudio.srcObject = null;
-    const voiceAudio = document.getElementById('voice-audio');
-    if (voiceAudio) voiceAudio.srcObject = null;
+    if (lobbyAudio) { lobbyAudio.pause(); lobbyAudio.removeAttribute('src'); lobbyAudio.load(); }
     if (S.lobby.code) await LobbyAPI.leave(S.lobby.code, S.lobby.clientId);
     Engine._stopLocal();
     S.current = null; S.queue = [];
@@ -240,7 +240,7 @@ const Lobby = {
     S.autoQueue = []; S.autoQueueCount = 0;
     S.history = [];
     S.mode = null;
-    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, pc:null, musicTrackId:null, voiceTrackId:null, micStream:null, micEnabled:false, lastServerState:null, relayGen:0 };
+    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, hls:null, lastServerState:null, relayGen:0 };
     document.getElementById('hdr-lobby').style.display = 'none';
     document.getElementById('tab-chat-btn').style.display = 'none';
     document.getElementById('chat-log').innerHTML = '';
@@ -252,132 +252,69 @@ const Lobby = {
     UI.renderConfigTab();
   },
 
-  /* ───────── WebRTC — music + voice, one connection per client ─────────
-     _connectMedia() runs once, right on joining the lobby: it opens the
-     RTCPeerConnection and declares two RECVONLY transceivers up front —
-     [0] the shared music relay, [1] the mixed voice mix — which the
-     server fills via pc.addTrack() on its side (see webrtc_offer in
-     server.py). That's the standard WebRTC pattern for "I want to
-     receive N things I'm not sending anything on yet".
+  /* ───────── music — live HLS stream ─────────
+     _connectMedia() runs once, right on joining the lobby: it points
+     #lobby-audio at the lobby's rolling live.m3u8 playlist (see
+     LobbyAPI.hlsUrl / server.py's HLSMuxer) via hls.js, which handles
+     the playlist polling and segment fetch/buffer/feed loop. Safari (and
+     any browser with native HLS support) skips hls.js entirely and just
+     sets the <audio> element's src directly — canPlayType covers that.
 
-     Enabling the mic later (_enableMic) adds a THIRD, sendonly,
-     transceiver via renegotiation on the SAME pc — deliberately not
-     reusing either of the two recvonly ones, so toggling voice can never
-     disturb music playback already flowing through this connection. */
+     No signaling round-trip like the old WebRTC connect — the URL is
+     stable and joinable immediately, hls.js just starts pulling
+     segments over plain HTTP. A hard cut (skip/seek/filter change,
+     `relayGen` bumping) doesn't need a reconnect either: it's just more
+     audio arriving in the same continuous stream (see HLSMuxer in
+     server.py) — hls.js's own live-playlist polling picks it up on its
+     own. */
   async _connectMedia() {
-    try {
-      const pc = new RTCPeerConnection(
-        {
-          iceServers: [
-            {
-              urls: [
-                "stun:stun.cloudflare.com:3478",
-                "turn:turn.cloudflare.com:3478?transport=udp",
-                "turn:turn.cloudflare.com:3478?transport=tcp",
-                "turns:turn.cloudflare.com:5349?transport=tcp",
-                "turn:turn.cloudflare.com:80?transport=tcp",
-                "turns:turn.cloudflare.com:443?transport=tcp",
-              ],
-              "username": "g0a65a212e35d812043535a8506985fa879734e6815399dbd68355ffef5a863a",
-              "credential": "db9f834ae9392075b16d511e1ef5c2f9ec1b9983cca2a1e765fbea4e2e1ce8a5",
-              // good job finding this
-            }
-          ],
+    const audio = document.getElementById('lobby-audio');
+    if (!audio) return;
+    const url = LobbyAPI.hlsUrl(S.lobby.code);
+
+    if (window.Hls && Hls.isSupported()) {
+      const hls = new Hls({
+        // Keep the client's own buffer short too — a big buffer just
+        // means sitting further from the live edge, which defeats the
+        // point of the server's short (see config.HLS_SEGMENT_SECONDS)
+        // segments. liveSyncDurationCount is "how many segments behind
+        // the playlist head to target", the hls.js analogue of
+        // HLS_LIST_SIZE on the server.
+        liveSyncDurationCount: 3,
+        maxLiveSyncPlaybackRate: 1.1, // nudges playback slightly faster when it drifts behind the live edge, instead of just accumulating lag forever
+        backBufferLength: 10,
+      });
+      S.lobby.hls = hls;
+      hls.on(Hls.Events.ERROR, (_evt, data) => {
+        if (!data.fatal) return;
+        console.warn('hls.js fatal error:', data.type, data.details);
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            toast('Lobby stream connection dropped — retrying…', 'warn', 3000);
+            hls.startLoad();
+            break;
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            hls.recoverMediaError();
+            break;
+          default:
+            toast('Lobby stream error — try leaving and rejoining', 'error', 6000);
+            break;
         }
-      );
-      S.lobby.pc = pc;
-      S.lobby.micStream = null;
-      S.lobby.micEnabled = false;
-
-      pc.addTransceiver('audio', { direction: 'recvonly' }); // music
-      pc.addTransceiver('audio', { direction: 'recvonly' }); // mixed voice
-
-      pc.ontrack = (ev) => {
-        const stream = ev.streams[0] || new MediaStream([ev.track]);
-        const transceivers = pc.getTransceivers().filter(t => t.receiver && t.receiver.track && t.receiver.track.kind === 'audio');
-        const idx = transceivers.findIndex(t => t.receiver.track === ev.track);
-        const audioEl = document.getElementById(idx === 0 ? 'lobby-audio' : 'voice-audio');
-        if (audioEl && audioEl.srcObject !== stream) audioEl.srcObject = stream;
-      };
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await this._waitIceComplete(pc);
-
-      const res = await fetch(LobbyAPI.webrtcOfferUrl(S.lobby.code), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: S.lobby.clientId, sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const answer = await res.json();
-      // Must be known BEFORE setRemoteDescription — that's what fires
-      // `ontrack` above, and it needs these to route the two incoming
-      // tracks correctly. See webrtc_offer in server.py for where they
-      // come from.
-      S.lobby.musicTrackId = answer.musicTrackId;
-      S.lobby.voiceTrackId = answer.voiceTrackId;
-      await pc.setRemoteDescription(new RTCSessionDescription(answer));
-    } catch (e) {
-      toast(`Playback connection error: ${e.message}`, 'error', 6000);
-    }
-  },
-
-  async toggleMic() {
-    if (!S.lobby.micStream) {
-      await this._enableMic();
+      hls.loadSource(url);
+      hls.attachMedia(audio);
+    } else if (audio.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari (and any browser with native HLS support) plays an HLS
+      // playlist directly off a plain src — no library needed.
+      S.lobby.hls = null;
+      audio.src = url;
     } else {
-      S.lobby.micEnabled = !S.lobby.micEnabled;
-      S.lobby.micStream.getAudioTracks().forEach(t => t.enabled = S.lobby.micEnabled);
-      this._updateMicBtn();
+      toast('This browser can\u2019t play the lobby\u2019s audio stream (no HLS support)', 'error', 8000);
+      return;
     }
-  },
 
-  async _enableMic() {
-    const pc = S.lobby.pc;
-    if (!pc) { toast('Still connecting — try again in a moment', 'warn'); return; }
-    try {
-      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      S.lobby.micStream = micStream;
-      S.lobby.micEnabled = true;
-
-      pc.addTransceiver(micStream.getAudioTracks()[0], { direction: 'sendonly', streams: [micStream] });
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await this._waitIceComplete(pc);
-
-      const res = await fetch(LobbyAPI.webrtcOfferUrl(S.lobby.code), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: S.lobby.clientId, sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const answer = await res.json();
-      await pc.setRemoteDescription(new RTCSessionDescription(answer));
-
-      this._updateMicBtn();
-      toast('🎤 Mic on', 'success', 2000);
-    } catch (e) {
-      toast(`Mic error: ${e.message}`, 'error', 5000);
-      S.lobby.micEnabled = false;
-      if (S.lobby.micStream) { S.lobby.micStream.getTracks().forEach(t => t.stop()); S.lobby.micStream = null; }
-      this._updateMicBtn();
-    }
-  },
-
-  _waitIceComplete(pc) {
-    if (pc.iceGatheringState === 'complete') return Promise.resolve();
-    return new Promise(resolve => {
-      function check() {
-        if (pc.iceGatheringState === 'complete') { pc.removeEventListener('icegatheringstatechange', check); resolve(); }
-      }
-      pc.addEventListener('icegatheringstatechange', check);
-      setTimeout(resolve, 3000); // safety timeout — proceed with whatever candidates gathered
-    });
-  },
-
-  _updateMicBtn() {
-    const btn = document.getElementById('btn-mic');
-    if (S.lobby.micEnabled) { btn.textContent = '🎤 On'; btn.classList.add('mic-on'); }
-    else { btn.textContent = '🎤 Off'; btn.classList.remove('mic-on'); }
+    // Playback itself starts once Engine._lobbySync (driven by the
+    // server's 'state' broadcast) calls S.player.resume() — see
+    // engine.js. Nothing to kick off here.
   },
 };

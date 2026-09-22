@@ -3,20 +3,20 @@
    AudioElPlayer — wraps a plain <audio> element so it satisfies the same
    interface as PCMPlayer (getPositionMs/isPaused/getLevels/setVolume/
    pause/resume/destroy). Used for lobby (server) mode, where playback
-   arrives over WebRTC (see Lobby._connectMedia in lobby.js) and the
-   client just sets `audio.srcObject` to the incoming MediaStream — no
-   local PCM decode/scheduling. Keeping the same interface as PCMPlayer
-   means ui.js (progress bar, EQ, level meter, play/pause icons) works
-   completely unchanged regardless of which mode is active.
+   arrives as a live HLS stream (see Lobby._connectMedia in lobby.js) —
+   hls.js (or native HLS support) feeds the element, no local PCM decode/
+   scheduling on this end either way. Keeping the same interface as
+   PCMPlayer means ui.js (progress bar, EQ, level meter, play/pause
+   icons) works completely unchanged regardless of which mode is active.
 
    Position is intentionally NOT read from audio.currentTime: a listener
-   who joins mid-track only starts receiving frames from "now" (it's a
-   live relay, not a seekable file), so audio.currentTime would read
-   from 0 at connect time, not the track's true elapsed position. The
-   server already computes and broadcasts the authoritative position
-   (anchor + elapsed wall-clock); setAnchor() below just mirrors that
-   same anchor math locally so the progress bar reads correctly between
-   broadcasts.
+   who joins mid-track only starts receiving segments from "now" (it's a
+   live relay, not a seekable file — currentTime is HLS's own internal
+   buffer position, not the track's true elapsed time), so it would read
+   near 0 at connect time, not the track's actual position. The server
+   already computes and broadcasts the authoritative position (anchor +
+   elapsed wall-clock); setAnchor() below just mirrors that same anchor
+   math locally so the progress bar reads correctly between broadcasts.
 ═══════════════════════════════════════════ */
 class AudioElPlayer {
   constructor(audioEl) {
@@ -80,12 +80,16 @@ class AudioElPlayer {
 
   // ── visualizer feeds ── (identical surface to PCMPlayer's)
   //
-  // Caveat worth knowing: WebAudio's cross-origin restriction only ever
-  // applied to a *fetched* media resource (the old HTTP `/live` relay).
-  // lobby-audio's source is now a WebRTC MediaStream (see
-  // Lobby._connectMedia in lobby.js), which WebAudio can always analyse
-  // regardless of the server's origin — no crossorigin attribute or
-  // CORS header needed on either side anymore.
+  // Caveat worth knowing: lobby-audio's source is now a fetched HLS
+  // playlist/segments (see Lobby._connectMedia in lobby.js), so WebAudio's
+  // cross-origin restriction on createMediaElementSource applies again —
+  // that's why #lobby-audio has crossorigin="anonymous" in index.html,
+  // and why server.py's CORS wrapper needs to cover the /hls/ route (it
+  // does — see the app-wide `cors(app, allow_origin="*", ...)` call).
+  // Without both of those, getSpectrum/getWaveform below would silently
+  // return all-zero data instead of throwing (a "tainted" media element
+  // just reports silence, no error) whenever the Flask server is on a
+  // different origin than the page.
   get binCount() { return this.analyser ? this.analyser.frequencyBinCount : 0; }
 
   getSpectrum(out) {

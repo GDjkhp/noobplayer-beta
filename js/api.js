@@ -154,8 +154,11 @@ const LobbyAPI = {
     return res.json();
   },
 
-  webrtcOfferUrl(code) {
-    return `${this.base()}/api/lobby/${code}/webrtc/offer`;
+  // The lobby's live HLS playlist — this IS the music transport in
+  // server mode now (see Lobby._connectMedia in lobby.js). Plain HTTP
+  // GET, no signaling.
+  hlsUrl(code) {
+    return `${this.base()}/api/lobby/${code}/hls/live.m3u8`;
   },
 };
 

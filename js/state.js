@@ -87,12 +87,8 @@ const S = {
     displayName: '',
     participants: [],
     socket: null,       // Socket.IO client
-    pc: null,           // RTCPeerConnection — carries music (recvonly), mixed voice (recvonly), and this client's own mic (sendonly, once enabled)
-    musicTrackId: null, // server-assigned WebRTC track id for the shared music relay (see Lobby._connectMedia)
-    voiceTrackId: null, // server-assigned WebRTC track id for this participant's personalized mixed-voice track
-    micStream: null,
-    micEnabled: false,
+    hls: null,           // Hls.js instance attached to #lobby-audio (see Lobby._connectMedia) — null when native HLS (Safari) is used instead
     lastServerState: null,
-    relayGen: 0,        // last-seen LobbyRelay generation — bumps on a hard cut (skip/seek/filter change); the music track itself keeps flowing across this, nothing client-side needs to react to it anymore
+    relayGen: 0,        // last-seen LobbyRelay generation — bumps on a hard cut (skip/seek/filter change); the HLS stream itself keeps flowing across this, nothing client-side needs to react to it anymore
   },
 };

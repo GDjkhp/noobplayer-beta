@@ -45,7 +45,6 @@ document.addEventListener('DOMContentLoaded', () => {
   /* ───────── App header (lobby) ───────── */
   document.getElementById('btn-copy-code').addEventListener('click', () => Lobby.copyCode());
   document.getElementById('btn-leave-lobby').addEventListener('click', () => Lobby.leave());
-  document.getElementById('btn-mic').addEventListener('click', () => Lobby.toggleMic());
 
   /* ───────── Playback controls ───────── */
   document.getElementById('btn-play').addEventListener('click', () => Engine.togglePause());
