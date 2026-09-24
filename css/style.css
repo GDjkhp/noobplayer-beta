@@ -734,3 +734,67 @@ body::after {
 .dbg-list-row.dbg-row-err { border-left-color: var(--red); color: var(--red); }
 .dbg-list-row.dbg-row-warn { border-left-color: var(--amber); color: var(--amber); }
 .dbg-muted { color: var(--muted); margin-left: auto; }
+/* ═══════════════ STICKY PLAYER ═══════════════
+   The tab panes grow with their content and the *page* scrolls (they don't
+   scroll internally), so left to itself the player scrolls away with them.
+   Two layouts, matching how the player is laid out:
+
+   1) Side-by-side (desktop, and any phone/tablet held in landscape): the
+      whole player column stays pinned to the side while the tabs scroll.
+   2) Stacked (portrait phone): the album art scrolls away, but the bottom
+      half of the player — title, progress, controls — stays frozen at the
+      top of the screen so it's always in reach.
+
+   Both need #main to be overflow:visible: overflow:hidden turns it into the
+   element sticky positioning is measured against, and it never scrolls, so
+   nothing would ever stick. */
+
+/* ── 1) side-by-side ── */
+@media (min-width: 1001px), (max-width: 1000px) and (orientation: landscape) {
+  #main {
+    --left-w: 480px;
+    overflow: visible;
+    /* #left is no longer stretched to the full page height, so paint its
+       column background here to keep the sidebar look all the way down. */
+    background: linear-gradient(to right, var(--surf) var(--left-w), transparent var(--left-w));
+  }
+  #left {
+    position: sticky; top: 0; align-self: flex-start;
+    width: var(--left-w);
+    max-height: 100vh; max-height: 100dvh;   /* never taller than the screen; scrolls inside itself if it has to */
+    border-right: none;
+  }
+  #right { border-left: 1px solid var(--brd); }
+}
+
+/* Landscape phones / small tablets: side-by-side instead of the portrait
+   "art square with the controls overlaid" layout from the 1000px query
+   above (which is as tall as the screen is wide — bigger than the whole
+   screen when it's on its side). */
+@media (max-width: 1000px) and (orientation: landscape) {
+  #main { --left-w: clamp(280px, 36vw, 380px); flex-direction: row; }
+  #left { aspect-ratio: auto; border-bottom: none; overflow-x: hidden; overflow-y: auto; }
+  /* Art shrinks to whatever height is left after the controls. */
+  #art-wrap { position: relative; inset: auto; aspect-ratio: 1; z-index: auto; flex: 0 1 auto; min-height: 72px; }
+  #player-panel { position: static; max-height: none; overflow: visible; background: none; }
+  #info, #prog-wrap, #ctrls { border-bottom-color: var(--brd); }
+  /* Narrow column: let the secondary row wrap, volume on its own line. */
+  #ctrls-sec { flex-wrap: wrap; row-gap: 8px; }
+  #ctrls-sec .hsep { display: none; }
+  #vol-row { flex: 1 1 100%; order: 10; }
+}
+
+/* ── 2) stacked, portrait ── */
+@media (max-width: 1000px) and (orientation: portrait) {
+  #main { overflow: visible; }
+  /* Sticks once its top edge reaches a *negative* offset: exactly the art's
+     height minus the panel's height. So the art scrolls off the top and the
+     panel (which sits at the bottom of #left) is what stays on screen.
+     The two heights are measured in main.js (_initStickyPlayer) because the
+     panel wraps to different heights on different screens. */
+  #left {
+    position: sticky; z-index: 30;
+    top: calc(var(--player-panel-h, 190px) - var(--player-left-h, 100vw));
+    box-shadow: 0 4px 14px rgba(0,0,0,.35);
+  }
+}

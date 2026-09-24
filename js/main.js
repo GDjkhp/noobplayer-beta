@@ -30,6 +30,30 @@ const Main = {
     try { S.gaplessEnabled = localStorage.getItem('nl_gapless') === '1'; } catch (_) {}
     await Lobby.create('New Lobby', false, displayName);
   },
+
+  // Portrait layout only (see the "STICKY PLAYER" block in style.css): the
+  // player is a square with its controls overlaid on the bottom, and on
+  // scroll everything above the controls slides away while the controls stay
+  // put. CSS needs to know how tall the whole player and its bottom panel
+  // are to compute that offset, and the panel's height varies with screen
+  // width (its rows wrap), so measure both and keep them current.
+  _initStickyPlayer() {
+    const left = document.getElementById('left');
+    const panel = document.getElementById('player-panel');
+    if (!left || !panel) return;
+    const root = document.documentElement;
+    const sync = () => {
+      root.style.setProperty('--player-panel-h', panel.offsetHeight + 'px');
+      root.style.setProperty('--player-left-h', left.offsetHeight + 'px');
+    };
+    sync();
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(sync);
+      ro.observe(panel); ro.observe(left);
+    }
+    window.addEventListener('resize', sync);
+    window.addEventListener('orientationchange', sync);
+  },
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -38,6 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
   Skins.init();
   Viz.init();
   UI.setupProgressBar();
+  Main._initStickyPlayer();
 
   /* ───────── App header (standalone) ───────── */
   document.getElementById('btn-disconnect-sa').addEventListener('click', () => Standalone.disconnect());

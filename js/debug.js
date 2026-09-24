@@ -776,13 +776,18 @@ const Debug = {
 
         <div class="dbg-cols">
           <div class="dbg-section">
-            <div class="dbg-section-title">Audio element events <span class="dbg-count" id="dbg-ael-count"></span></div>
-            <div class="dbg-scroll"><div id="dbg-ael-list" class="dbg-list"></div></div>
-          </div>
-          <div class="dbg-section">
             <div class="dbg-section-title">Smart Queue <span class="dbg-lane-hint">hidden recommendation pool</span> <span class="dbg-count" id="dbg-sq-count"></span></div>
             <div class="dbg-scroll"><div id="dbg-sq-list" class="dbg-list"></div></div>
           </div>
+          <div class="dbg-section">
+            <div class="dbg-section-title">History Queue <span class="dbg-lane-hint">already played · most recent first</span> <span class="dbg-count" id="dbg-hq-count"></span></div>
+            <div class="dbg-scroll"><div id="dbg-hq-list" class="dbg-list"></div></div>
+          </div>
+        </div>
+
+        <div class="dbg-section">
+          <div class="dbg-section-title">Audio element events <span class="dbg-count" id="dbg-ael-count"></span></div>
+          <div class="dbg-scroll"><div id="dbg-ael-list" class="dbg-list"></div></div>
         </div>
 
         <div class="dbg-section" id="dbg-server-section" style="display:none">
@@ -810,6 +815,7 @@ const Debug = {
     this._renderDrops();
     this._renderAel();
     this._renderSmartQueue();
+    this._renderHistoryQueue();
     this._renderServer();
     this._updateBufHint();
   },
@@ -966,6 +972,43 @@ const Debug = {
       return;
     }
     list.innerHTML = items.slice(0, 25).map((t, i) => `
+      <div class="dbg-list-row">
+        <span class="dbg-mono">#${i + 1}</span>
+        <span>${esc(t.title || 'Unknown title')}</span>
+        <span class="dbg-muted">${esc(t.author || '')}</span>
+      </div>`).join('');
+  },
+
+  // Everything that has already finished playing, most recent at the top.
+  // Standalone: S.history is oldest->newest, so it's flipped here. Lobby:
+  // the server owns the history and already sends it newest-first (see
+  // debug_snapshot's `history` field in server.py) — no client-side copy
+  // exists otherwise, same situation as the Smart Queue pool above.
+  _renderHistoryQueue() {
+    const list = document.getElementById('dbg-hq-list');
+    const count = document.getElementById('dbg-hq-count');
+    if (!list) return;
+    let items = [], total = 0;
+    if (S.mode === 'standalone') {
+      items = (S.history || []).slice().reverse().map(t => ({ title: t.info && t.info.title, author: t.info && t.info.author }));
+      total = items.length;
+    } else if (S.mode === 'server' && this.server && !this.server.error) {
+      items = this.server.history || [];
+      total = this.server.historyCount != null ? this.server.historyCount : items.length;
+    }
+    count.textContent = total ? `(${total})` : '';
+
+    // render() runs ~3.5x/sec; skip the DOM rebuild when nothing changed so
+    // a scroll position inside this card isn't fighting constant re-renders.
+    const sig = (S.mode || '-') + '|' + total + '|' + items.map(t => (t.title || '') + '\u0001' + (t.author || '')).join('\u0002');
+    if (list._sig === sig) return;
+    list._sig = sig;
+
+    if (!items.length) {
+      list.innerHTML = `<div class="dbg-empty-row">${S.mode ? 'nothing has finished playing yet' : 'not connected'}</div>`;
+      return;
+    }
+    list.innerHTML = items.map((t, i) => `
       <div class="dbg-list-row">
         <span class="dbg-mono">#${i + 1}</span>
         <span>${esc(t.title || 'Unknown title')}</span>

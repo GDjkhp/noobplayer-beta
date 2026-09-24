@@ -602,6 +602,11 @@ class LobbyRelay:
             # down (see _track_brief) since this goes out on every push.
             "autoQueueCount": len(self.lobby.auto_queue),
             "autoQueue": [_track_brief(t) for t in self.lobby.auto_queue[:30]],
+            # Everything that already played (Lobby.history is oldest->newest,
+            # capped at HISTORY_LIMIT), flipped so the most recent track is
+            # first — the Debug tab's History Queue card renders it as-is.
+            "historyCount": len(self.lobby.history),
+            "history": [_track_brief(t) for t in reversed(self.lobby.history)],
         }
 
     # ---- debug/stats push (Socket.IO) --------------------------------

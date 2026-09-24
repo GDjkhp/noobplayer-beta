@@ -181,6 +181,15 @@ const Viz = {
   _waveBuf: null,
   _startedAt: 0,
 
+  // Resource-saving recovery (see _beginProbe / _autoRefresh below).
+  _tick: null,         // the rAF callback, kept so it can be re-armed after a suspend
+  _lastPump: 0,        // when _pump last actually ran to completion of its visibility checks
+  _away: false,        // true while the stage wasn't being drawn (tab hidden, other tab open, scrolled off-screen)
+  _probing: false,     // just came back — the frame must prove it's alive quickly or it gets refreshed
+  _inView: true,       // IntersectionObserver result for #viz-stage
+  _io: null,
+  _refreshLog: [],     // timestamps of recent auto-refreshes, to stop a genuinely broken visualizer looping forever
+
   /* ═══════════════ lifecycle ═══════════════ */
 
   init() {
@@ -197,6 +206,25 @@ const Viz = {
     if (!S.viz.active) S.viz.active = this.normalize(VIZ_BUILTINS[0]);
 
     window.addEventListener('message', e => this._onFrameMessage(e));
+
+    // Browsers stop rAF and freeze/throttle background and off-screen frames
+    // to save power, and none of that is visible to us as an "error". The
+    // watchdog used to read the resulting silence as a crash and unload the
+    // visualizer for good. These hooks tell it "we were away, not dead" and
+    // make it re-check the frame instead — refreshing it if it really did
+    // get stuck.
+    this._tick = () => {
+      if (!this._running) return;
+      this._raf = requestAnimationFrame(this._tick);
+      this._pump();
+    };
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this._away = true;
+      else this._resumed();
+    });
+    window.addEventListener('pageshow', () => this._resumed());   // bfcache restore
+    document.addEventListener('resume', () => this._resumed());   // Page Lifecycle: tab un-frozen
+    window.addEventListener('online', () => this._resumed());
   },
 
   normalize(v) {
@@ -236,7 +264,7 @@ canvas{display:block;width:100%;height:100%}</style>
   var canvas = document.getElementById('c');
   var ctx = canvas.getContext('2d');
   var dpr = Math.min(window.devicePixelRatio || 1, 2);
-  var didSetup = false, errs = 0, dead = false, n = 0;
+  var didSetup = false, errs = 0, dead = false, n = 0, lastAck = 0;
 
   function resize(w, h) {
     canvas.width = Math.max(1, Math.round(w * dpr));
@@ -256,7 +284,11 @@ canvas{display:block;width:100%;height:100%}</style>
     var d = ev.data;
     if (!d || d.type !== 'viz-frame' || dead) return;
     n++;
-    if (n % 30 === 1) parent.postMessage({ type: 'viz-ack', n: n }, '*');
+    // Ack about once a second regardless of frame rate (a heavy visualizer
+    // at 5fps would otherwise look dead), and straight away when the parent
+    // is probing after the tab/frame was suspended.
+    var nowT = performance.now();
+    if (d.probe || nowT - lastAck > 1000) { lastAck = nowT; parent.postMessage({ type: 'viz-ack', n: n }, '*'); }
     if (canvas.width !== Math.round(d.w * dpr) || canvas.height !== Math.round(d.h * dpr)) resize(d.w, d.h);
     try {
       if (!didSetup) {
@@ -301,14 +333,73 @@ canvas{display:block;width:100%;height:100%}</style>
     this._startedAt = performance.now();
     this._lastAck = performance.now();
     this._lastFrameTime = performance.now();
+    this._lastPump = performance.now();
+    this._observeStage(stage);
     this.start();
+    // A brand-new frame has nothing to "come back" from — clear the flags
+    // start() sets for the resume-from-idle case.
+    this._away = false;
+    this._probing = false;
     this._renderActiveLabel();
   },
 
   unmount() {
     this.stop();
+    if (this._io) { this._io.disconnect(); this._io = null; }
     if (this._frame) { this._frame.remove(); this._frame = null; }
     this._ready = false;
+    this._probing = false;
+  },
+
+  // Off-screen stages aren't worth drawing (and browsers deprioritise
+  // off-screen frames anyway), so pause pumping while the stage is scrolled
+  // out of view — coming back into view counts as a resume.
+  _observeStage(stage) {
+    if (this._io) { this._io.disconnect(); this._io = null; }
+    this._inView = true;
+    if (!('IntersectionObserver' in window)) return;
+    this._io = new IntersectionObserver(entries => {
+      const vis = entries[entries.length - 1].isIntersecting;
+      if (vis && !this._inView) this._resumed();
+      this._inView = vis;
+    });
+    this._io.observe(stage);
+  },
+
+  // We were away (hidden / suspended / frozen / off-screen). Whatever the
+  // watchdog measured while away doesn't count against the frame — but the
+  // frame now has to answer quickly, or it's refreshed (see _pump).
+  _beginProbe(now) {
+    this._lastAck = now;
+    this._lastFrameTime = now;
+    this._probing = true;
+  },
+
+  _resumed() {
+    if (!this._frame) return;
+    this._away = true;            // next _pump() will _beginProbe
+    // Some browsers don't restart a rAF loop cleanly after a suspend — re-arm it.
+    if (this._running && this._tick) {
+      if (this._raf) cancelAnimationFrame(this._raf);
+      this._raf = requestAnimationFrame(this._tick);
+    }
+  },
+
+  // Rebuild the frame from scratch — same as pressing Run, minus the click.
+  // Capped so a visualizer that's actually broken (or hangs on frame one)
+  // can't refresh-loop forever: 3 refreshes in 30s and it's unloaded with
+  // the error shown instead.
+  _autoRefresh(why) {
+    const now = performance.now();
+    this._refreshLog = this._refreshLog.filter(t => now - t < 30000);
+    if (this._refreshLog.length >= 3) {
+      this._setError('Visualizer keeps stopping responding — unloaded it. Press Run to try again.');
+      this.unmount();
+      return;
+    }
+    this._refreshLog.push(now);
+    console.info('[viz] auto-refreshing visualizer:', why);
+    this.mount(S.viz.active);
   },
 
   _onFrameMessage(e) {
@@ -317,8 +408,8 @@ canvas{display:block;width:100%;height:100%}</style>
     // on — the source check is what actually identifies it.
     if (!this._frame || e.source !== this._frame.contentWindow) return;
     const d = e.data || {};
-    if (d.type === 'viz-ready') { this._ready = true; this._lastAck = performance.now(); }
-    else if (d.type === 'viz-ack') { this._lastAck = performance.now(); }
+    if (d.type === 'viz-ready') { this._ready = true; this._probing = false; this._lastAck = performance.now(); }
+    else if (d.type === 'viz-ack') { this._probing = false; this._lastAck = performance.now(); }
     else if (d.type === 'viz-error') {
       this._setError(d.fatal
         ? `${d.message} — stopped after repeated errors`
@@ -331,12 +422,10 @@ canvas{display:block;width:100%;height:100%}</style>
   start() {
     if (this._running) return;
     this._running = true;
-    const tick = () => {
-      if (!this._running) return;
-      this._raf = requestAnimationFrame(tick);
-      this._pump();
-    };
-    this._raf = requestAnimationFrame(tick);
+    // Coming back to the tab after stop() (see main.js) — the frame has been
+    // idle the whole time, so don't let that idle time trip the watchdog.
+    if (this._frame) this._away = true;
+    this._raf = requestAnimationFrame(this._tick);
   },
 
   stop() {
@@ -346,21 +435,37 @@ canvas{display:block;width:100%;height:100%}</style>
 
   _pump() {
     const frame = this._frame;
-    if (!frame || !this._ready || !frame.contentWindow) return;
+    if (!frame || !frame.contentWindow) return;
     const stage = document.getElementById('viz-stage');
-    if (!stage || !stage.offsetParent) return;   // tab hidden — don't burn frames
+    // Not being looked at: tab hidden, another tab open, or stage scrolled
+    // off-screen. (getClientRects rather than offsetParent: a fullscreen
+    // stage is position:fixed, which makes offsetParent null even though
+    // it's plainly visible.)
+    if (document.hidden || !stage || !stage.getClientRects().length || !this._inView) {
+      this._away = true;
+      return;
+    }
 
     const now = performance.now();
 
+    // Just came back from being away, or the loop itself was starved
+    // (rAF throttled to a crawl): forgive the silence, then require an
+    // answer from the frame within a couple of seconds.
+    if (this._away || now - this._lastPump > 1500) {
+      this._away = false;
+      this._beginProbe(now);
+    }
+    this._lastPump = now;
+
     // Watchdog. A visualizer that stopped acking has either crashed hard
-    // or is stuck in a loop; either way it isn't drawing, so say so rather
-    // than leaving a frozen picture on screen looking like a stall in the
-    // audio.
-    if (now - this._lastAck > 5000) {
-      this._setError('Visualizer stopped responding — unloaded it');
-      this.unmount();
+    // or is stuck in a loop, or the browser froze its frame to save
+    // resources. Rather than leave a dead picture on screen (or unload it
+    // for good), rebuild the frame — see _autoRefresh for the loop guard.
+    if (now - this._lastAck > (this._probing ? 2500 : 5000)) {
+      this._autoRefresh(this._ready ? 'no ack from frame' : 'frame never became ready');
       return;
     }
+    if (!this._ready) return;   // still loading — nothing to draw into yet
 
     const dt = Math.min((now - this._lastFrameTime) / 1000, 0.1);
     this._lastFrameTime = now;
@@ -376,6 +481,7 @@ canvas{display:block;width:100%;height:100%}</style>
 
     frame.contentWindow.postMessage({
       type: 'viz-frame',
+      probe: this._probing,
       freq, wave,
       level: player?.getLevels ? Math.min(1, player.getLevels()[0]) : 0,
       bass: this._band(freq, 0, 0.12),
