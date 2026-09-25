@@ -655,11 +655,23 @@ const UI = {
     if (document.activeElement !== lobbyInput) lobbyInput.value = localStorage.getItem('nl_lobby_name') || '';
   },
 
-  saveUserSettings() {
+  async saveUserSettings() {
     const name = document.getElementById('us-display-name').value.trim();
     const lobbyName = document.getElementById('us-lobby-name').value.trim();
     if (name) localStorage.setItem('nl_display_name', name);
     if (lobbyName) localStorage.setItem('nl_lobby_name', lobbyName);
+
+    // Current Lobby no longer has its own name/display-name fields — this
+    // is the only place either value is entered, so if we're in a lobby
+    // right now, push them live instead of waiting for the next auto-create.
+    if (S.mode === 'server' && S.lobby.active) {
+      if (name && name !== S.lobby.displayName) await Lobby.rename(name);
+      if (S.lobby.isHost && lobbyName) {
+        const cur = S.lobby.lastServerState || {};
+        if (lobbyName !== cur.name) await Lobby.updateSettings({ name: lobbyName });
+      }
+    }
+
     toast('User settings saved', 'success', 1500);
   },
 
@@ -683,46 +695,24 @@ const UI = {
 
     document.getElementById('cfg-lobby-code').textContent = S.lobby.code;
 
+    // Name and display name are no longer edited here — see User Settings
+    // above, which is now the single place those live (and pushes changes
+    // to the server itself; see saveUserSettings).
     const cur = S.lobby.lastServerState || {};
-    const nameInput = document.getElementById('cfg-lobby-name');
-    const dispInput = document.getElementById('cfg-display-name');
-    // Don't clobber a field the person is actively typing into — this
-    // fires on every server state push, which can happen mid-edit.
-    if (document.activeElement !== nameInput) nameInput.value = cur.name || '';
-    if (document.activeElement !== dispInput) dispInput.value = S.lobby.displayName || '';
-
     document.querySelectorAll('input[name="cfg-vis"]').forEach(r => {
       r.checked = (r.value === 'public') === !!cur.isPublic;
       r.disabled = !S.lobby.isHost;
     });
-    nameInput.disabled = !S.lobby.isHost;
   },
 
   async saveConfigLobby() {
     if (!(S.mode === 'server' && S.lobby.active)) return;
-    let changed = false, ok = true;
-
-    const newDisplayName = document.getElementById('cfg-display-name').value.trim();
-    if (newDisplayName && newDisplayName !== S.lobby.displayName) {
-      changed = true;
-      ok = (await Lobby.rename(newDisplayName)) && ok;
-    }
-
-    if (S.lobby.isHost) {
-      const cur = S.lobby.lastServerState || {};
-      const newName = document.getElementById('cfg-lobby-name').value.trim();
-      const isPublic = document.querySelector('input[name="cfg-vis"]:checked').value === 'public';
-      const patch = {};
-      if (newName && newName !== cur.name) patch.name = newName;
-      if (isPublic !== !!cur.isPublic) patch.isPublic = isPublic;
-      if (Object.keys(patch).length) {
-        changed = true;
-        ok = (await Lobby.updateSettings(patch)) && ok;
-      }
-    }
-
-    if (changed && ok) toast('Settings saved', 'success', 1500);
-    else if (!changed) toast('Nothing to save', 'info', 1500);
+    if (!S.lobby.isHost) { toast('Only the host can change lobby settings', 'warn'); return; }
+    const cur = S.lobby.lastServerState || {};
+    const isPublic = document.querySelector('input[name="cfg-vis"]:checked').value === 'public';
+    if (isPublic === !!cur.isPublic) { toast('Nothing to save', 'info', 1500); return; }
+    const ok = await Lobby.updateSettings({ isPublic });
+    if (ok) toast('Settings saved', 'success', 1500);
   },
 
   // Points the app at a different Flask server entirely — leaves the
