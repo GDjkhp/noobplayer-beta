@@ -798,3 +798,9 @@ body::after {
     box-shadow: 0 4px 14px rgba(0,0,0,.35);
   }
 }
+
+/* buffered-waveform legend (Debug tab) */
+.dbg-key { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; font-family: var(--fm); font-size: 9px; font-weight: 400; color: var(--muted); }
+.dbg-key-sw { display: inline-block; width: 8px; height: 8px; }
+.dbg-key-sw.played { background: rgba(148,163,184,.55); }
+.dbg-key-sw.ready { background: rgba(167,139,250,.9); }

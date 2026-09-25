@@ -24,37 +24,23 @@
        AudioElPlayer expose identically, so it works unmodified in both
        modes. A detected dropout (either side) injects a few red glitch
        columns instead of a real reading — see _injectWaveGlitch. An
-       optional segment grid (seconds, toggled in the UI) draws over both
-       strips, with a scrolling time label per line — see _drawSegments.
-     - Buffered waveform → a single FIFO queue (_futureQueue) of real,
-       already-decided audio that hasn't reached the listener's ears yet,
-       front = soonest to play. Rather than scrolling, this strip draws
-       like an oscilloscope sweep: unless a dropout is being simulated
-       (_bufFrozen — see below), one item is popped off the front of
-       _futureQueue per tick and APPENDED to _bufHistory at the next free
-       column, left to right, and every column already drawn stays put —
-       nothing shifts. Once _bufHistory fills the strip edge-to-edge
-       (there's no free column left to draw the next one into), it's
-       cleared outright and the sweep starts over from the left edge —
-       see _bufSweepTick. Freezing on a dropout (instead of continuing to
-       pop) simulates nothing being consumed while playback is stalled,
-       so the sweep just pauses in place rather than skipping ahead.
-       Where that future data actually comes from, in either mode:
-         - standalone: PCMPlayer.feed()'s own bytes, sampled the instant
-           they arrive (already decoded and scheduled onto the
-           AudioContext timeline, just not at `currentTime` yet) — plus a
-           poll of S.preload.chunks so the gapless-next-track's already-
-           fetched bytes queue up too, stitched with no seam.
-         - lobby: server.py's LobbyRelay.feed_chunk computes a peak for
-           every 20ms PCM frame as it's encoded — ahead of network
-           transit and the listener's own <audio> buffering, so it's
-           genuine lookahead, not reconstructed from audio.buffered.
-           Pushed as `wave_peaks` over the same debug socket subscription
-           every 150ms, only while this tab is open (see
-           LobbyRelay._wave_push_loop server-side).
-       A hard cut (PCMPlayer.cutOver, or a generation bump from the
-       server) drops whatever was still queued and wipes the sweep — it
-       was stopped, not played, so it shouldn't stay drawn as if it were.
+       optional segment grid (seconds, toggled in the UI) draws over this
+       strip, with a scrolling time label per line — see _drawSegments.
+     - Buffered waveform → everything this BROWSER has already received and
+       is holding ready to play, drawn as a waveform, with what has already
+       been played in a different colour and a playhead between the two.
+       Nothing is computed server-side; it's built from data the client
+       already has (see the "buffered waveform" section below):
+         - standalone: every chunk PCMPlayer.feed() receives is binned into
+           100ms peaks on the track's own timeline, together with the
+           AudioContext time each bin is scheduled to be heard — so
+           "played" is just `scheduled time <= ctx.currentTime`. Whole-
+           track view; if the gapless preload has fetched the next track,
+           S.preload is drawn after it.
+         - lobby: a thin hls.js loader wrapper copies every HLS segment as
+           it's fetched; the copy is decoded (decodeAudioData) into 50ms
+           peaks and drawn wherever <audio>.buffered says the element
+           really holds it, scrolling with the element's playhead.
      - Audio element stalls/waits/playing (lobby)  → listeners attached
        straight to #lobby-audio.
      - Player action → time-to-audible latency  → Engine's public
@@ -72,7 +58,16 @@
 
 const NET_CAP = 40, EVT_CAP = 30;
 const WAVE_MAX_COLS = 360, WAVE_TICK_MS = 30;
-const FUTURE_QUEUE_MAX = 400;   // hard memory cap on _futureQueue — see _futureEnqueue (NOT a sweep-speed threshold; _bufSweepTick always advances by exactly one)
+// Buffered-waveform resolution + look. Standalone draws a whole track in one
+// strip so it's coarse (100ms per bar); the lobby view only spans ~20s so it
+// can afford 50ms.
+const BUF_BIN_MS = 100;
+const HLS_BIN_MS = 50;
+const HLS_FRAG_KEEP = 40;            // HLS segments remembered for the lobby view (hls.js itself only keeps ~10s of back buffer)
+const HLS_VIEW_SPAN_S = 20;          // seconds of stream the lobby strip covers...
+const HLS_PLAYHEAD_FRAC = 0.55;      // ...with the playhead this far across it (played on the left, ready on the right)
+const COL_PLAYED = 'rgba(148,163,184,.55)';
+const COL_READY = 'rgba(167,139,250,.9)';
 
 function dbgPushCap(arr, item, cap) {
   arr.unshift(item);
@@ -87,21 +82,21 @@ const Debug = {
   audioElEvents: [],  // #lobby-audio DOM events
   nodelinkRequests: [], // backend → NodeLink calls, pushed live (lobby mode)
   _waveHistory: [],   // rolling waveform columns: {amp:0..1, dropout:bool, ts}, oldest first (index 0 = left edge = oldest, last index = right edge = "now")
-  _bufHistory: [],    // the buffered strip's current sweep frame: columns accumulate left→right, fixed in place once drawn, and the whole array is cleared (not shifted) once it fills — see _bufSweepTick
-  _futureQueue: [],   // FIFO of real, already-decided-but-unheard audio, front = soonest to play — see _bufSample
-  _lastWaveGen: null, // last-seen server relay generation from wave_peaks — a change means a hard cut
-  _bufFrozen: false,      // true while a stall is live — pauses the buffered strip's sweep in place (nothing is being "consumed" while playback is stalled). Recomputed live every tick in _bufSample — see _isPlaybackStalled.
-  _audioElWaiting: false, // lobby mode: live "is #lobby-audio currently buffering" flag, set directly by the waiting/stalled/playing listeners — see _isPlaybackStalled
 
   // segment overlay toggle for the STREAM strip only — 'off' | 'seconds'
-  // (the buffered strip never draws its own grid — see _drawBufWave)
+  // (the buffered strip never draws its own grid)
   _segMode: 'off',
 
-  // buffered-waveform bookkeeping (standalone mode reads S.preload.chunks
-  // directly rather than waiting for engine.js to feed() them — see
-  // _bufPollPreload)
-  _lastPreloadRef: null,
-  _lastPreloadSampledCount: 0,
+  // ── buffered waveform (client-received audio) ──
+  // standalone: one entry per track whose PCM has reached PCMPlayer, in
+  // playback order — see _bufRecord. The gapless preload's own (not yet
+  // scheduled) chunks are tracked separately in _bufPre.
+  _bufSegs: [],
+  _bufPre: null,      // { ref: S.preload, seg, sampled } — the preloaded next track, binned as its chunks arrive
+  // lobby: every HLS segment hls.js fetched: sn -> { frag, raw, peaks, state }
+  _hlsFrags: new Map(),
+  _hlsDecodeCtx: null,
+  _hlsDecodeErr: null,
 
   server: null,       // last snapshot pushed over the socket by the server
 
@@ -123,6 +118,7 @@ const Debug = {
     this.installFetchHook();
     this.patchPCMPlayer();
     this.patchAudioElPlayer();
+    this.patchLobbyMedia();
     this.patchEngineActions();
     this.patchSwitchTab();
     this.attachAudioElListeners();
@@ -178,13 +174,10 @@ const Debug = {
         if (need > this.nextTime + 0.005) starvedMs = (need - this.nextTime) * 1000;
       }
 
-      // Sample BEFORE origFeed schedules it — every byte handed to feed()
-      // is, by definition, audio that hasn't reached the speaker yet
-      // (PCMPlayer schedules it ahead on its own AudioContext timeline).
-      // Enqueue it rather than pushing straight to history — _bufSweepTick
-      // paces it onto the strip one column per tick instead of dumping a
-      // whole chunk's worth in at once.
-      self._futureEnqueueBytes(bytes);
+      // Record BEFORE origFeed schedules it: player.nextTime is still
+      // where this chunk is about to land on the AudioContext timeline,
+      // which is what lets the buffered strip tell played from ready.
+      self._bufRecord(this, bytes);
 
       const result = origFeed.call(this, bytes);
 
@@ -209,16 +202,51 @@ const Debug = {
       return r;
     };
 
-    // A hard cut stops every scheduled source right now — whatever was
-    // still sitting in _futureQueue for the old track was stopped, not
-    // played, so it shouldn't stay drawn on the buffered strip's sweep
-    // as if it were.
+    // The buffered strip mirrors what this PCMPlayer instance is holding,
+    // so it has to forget things exactly when the player does:
+    //   - init(): brand-new AudioContext (new track, or a seek) — audio
+    //     scheduled on the old one is gone.
+    //   - cutOver(): a hard cut stops every scheduled source right now.
+    //   - markTrackBoundary(): gapless splice — the old track's tail keeps
+    //     playing, so its data STAYS; the next feed() just starts a new
+    //     segment for the incoming track.
+    //   - destroy(): player torn down.
+    const origInit = PCMPlayer.prototype.init;
+    PCMPlayer.prototype.init = function (...args) {
+      self._bufSegs = []; this._dbgSeg = null;
+      return origInit.apply(this, args);
+    };
     const origCutOver = PCMPlayer.prototype.cutOver;
     PCMPlayer.prototype.cutOver = function (...args) {
       const r = origCutOver.apply(this, args);
-      self._futureQueue.length = 0;
-      self._bufHistory = [];
-      self._bufFrozen = false;
+      self._bufSegs = []; this._dbgSeg = null;
+      return r;
+    };
+    const origBoundary = PCMPlayer.prototype.markTrackBoundary;
+    PCMPlayer.prototype.markTrackBoundary = function (...args) {
+      this._dbgSeg = null;
+      return origBoundary.apply(this, args);
+    };
+    const origDestroy = PCMPlayer.prototype.destroy;
+    PCMPlayer.prototype.destroy = function (...args) {
+      self._bufSegs = []; this._dbgSeg = null;
+      return origDestroy.apply(this, args);
+    };
+  },
+
+  // Lobby mode plays an HLS stream through hls.js (see Lobby._connectMedia).
+  // Wrap that so the fresh Hls instance can be tapped for the segments it
+  // fetches — they ARE the buffered audio, so decoding them is the honest
+  // way to draw it. _connectMedia has no awaits before it stores
+  // S.lobby.hls, so by the time it returns the instance exists.
+  patchLobbyMedia() {
+    if (typeof Lobby === 'undefined' || Lobby._dbgPatched) return;
+    Lobby._dbgPatched = true;
+    const self = this;
+    const orig = Lobby._connectMedia;
+    Lobby._connectMedia = function (...args) {
+      const r = orig.apply(this, args);
+      self._attachHls(S.lobby.hls);
       return r;
     };
   },
@@ -254,10 +282,8 @@ const Debug = {
         const now = performance.now();
         if (type === 'waiting' || type === 'stalled') {
           if (waitStart === null) waitStart = now;
-          self._audioElWaiting = true; // live flag — see _isPlaybackStalled
         }
         if (type === 'playing') {
-          self._audioElWaiting = false;
           if (waitStart !== null) { self.dropout(now - waitStart, 'lobby stream stall'); waitStart = null; }
           self.actionReady();
         }
@@ -351,21 +377,6 @@ const Debug = {
       socket.on('debug_stats', (snap) => { this.server = snap; });
       socket.on('nodelink_request', (entry) => { dbgPushCap(this.nodelinkRequests, entry, NET_CAP); });
       socket.on('nodelink_requests_backlog', (list) => { this.nodelinkRequests = (list || []).slice(0, NET_CAP); });
-      // Real, already-decided-but-unheard audio for the buffered
-      // waveform — see LobbyRelay._wave_push_loop / feed_chunk in
-      // server.py. `generation` changing mid-stream means a hard cut
-      // happened server-side (skip/seek/new track) — whatever's still
-      // sitting in the queue from before that is stale, drop it.
-      socket.on('wave_peaks', (payload) => {
-        if (!payload || !payload.peaks) return;
-        if (this._lastWaveGen !== null && payload.generation !== this._lastWaveGen) {
-          this._futureQueue.length = 0;
-          this._bufHistory = [];
-          this._bufFrozen = false;
-        }
-        this._lastWaveGen = payload.generation;
-        for (const amp of payload.peaks) this._futureEnqueue(amp);
-      });
       // A reconnect gets a fresh sid server-side, so the server's
       // subscriber-by-sid entry from before the drop is gone — resubscribe.
       socket.on('connect', () => {
@@ -386,7 +397,6 @@ const Debug = {
     this._socketSub = false;
     this.server = null;
     this.nodelinkRequests = [];
-    this._lastWaveGen = null;
   },
 
   /* ───────── lifecycle ───────── */
@@ -397,6 +407,9 @@ const Debug = {
     clearInterval(this._renderTimer); this._renderTimer = setInterval(() => this.render(), 280);
     this.render();
     this._startWave();
+    // HLS segments that arrived while the tab was closed are kept raw —
+    // decode them now so the played half of the strip isn't empty.
+    for (const e of this._hlsFrags.values()) this._hlsDecode(e);
   },
   stop() {
     this._running = false;
@@ -404,20 +417,14 @@ const Debug = {
     clearInterval(this._renderTimer); this._renderTimer = null;
     this._stopWave();
     this._waveHistory = []; // fresh sweep next time the tab opens, rather than a stale gap stitched in
-    this._bufHistory = [];
-    this._futureQueue = [];
-    this._bufFrozen = false;
-    this._lastPreloadRef = null; this._lastPreloadSampledCount = 0;
+    // (the buffered strip is deliberately NOT reset here: it's a live view
+    // of what the player holds, recorded whether or not this tab is open)
   },
   clear() {
     this.net = []; this.playerEvents = []; this.dropouts = [];
     this.audioElEvents = [];
     this.nodelinkRequests = [];
     this._waveHistory = [];
-    this._bufHistory = [];
-    this._futureQueue = [];
-    this._bufFrozen = false;
-    this._lastPreloadRef = null; this._lastPreloadSampledCount = 0;
     this.render();
   },
 
@@ -434,7 +441,9 @@ const Debug = {
      analyser output is continuous across a gapless boundary anyway, so
      the waveform just keeps scrolling through it with no visible seam —
      exactly like the audio itself. It only resets on Clear or on
-     leaving the tab (see stop() above). */
+     leaving the tab (see stop() above). (The buffered strip further down
+     is a different beast — it's a picture of the player's buffer, not a
+     scrolling history.) */
   _startWave() {
     if (this._waveRaf) return;
     const loop = (ts) => {
@@ -442,7 +451,7 @@ const Debug = {
       if (ts - this._waveLastTick >= WAVE_TICK_MS) {
         this._waveLastTick = ts;
         this._waveSample();
-        this._bufSample();
+        this._bufTick();
         this._drawWave();
         this._drawBufWave();
       }
@@ -489,168 +498,223 @@ const Debug = {
     while (this._waveHistory.length > WAVE_MAX_COLS) this._waveHistory.shift();
   },
 
-  // Live check, read fresh every tick from _bufSample — NOT a timer.
-  // Freezing has to start exactly when the stall starts and end exactly
-  // when it ends, or the buffered strip either scrolls through a stall
-  // it should've paused for, or sits frozen past the point playback
-  // actually recovered — either way the queue and real time drift apart,
-  // and the strip has to fast-forward to resync once they're compared
-  // again. Reading live state sidesteps that entirely: nothing to drift.
-  //   - standalone: mirrors the same "am I behind schedule" comparison
-  //     patchPCMPlayer's feed hook uses for starvedMs — nextTime only
-  //     moves forward when feed() actually schedules a new buffer, so if
-  //     ctx.currentTime has caught up to (or passed) nextTime, playback
-  //     has run out of scheduled audio right now, this instant — no need
-  //     to wait for the next feed() call to find out.
-  //   - lobby: _audioElWaiting is set true/false directly by the
-  //     'waiting'/'stalled'/'playing' listeners in attachAudioElListeners,
-  //     live, the moment each fires.
-  _isPlaybackStalled() {
-    if (S.mode === 'standalone') {
-      const p = S.player;
-      if (!p || !p.ctx || p.startCtxTime === null || p.isPaused) return false;
-      return p.ctx.currentTime + 0.02 > p.nextTime + 0.005;
-    }
-    if (S.mode === 'server') return !!this._audioElWaiting;
-    return false;
-  },
-
   /* ───────── buffered waveform ─────────
      Second strip, drawn under the stream waveform. Where the strip above
      reads S.player.getWaveform() (audio actually reaching the speaker
-     right now), this one shows real, already-decided audio the listener
-     hasn't heard yet — held in a single FIFO (_futureQueue), front =
-     soonest to play.
+     right now), this one shows everything the CLIENT has already received
+     and is holding ready to play. Audio that has already been played is
+     drawn in COL_PLAYED, audio still waiting in COL_READY, with a playhead
+     line between them. Nothing is computed server-side — it's built purely
+     from data this browser already has:
 
-     Unlike the stream strip, this one does NOT scroll. It sweeps: every
-     tick (unless _bufFrozen — see _isPlaybackStalled), the front item is
-     popped off _futureQueue and appended to _bufHistory at the next free
-     column, left to right — see _bufSweepTick. Every column, once drawn,
-     stays exactly where it was drawn; nothing already on the strip ever
-     moves. When _bufHistory fills the strip edge-to-edge and there's no
-     free column left to draw into, it's cleared outright and the sweep
-     starts over from the left edge — like an oscilloscope retracing
-     rather than a ticker scrolling past.
+       - standalone: every chunk handed to PCMPlayer.feed() (patched above)
+         is binned into BUF_BIN_MS peaks on the track's own timeline
+         (_bufRecord), together with the AudioContext time each bin is
+         scheduled to be heard. "Played" is then simply `scheduled time <=
+         ctx.currentTime`, read straight off the audio clock — so pause,
+         stalls and seeks come out right with no bookkeeping of our own.
+         The strip shows the whole track: received parts filled in, the
+         rest blank while it's still streaming. If the gapless preload has
+         already fetched the next track, S.preload's chunks are binned too
+         (_bufPollPreload) and drawn after it, all "ready".
 
-     Where the queue actually gets filled, never fabricated:
-       - standalone: every chunk passed to PCMPlayer.feed() (patched
-         above) is sampled the instant it arrives, before scheduling —
-         already decided, already on the AudioContext timeline, just not
-         at `currentTime` yet.
-       - also standalone: S.preload.chunks (engine.js's background
-         gapless prefetch for whatever plays next) is polled every tick
-         and newly-arrived chunks get enqueued too, right after the
-         current track's own tail — so the next track's audio queues up
-         before the gapless splice ever happens, no seam at the join.
-       - lobby: server.py's LobbyRelay computes a real peak per 20ms PCM
-         frame as it encodes (see feed_chunk/_wave_push_loop server-side)
-         and pushes it over the debug socket as `wave_peaks` every 150ms
-         — genuine server-side lookahead, ahead of network transit and
-         the listener's own <audio> buffering, not a client-side guess. */
-  _ampFromBytes(bytes) {
-    if (!bytes || bytes.length < 2) return 0;
-    let peak = 0;
-    for (let i = 0; i + 1 < bytes.length; i += 10) { // sparse — feed() can fire many times/sec
-      let v = bytes[i] | (bytes[i + 1] << 8);
-      if (v > 32767) v -= 65536;
-      const dev = Math.abs(v);
-      if (dev > peak) peak = dev;
+       - lobby: a thin loader wrapper takes a copy of every HLS segment
+         hls.js fetches (see _attachHls). Each is an independently decodable
+         ADTS/AAC file, so a copy is run through decodeAudioData and reduced
+         to HLS_BIN_MS peaks (_hlsDecode). The strip is a window that
+         scrolls with the <audio> element's playhead, and a span only draws
+         where <audio>.buffered says the element really has it — so "ready"
+         is what it can play right now, "played" is what it hasn't evicted
+         from its back buffer yet. If a segment can't be decoded (or the
+         browser is playing HLS natively, with no hls.js in the loop) the
+         buffered ranges are still drawn, as flat lines. */
+
+  // ── standalone ──
+  _bufNewSeg(track) {
+    const info = (track && track.info) || {};
+    return {
+      label: info.title || '',
+      lengthMs: info.length || 0,
+      startMs: 0,      // where in the track this stream began (seek offset)
+      bytes: 0,        // PCM bytes received for this segment so far
+      amps: [],        // peak 0..1 per BUF_BIN_MS bin, indexed by ABSOLUTE track position (holes = not received)
+      ctxT: [],        // AudioContext time each bin is scheduled to start being heard (Infinity = not scheduled yet)
+      endCtx: 0,       // AudioContext time this segment's last received audio finishes
+    };
+  },
+
+  // Called from the patched PCMPlayer.feed() BEFORE it schedules `bytes`.
+  _bufRecord(player, bytes) {
+    if (!player.ctx || player.ctx.state === 'closed' || !bytes || !bytes.length) return;
+    let seg = player._dbgSeg;
+    if (!seg) {
+      seg = player._dbgSeg = this._bufNewSeg(S.current);
+      seg.startMs = player.seekOffsetMs || 0;
+      this._bufSegs.push(seg);
     }
-    return Math.min(1, peak / 32768);
+    const bps = player.SR * player.BPF;
+    const when = Math.max(player.nextTime, player.ctx.currentTime + 0.02);   // the same expression feed() itself uses
+    this._bufBin(seg, bytes, when, bps);
+    seg.endCtx = Math.max(seg.endCtx, when + bytes.length / bps);
   },
 
-  _futureEnqueue(amp) {
-    this._futureQueue.push({ amp, dropout: false, ts: performance.now() });
-    // Safety cap only — _bufSweepTick already drains one per tick on its
-    // own regardless of how far ahead the queue gets; this just bounds
-    // worst-case memory if draining ever falls badly behind (e.g. the tab
-    // was backgrounded).
-    if (this._futureQueue.length > FUTURE_QUEUE_MAX * 2) {
-      this._futureQueue.splice(0, this._futureQueue.length - FUTURE_QUEUE_MAX * 2);
+  // Folds a chunk of s16le stereo PCM into seg's bins. `when` is the
+  // AudioContext time the chunk's first byte will be heard (Infinity for a
+  // preloaded chunk that hasn't been scheduled yet).
+  _bufBin(seg, bytes, when, bps) {
+    const binBytes = Math.round(bps * BUF_BIN_MS / 1000);
+    const base = Math.round(seg.startMs / BUF_BIN_MS);
+    const off = seg.bytes, end = off + bytes.length;
+    for (let b = Math.floor(off / binBytes); b * binBytes < end; b++) {
+      const s = Math.max(off, b * binBytes), e = Math.min(end, (b + 1) * binBytes);
+      let peak = 0;
+      // Left-channel sample of every 2nd frame. Alignment is taken from the
+      // absolute byte offset, so a chunk boundary that splits a frame can't
+      // shift us onto the wrong bytes.
+      for (let p = s + ((4 - (s & 3)) & 3); p + 1 < e; p += 8) {
+        const i = p - off;
+        let v = bytes[i] | (bytes[i + 1] << 8);
+        if (v > 32767) v -= 65536;
+        if (v < 0) v = -v;
+        if (v > peak) peak = v;
+      }
+      const idx = base + b, amp = peak / 32768;
+      const prev = seg.amps[idx];
+      seg.amps[idx] = prev === undefined ? amp : Math.max(prev, amp);
+      if (seg.ctxT[idx] === undefined) seg.ctxT[idx] = when + (s - off) / bps;
     }
+    seg.bytes = end;
   },
 
-  _futureEnqueueBytes(bytes) {
-    if (S.mode !== 'standalone') return;
-    this._futureEnqueue(this._ampFromBytes(bytes));
-  },
-
+  // engine.js's background gapless prefetch (S.preload) is audio the
+  // client has already received for the NEXT track, even though it hasn't
+  // been handed to the player yet. Bin whatever's newly arrived.
   _bufPollPreload() {
     const pre = S.preload;
-    if (!pre) { this._lastPreloadRef = null; this._lastPreloadSampledCount = 0; return; }
-    if (this._lastPreloadRef !== pre) { this._lastPreloadRef = pre; this._lastPreloadSampledCount = 0; }
-    const chunks = pre.chunks;
-    for (let i = this._lastPreloadSampledCount; i < chunks.length; i++) {
-      this._futureEnqueue(this._ampFromBytes(chunks[i]));
+    if (!pre || S.mode !== 'standalone') { this._bufPre = null; return; }
+    let bp = this._bufPre;
+    if (!bp || bp.ref !== pre) bp = this._bufPre = { ref: pre, seg: this._bufNewSeg(pre.track), sampled: 0 };
+    for (; bp.sampled < pre.chunks.length; bp.sampled++) {
+      this._bufBin(bp.seg, pre.chunks[bp.sampled], Infinity, 48000 * 4);   // PCM stream format is fixed: 48kHz s16 stereo
     }
-    this._lastPreloadSampledCount = chunks.length;
   },
 
-  // Pops exactly one item off the FRONT of _futureQueue per tick and
-  // appends it to _bufHistory at the next free column — it has just
-  // reached "now" and is about to be audible, so it "becomes" the next
-  // drawn bar rather than sliding the strip. Skipped entirely while
-  // _bufFrozen (set live, per tick, in _bufSample — see
-  // _isPlaybackStalled): while a stall is actually happening, nothing is
-  // being consumed, so the sweep shouldn't advance either — it just
-  // pauses in place until the stall clears, rather than continuing to
-  // fill in columns for audio that hasn't actually arrived yet.
-  // Deliberately always exactly one, never more: the sweep's pace has to
-  // stay constant and match the stream strip's per-tick rate. A queue
-  // that's building up faster than real-time just grows further ahead of
-  // where the sweep currently is instead of being caught up on — the
-  // safety cap in _futureEnqueue bounds that, not this.
-  //
-  // Once _bufHistory has a column for every position the strip can show,
-  // there's nowhere left to append the next one: clear the whole strip
-  // and start the sweep over from the left edge, then draw the item that
-  // just arrived as the sweep's new first column.
-  _bufSweepTick() {
-    if (this._bufFrozen) return;
-    if (!this._futureQueue.length) return; // nothing new arrived this tick — leave the strip exactly as it is
-    if (this._bufHistory.length >= WAVE_MAX_COLS) this._bufHistory = [];
-    this._bufHistory.push(this._futureQueue.shift());
+  _bufTick() {
+    if (S.mode === 'standalone') this._bufPollPreload(); else this._bufPre = null;
+    // A track that has played all the way through drops off once something
+    // else is queued after it.
+    const p = S.player, now = p && p.ctx ? p.ctx.currentTime : 0;
+    while (this._bufSegs.length > 1 && this._bufSegs[0].endCtx <= now) this._bufSegs.shift();
   },
 
-  _bufSample() {
-    if (S.mode === 'standalone') this._bufPollPreload();
-    this._bufFrozen = this._isPlaybackStalled();
-    this._bufSweepTick();
+  // ── lobby ──
+  // hls.js gives no usable segment bytes through its events: by the time
+  // FRAG_LOADED fires the payload has already been transferred to its
+  // transmuxer worker (detached, byteLength 0). The loader itself is the
+  // one place the bytes exist intact, and hls.js reads config.fLoader afresh
+  // for every fragment request — so slot a thin subclass of whatever loader
+  // is configured in there. It changes nothing about the request; it just
+  // takes a copy of the response on its way past. No extra network traffic.
+  _attachHls(hls) {
+    this._hlsFrags.clear();
+    this._hlsDecodeErr = null;
+    if (!hls || !hls.config || hls._dbgAttached) return;
+    const Base = hls.config.fLoader || hls.config.loader;
+    if (!Base) return;
+    hls._dbgAttached = true;
+    const self = this;
+    hls.config.fLoader = class extends Base {
+      load(context, config, callbacks) {
+        const onSuccess = callbacks.onSuccess;
+        const tapped = Object.assign({}, callbacks, {
+          onSuccess(response, stats, ctx, details) {
+            try {
+              if (context.frag && response && response.data instanceof ArrayBuffer) self._onHlsFrag(context.frag, response.data);
+            } catch (_) {}
+            return onSuccess(response, stats, ctx, details);
+          },
+        });
+        return super.load(context, config, tapped);
+      }
+    };
   },
 
-  // Shared renderer for both strips — stream waveform and buffered
-  // waveform are the same scrolling-columns visual over two different
-  // data sources, so this draws either given a canvas id + history ring.
-  // No centerline, no playhead — "now" is marked only by an edge:
-  //   - stream strip (opts.anchor omitted/'right'): newest sample sits
-  //     flush against the RIGHT edge, older ones trail off to the left.
-  //   - buffered strip (opts.anchor:'left'): soonest-to-play sample sits
-  //     flush against the LEFT edge — the same "now" instant as the
-  //     stream strip's right edge — with the future trailing off to the
-  //     right as more gets buffered. This matters whenever the buffer is
-  //     shorter than a full window: anchoring left keeps "now" pinned at
-  //     x=0 instead of sliding around with however much is buffered.
-  //   opts.segments:false skips the grid overlay (buffered strip only —
-  //   the stream strip already carries it, a second copy is redundant).
-  _drawStrip(canvasId, hist, opts) {
+  _onHlsFrag(frag, buffer) {
+    if (frag.type && frag.type !== 'main') return;
+    // `frag` is kept by reference on purpose: hls.js refines frag.start to the
+    // real media-timeline position once it has parsed the segment, and the
+    // strip is drawn against <audio>.currentTime, which lives on that timeline.
+    const entry = { frag, raw: buffer.slice(0), peaks: null, state: 'raw' };
+    this._hlsFrags.set(frag.sn, entry);
+    if (this._hlsFrags.size > HLS_FRAG_KEEP) {
+      let oldest = Infinity;
+      for (const k of this._hlsFrags.keys()) if (k < oldest) oldest = k;
+      this._hlsFrags.delete(oldest);
+    }
+    if (this._running) this._hlsDecode(entry);
+  },
+
+  async _hlsDecode(e) {
+    if (e.state !== 'raw') return;
+    e.state = 'decoding';
+    try {
+      const AC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      if (!this._hlsDecodeCtx) this._hlsDecodeCtx = new AC(2, 1, 48000);
+      const buf = await this._hlsDecodeCtx.decodeAudioData(e.raw);   // detaches e.raw
+      e.raw = null;
+      e.peaks = this._peaksOf(buf, HLS_BIN_MS);
+      e.state = 'done';
+    } catch (err) {
+      e.raw = null;
+      e.state = 'failed';
+      this._hlsDecodeErr = (err && err.message) || String(err);
+    }
+  },
+
+  _peaksOf(audioBuf, binMs) {
+    const n = audioBuf.length, binSamples = Math.max(1, Math.round(audioBuf.sampleRate * binMs / 1000));
+    const bins = Math.ceil(n / binSamples), out = new Uint8Array(bins);
+    const chans = [];
+    for (let c = 0; c < audioBuf.numberOfChannels; c++) chans.push(audioBuf.getChannelData(c));
+    for (let b = 0; b < bins; b++) {
+      let peak = 0;
+      for (let i = b * binSamples, end = Math.min(n, i + binSamples); i < end; i += 4) {
+        for (let c = 0; c < chans.length; c++) { const v = Math.abs(chans[c][i]); if (v > peak) peak = v; }
+      }
+      out[b] = Math.min(255, Math.round(peak * 255));
+    }
+    return out;
+  },
+
+  /* ───────── drawing ───────── */
+  _prepCanvas(canvasId) {
     const canvas = document.getElementById(canvasId);
-    if (!canvas) return;
-    const cssW = canvas.clientWidth || 600, cssH = canvas.clientHeight || 90;
+    if (!canvas) return null;
+    const w = canvas.clientWidth || 600, h = canvas.clientHeight || 90;
     const dpr = window.devicePixelRatio || 1;
-    if (canvas._dbgW !== cssW || canvas._dbgH !== cssH) {
-      canvas.width = cssW * dpr; canvas.height = cssH * dpr;
-      canvas._dbgW = cssW; canvas._dbgH = cssH;
+    if (canvas._dbgW !== w || canvas._dbgH !== h) {
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      canvas._dbgW = w; canvas._dbgH = h;
     }
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.clearRect(0, 0, w, h);
+    return { ctx, w, h };
+  },
 
+  // Stream strip: newest sample sits flush against the RIGHT edge, older
+  // ones trail off to the left. No centerline, no playhead — "now" is
+  // marked only by that edge.
+  _drawStrip(canvasId, hist, opts) {
+    const c = this._prepCanvas(canvasId);
+    if (!c) return;
+    const { ctx, w: cssW, h: cssH } = c;
     const midY = cssH / 2;
     const n = hist.length;
     const colW = Math.max(1.5, cssW / WAVE_MAX_COLS);
-    const startX = opts.anchor === 'left' ? 0 : cssW - n * colW;
+    const startX = cssW - n * colW;
 
-    if (opts.segments !== false) this._drawSegments(ctx, cssW, cssH, hist); // behind the bars
+    this._drawSegments(ctx, cssW, cssH, hist); // behind the bars
 
     for (let i = 0; i < n; i++) {
       const col = hist[i];
@@ -667,17 +731,143 @@ const Debug = {
   },
 
   _drawBufWave() {
-    this._drawStrip('dbg-wave-buf', this._bufHistory, { color: 'rgba(167,139,250,.85)', anchor: 'left', segments: false });
+    const c = this._prepCanvas('dbg-wave-buf');
+    if (!c) return;
+    if (S.mode === 'server') this._drawBufLobby(c.ctx, c.w, c.h);
+    else if (S.mode === 'standalone') this._drawBufStandalone(c.ctx, c.w, c.h);
+    else this._drawBufNote(c.ctx, c.w, c.h, 'not connected');
+  },
+
+  _drawBufNote(ctx, w, h, text) {
+    ctx.fillStyle = 'rgba(255,255,255,.35)';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, w / 2, h / 2);
+  },
+
+  _drawBufStandalone(ctx, W, H) {
+    const segs = this._bufSegs.slice();
+    if (this._bufPre) segs.push(this._bufPre.seg);
+    if (!segs.length) { this._drawBufNote(ctx, W, H, 'nothing buffered'); return; }
+
+    const p = S.player, now = p && p.ctx ? p.ctx.currentTime : 0;
+    const GAP = 6;
+    // Each segment gets width in proportion to its length (or how much of it
+    // has arrived, if the length isn't known).
+    const spans = segs.map(sg => Math.max(sg.lengthMs, sg.amps.length * BUF_BIN_MS, BUF_BIN_MS));
+    const totalMs = spans.reduce((a, b) => a + b, 0);
+    const usable = Math.max(10, W - GAP * (segs.length - 1));
+    let x0 = 0;
+    segs.forEach((sg, i) => {
+      const w = Math.max(2, Math.round(usable * spans[i] / totalMs));
+      this._drawBufSeg(ctx, sg, x0, w, H, now, spans[i], !!(this._bufPre && sg === this._bufPre.seg));
+      x0 += w + GAP;
+    });
+  },
+
+  _drawBufSeg(ctx, sg, x0, w, H, now, spanMs, isNext) {
+    const midY = H / 2, maxH = H / 2 - 4;
+    const nb = Math.max(1, Math.ceil(spanMs / BUF_BIN_MS));
+    const amps = sg.amps, ctxT = sg.ctxT;
+
+    ctx.fillStyle = 'rgba(255,255,255,.08)';
+    ctx.fillRect(x0, midY - 0.5, w, 1);              // the track's full extent, received or not
+
+    for (let px = 0; px < w; px++) {
+      const bA = Math.floor(px * nb / w), bB = Math.max(bA + 1, Math.floor((px + 1) * nb / w));
+      let amp = -1, rep = -1;
+      for (let b = bA; b < bB; b++) {
+        const a = amps[b];
+        if (a !== undefined && a > amp) { amp = a; rep = b; }
+      }
+      if (rep < 0) continue;                          // not received (yet)
+      ctx.fillStyle = ctxT[rep] <= now ? COL_PLAYED : COL_READY;
+      const h = Math.max(1, amp * maxH);
+      ctx.fillRect(x0 + px, midY - h, 1, h * 2);
+    }
+
+    // Playhead: the first received bin that hasn't been heard yet, provided
+    // some of this segment has been (a segment that's all ready has none).
+    let front = -1, anyPlayed = false;
+    for (let b = 0; b < amps.length; b++) {
+      const t = ctxT[b];
+      if (t === undefined) continue;
+      if (t > now) { front = b; break; }
+      anyPlayed = true;
+    }
+    if (anyPlayed && front > 0) {
+      const x = x0 + Math.round(front * w / nb);
+      ctx.fillStyle = 'rgba(255,255,255,.85)';
+      ctx.fillRect(Math.min(x, x0 + w - 1), 2, 1.5, H - 4);
+    }
+
+    if (w > 56 && (sg.label || isNext)) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(x0, 0, w, 12); ctx.clip();
+      ctx.fillStyle = 'rgba(255,255,255,.55)';
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText((isNext ? 'next · ' : '') + sg.label, x0 + 3, 2);
+      ctx.restore();
+    }
+  },
+
+  _drawBufLobby(ctx, W, H) {
+    const audio = document.getElementById('lobby-audio');
+    if (!audio) { this._drawBufNote(ctx, W, H, 'no <audio> element'); return; }
+    const now = audio.currentTime || 0;
+    const midY = H / 2, maxH = H / 2 - 4;
+    const pxPerSec = W / HLS_VIEW_SPAN_S, playX = W * HLS_PLAYHEAD_FRAC;
+    const xOf = (t) => playX + (t - now) * pxPerSec;
+
+    const ranges = [];
+    for (let i = 0; i < audio.buffered.length; i++) ranges.push([audio.buffered.start(i), audio.buffered.end(i)]);
+    if (!ranges.length) { this._drawBufNote(ctx, W, H, 'nothing buffered'); return; }
+    const inBuffer = (t) => { for (const r of ranges) if (t >= r[0] - 0.02 && t <= r[1] + 0.02) return true; return false; };
+
+    // 1) What the element holds, as a flat line — always drawn, so the range
+    //    is visible even where there's no decoded waveform to put on it.
+    for (const [s, e] of ranges) {
+      const a = Math.max(0, xOf(s)), b = Math.min(W, xOf(e)), split = Math.min(b, Math.max(a, xOf(now)));
+      if (b <= a) continue;
+      ctx.fillStyle = COL_PLAYED; ctx.fillRect(a, midY - 1, split - a, 2);
+      ctx.fillStyle = COL_READY;  ctx.fillRect(split, midY - 1, b - split, 2);
+    }
+
+    // 2) Decoded waveform on top of it.
+    const binS = HLS_BIN_MS / 1000, barW = Math.max(1, binS * pxPerSec - 0.5);
+    for (const e of this._hlsFrags.values()) {
+      if (e.state !== 'done' || !e.peaks) continue;
+      const t0 = e.frag.start;
+      if (!isFinite(t0)) continue;
+      for (let k = 0; k < e.peaks.length; k++) {
+        const t = t0 + k * binS, x = xOf(t);
+        if (x > W || x + barW < 0) continue;
+        if (!inBuffer(t + binS / 2)) continue;
+        ctx.fillStyle = t + binS / 2 <= now ? COL_PLAYED : COL_READY;
+        const h = Math.max(1, (e.peaks[k] / 255) * maxH);
+        ctx.fillRect(x, midY - h, barW, h * 2);
+      }
+    }
+
+    // Playhead + how much is on either side of it.
+    ctx.fillStyle = 'rgba(255,255,255,.85)';
+    ctx.fillRect(playX, 2, 1.5, H - 4);
+    let behind = 0, ahead = 0;
+    for (const [s, e] of ranges) if (now >= s - 0.05 && now <= e + 0.05) { behind = now - s; ahead = e - now; }
+    ctx.font = '9px ui-monospace, monospace'; ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(255,255,255,.55)';
+    ctx.textAlign = 'left';  ctx.fillText(`${behind.toFixed(1)}s played`, 3, 2);
+    ctx.textAlign = 'right'; ctx.fillText(`${ahead.toFixed(1)}s ready`, W - 3, 2);
   },
 
   // Vertical grid lines toggled via the Off/Seconds control, one per
   // second, plus a small elapsed-time label riding along the top of each
   // line. Anchored to real timestamps stored on each column (see
-  // _waveSample/_futureEnqueue), not to array index, so the grid — lines
+  // _waveSample), not to array index, so the grid — lines
   // AND labels — scrolls smoothly and drift-free with the bars instead
-  // of stepping. Stream strip only — see _drawStrip's opts.segments;
-  // drawing it a second time on the buffered strip below would just be
-  // a duplicate of the same grid.
+  // of stepping. Stream strip only — the buffered strip has its own
+  // playhead and no per-second grid.
   _drawSegments(ctx, cssW, cssH, hist) {
     if (this._segMode === 'off' || !hist.length) return;
     const nowTs = hist[hist.length - 1].ts;
@@ -739,7 +929,7 @@ const Debug = {
         </div>
 
         <div class="dbg-section">
-          <div class="dbg-section-title">Buffered waveform <span class="dbg-lane-hint" id="dbg-wave-buf-hint">received, not yet played · sweeps left→right, clears, repeats</span></div>
+          <div class="dbg-section-title">Buffered waveform <span class="dbg-key"><i class="dbg-key-sw played"></i>played</span> <span class="dbg-key"><i class="dbg-key-sw ready"></i>ready</span> <span class="dbg-lane-hint" id="dbg-wave-buf-hint"></span></div>
           <canvas id="dbg-wave-buf" class="dbg-wave-canvas dbg-wave-canvas-buf"></canvas>
         </div>
 
@@ -823,9 +1013,17 @@ const Debug = {
   _updateBufHint() {
     const el = document.getElementById('dbg-wave-buf-hint');
     if (!el) return;
-    el.textContent = S.mode === 'server'
-      ? 'server-computed lookahead, one peak per 20ms frame · pushed every 150ms · sweeps left→right, clears, repeats'
-      : 'already fed to the player, not yet audible · sweeps left→right, clears, repeats · stitched gapless into the next track';
+    if (S.mode !== 'server' && S.mode !== 'standalone') {
+      el.textContent = 'not connected';
+    } else if (S.mode === 'server') {
+      el.textContent = !S.lobby.hls
+        ? 'native HLS playback — no hls.js to tap, so only the buffered ranges can be drawn'
+        : this._hlsDecodeErr
+          ? `couldn't decode HLS segments (${this._hlsDecodeErr}) — showing buffered ranges only`
+          : 'HLS segments this browser has buffered, decoded for display · scrolls with the playhead';
+    } else {
+      el.textContent = 'PCM this browser has received · whole track, playhead = audio clock · next track appears once preloaded';
+    }
   },
 
   _renderCards() {
