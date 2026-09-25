@@ -17,6 +17,24 @@
    already computes and broadcasts the authoritative position (anchor +
    elapsed wall-clock); setAnchor() below just mirrors that same anchor
    math locally so the progress bar reads correctly between broadcasts.
+
+   The WebAudio graph (ctx/srcNode/analyser) is cached on the <audio>
+   ELEMENT itself (audioEl._waGraph), not on this class instance, and
+   built only once per element. createMediaElementSource() can only ever
+   be called ONCE for a given <audio>/<video> element, for its entire
+   lifetime — a second call throws InvalidStateError even from a brand
+   new AudioContext, even after the first context was closed (a real
+   WebAudio restriction, not a bug in the try/catch below). #lobby-audio
+   is one persistent DOM element reused across every lobby join in the
+   page's lifetime (see Lobby._connectMedia), so every join after the
+   first used to hit that error — caught silently, degrading to
+   ctx=null/analyser=null — and because the element had already been
+   captured for WebAudio output by the FIRST (now-closed) context, its
+   native output stayed permanently disabled with nowhere to route to:
+   playback looked fine (currentTime advancing, segments loading) but
+   was completely silent. Building the graph once and reusing it (just
+   resetting this instance's own audio-element state in destroy() below)
+   avoids the second call entirely.
 ═══════════════════════════════════════════ */
 class AudioElPlayer {
   constructor(audioEl) {
@@ -25,21 +43,29 @@ class AudioElPlayer {
     this._anchorWall = performance.now();
     this._anchorPaused = true;
 
-    try {
-      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-      this.srcNode = this.ctx.createMediaElementSource(audioEl);
-      this.analyser = this.ctx.createAnalyser();
-      // 512 (256 bins) to match PCMPlayer — visualizers read the same
-      // shape of data regardless of which mode is playing.
-      this.analyser.fftSize = 512;
-      this.analyser.smoothingTimeConstant = 0.75;
-      this.srcNode.connect(this.analyser);
-      this.analyser.connect(this.ctx.destination);
-    } catch (e) {
-      // Level metering is best-effort — playback itself doesn't depend
-      // on this WebAudio graph, so degrade gracefully if it fails.
-      this.ctx = null; this.analyser = null;
+    let g = audioEl._waGraph;
+    if (!g) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const srcNode = ctx.createMediaElementSource(audioEl);
+        const analyser = ctx.createAnalyser();
+        // 512 (256 bins) to match PCMPlayer — visualizers read the same
+        // shape of data regardless of which mode is playing.
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.75;
+        srcNode.connect(analyser);
+        analyser.connect(ctx.destination);
+        g = { ctx, srcNode, analyser };
+      } catch (e) {
+        // Level metering is best-effort — playback itself doesn't depend
+        // on this WebAudio graph, so degrade gracefully if it fails.
+        g = { ctx: null, srcNode: null, analyser: null };
+      }
+      audioEl._waGraph = g;
     }
+    this.ctx = g.ctx;
+    this.srcNode = g.srcNode;
+    this.analyser = g.analyser;
   }
 
   // Called on every server state broadcast to keep local position math
@@ -108,13 +134,17 @@ class AudioElPlayer {
     return out;
   }
 
+  // The WebAudio graph is shared across every AudioElPlayer built for this
+  // element (see the constructor) and must survive a destroy() so the NEXT
+  // lobby join can reuse it — closing the context or disconnecting the
+  // source node here would permanently silence the element (see the class
+  // doc comment above). Only this instance's own audio-element state is
+  // reset; nothing about destroy() needs to be async anymore, but the
+  // signature stays the same since callers still (optionally) await it.
   async destroy() {
     this.audio.pause();
     this.audio.removeAttribute('src');
     this.audio.srcObject = null;
     try { this.audio.load(); } catch (_) {}
-    try { this.srcNode && this.srcNode.disconnect(); } catch (_) {}
-    try { this.analyser && this.analyser.disconnect(); } catch (_) {}
-    try { if (this.ctx) await this.ctx.close(); } catch (_) {}
   }
 }
