@@ -116,6 +116,7 @@ body::after {
   background: var(--surf2); border: 1px solid var(--brd2); cursor: pointer; transition: border-color .15s;
 }
 .pl-item:hover { border-color: var(--accent); }
+.pl-mine { border-color: var(--accent); opacity: .75; }
 .pl-name { font-weight: 600; font-size: 13px; flex: 1; }
 .pl-count { font-family: var(--fm); font-size: 10px; color: var(--muted); }
 .empty.small { padding: 20px; }

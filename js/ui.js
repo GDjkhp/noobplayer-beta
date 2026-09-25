@@ -689,9 +689,11 @@ const UI = {
 
   renderCurrentLobbyConfig() {
     const inLobby = S.mode === 'server' && S.lobby.active;
-    document.getElementById('cfg-no-lobby').style.display = inLobby ? 'flex' : 'none';
-    document.getElementById('cfg-lobby-form').style.display = inLobby ? 'block' : 'none';
-    if (!inLobby) return;
+    // Lobbies are always auto-created (see Main.autoStart / Lobby.leave), so
+    // there's no real "not in a lobby" state worth showing — this tab is
+    // just briefly blank the instant before the very first lobby connects.
+    document.getElementById('cfg-lobby-form').style.display = 'block';
+    if (!inLobby) { document.getElementById('cfg-lobby-code').textContent = '------'; return; }
 
     document.getElementById('cfg-lobby-code').textContent = S.lobby.code;
 

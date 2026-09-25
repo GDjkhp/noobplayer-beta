@@ -27,13 +27,19 @@ const Lobby = {
     try {
       const list = await LobbyAPI.listPublic();
       if (!list.length) { el.innerHTML = `<div class="empty small"><p>No public lobbies right now</p></div>`; return; }
+      const myCode = (S.mode === 'server' && S.lobby.active) ? S.lobby.code : null;
       el.innerHTML = list.map(l => `
-        <div class="pl-item" data-code="${l.code}">
-          <span class="pl-name">${esc(l.name)}</span>
+        <div class="pl-item${l.code === myCode ? ' pl-mine' : ''}" data-code="${l.code}">
+          <span class="pl-name">${esc(l.name)}${l.code === myCode ? ' <span class="cu-tag">YOURS</span>' : ''}</span>
           <span class="pl-count">${l.participants} online · ${l.code}</span>
         </div>`).join('');
       el.querySelectorAll('.pl-item').forEach(item => {
         item.addEventListener('click', async () => {
+          // It's the lobby we're already hosting/in — joining it as a
+          // second participant would just displace us as host (a fresh
+          // join, new clientId, same as any other participant). Just hop
+          // over to the Current Lobby tab instead.
+          if (item.dataset.code === myCode) { UI.switchLobbyTab('current'); return; }
           const displayName = localStorage.getItem('nl_display_name') || 'Guest';
           const ok = await this.join(item.dataset.code, displayName);
           if (ok) UI.switchLobbyTab('current');
