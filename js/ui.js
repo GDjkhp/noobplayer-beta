@@ -34,8 +34,13 @@ const UI = {
   updateLoopButton() {
     const btn = document.getElementById('loop-btn');
     if (!btn) return;
-    const lbls = { none: 'OFF', track: '🔂 ONE', queue: '🔁 ALL' };
-    btn.textContent = lbls[S.loopMode] || 'OFF';
+    const map = {
+      none:  { icon: 'repeat',     label: 'OFF' },
+      track: { icon: 'repeat_one', label: 'ONE' },
+      queue: { icon: 'repeat',     label: 'ALL' },
+    };
+    const m = map[S.loopMode] || map.none;
+    btn.innerHTML = `<span class="material-symbols-outlined">${m.icon}</span><span class="cb-lbl">${m.label}</span>`;
     btn.classList.toggle('on', S.loopMode !== 'none');
   },
 
@@ -113,7 +118,7 @@ const UI = {
       document.getElementById('prog-thumb').style.left = '0%';
       document.getElementById('pcm-meter').classList.remove('active');
       document.getElementById('lyr-body').innerHTML =
-        `<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><p>Play a track and fetch lyrics</p></div>`;
+        `<div class="empty"><span class="material-symbols-outlined">lyrics</span><p>Play a track and fetch lyrics</p></div>`;
       document.getElementById('lyr-src-lbl').textContent = 'No lyrics loaded';
     }
     this.updatePlayPauseIcons(); this.updateEQ(); this.applyLockState();
@@ -263,7 +268,7 @@ const UI = {
 
     const el = document.getElementById('ql');
     if (count === 0) {
-      el.innerHTML = `<div class="empty"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 6h18M3 12h18M3 18h12"/></svg><p>Queue is empty</p></div>`;
+      el.innerHTML = `<div class="empty"><span class="material-symbols-outlined">queue_music</span><p>Queue is empty</p></div>`;
       this.applyLockState();
       return;
     }
@@ -272,7 +277,7 @@ const UI = {
     el.innerHTML = S.queue.map((t, i) => {
       const thumb = t.info.artworkUrl
         ? `<img class="qi-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
-        : `<div class="qi-nth">♪</div>`;
+        : `<div class="qi-nth"><span class="material-symbols-outlined">music_note</span></div>`;
       // Anyone can pull a track they added themselves; only the host can
       // pull someone else's. Same rule the server enforces on
       // /queue/remove — this just stops the button lying about it.
@@ -281,21 +286,21 @@ const UI = {
       const auto = req && req.id === '__auto__';
       const canRemove = !locked || mine;
       const chip = req
-        ? `<span class="qi-req ${auto ? 'auto' : ''} ${mine ? 'mine' : ''}" title="Added by ${esc(req.name)}">${esc(auto ? '✦ auto' : req.name)}</span>`
+        ? `<span class="qi-req ${auto ? 'auto' : ''} ${mine ? 'mine' : ''}" title="Added by ${esc(req.name)}">${auto ? '<span class="material-symbols-outlined chip-ico">auto_awesome</span>auto' : esc(req.name)}</span>`
         : '';
       return `<div class="qi" data-qi="${i}" draggable="${locked ? 'false' : 'true'}">
-        <span class="qi-drag" title="Drag to reorder">⠿</span>
+        <span class="qi-drag material-symbols-outlined" title="Drag to reorder">drag_indicator</span>
         <span class="qi-n">${i + 1}</span>${thumb}
         <div class="qi-m">
           <div class="qi-t">${esc(t.info.title)}</div>
           <div class="qi-a">${esc(t.info.author)}${chip}</div>
         </div>
         <div class="qi-bs">
-          <button class="qib" data-qa="play" data-qi="${i}" title="Play now" ${locked?'disabled':''}>▶</button>
-          <button class="qib" data-qa="up"   data-qi="${i}" title="Move up" ${(locked||i===0)?'disabled':''}>↑</button>
-          <button class="qib" data-qa="dn"   data-qi="${i}" title="Move down" ${(locked||i===S.queue.length-1)?'disabled':''}>↓</button>
-          <button class="qib dl" data-qa="dl" data-qi="${i}" title="Download">⬇</button>
-          <button class="qib del" data-qa="rm" data-qi="${i}" title="${canRemove ? 'Remove' : 'Only the host can remove other people\u2019s tracks'}" ${canRemove?'':'disabled'}>✕</button>
+          <button class="qib" data-qa="play" data-qi="${i}" title="Play now" ${locked?'disabled':''}><span class="material-symbols-outlined">play_arrow</span></button>
+          <button class="qib" data-qa="up"   data-qi="${i}" title="Move up" ${(locked||i===0)?'disabled':''}><span class="material-symbols-outlined">keyboard_arrow_up</span></button>
+          <button class="qib" data-qa="dn"   data-qi="${i}" title="Move down" ${(locked||i===S.queue.length-1)?'disabled':''}><span class="material-symbols-outlined">keyboard_arrow_down</span></button>
+          <button class="qib dl" data-qa="dl" data-qi="${i}" title="Download"><span class="material-symbols-outlined">download</span></button>
+          <button class="qib del" data-qa="rm" data-qi="${i}" title="${canRemove ? 'Remove' : 'Only the host can remove other people\u2019s tracks'}" ${canRemove?'':'disabled'}><span class="material-symbols-outlined">close</span></button>
         </div>
         <span class="qi-d">${fmt(t.info.length)}</span>
       </div>`;
@@ -406,14 +411,14 @@ const UI = {
       tracks.forEach((t, i) => {
         const thumb = t.info.artworkUrl
           ? `<img class="si-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
-          : `<div class="si-nth">♪</div>`;
+          : `<div class="si-nth"><span class="material-symbols-outlined">music_note</span></div>`;
         html += `<div class="si" data-i="${i}">${thumb}
           <div class="si-meta">
             <div class="si-t">${esc(t.info.title)}</div>
             <div class="si-a">${esc(t.info.author)}</div>
           </div>
           <div class="si-acts">
-            <button class="add-btn pnow" data-a="play" data-i="${i}" ${locked?'disabled':''}>▶ Play</button>
+            <button class="add-btn pnow" data-a="play" data-i="${i}" ${locked?'disabled':''}><span class="material-symbols-outlined">play_arrow</span>Play</button>
             <button class="add-btn" data-a="q" data-i="${i}">+ Queue</button>
           </div>
           <span class="si-d">${fmt(t.info.length)}</span>
@@ -470,7 +475,7 @@ const UI = {
         S.lyricsType = 'synced';
         S.lyrics = d.lines.map(l => ({ t: typeof l.startTime === 'number' ? l.startTime : parseFloat(l.startTime || 0), txt: l.line || l.text || '' }));
         document.getElementById('lyr-body').innerHTML =
-          S.lyrics.map((l, i) => `<div class="ll" data-i="${i}" data-t="${l.t}">${esc(l.txt) || '♩'}</div>`).join('');
+          S.lyrics.map((l, i) => `<div class="ll" data-i="${i}" data-t="${l.t}">${esc(l.txt) || '<span class="material-symbols-outlined ll-note">music_note</span>'}</div>`).join('');
         document.querySelectorAll('.ll').forEach(el => {
           el.addEventListener('click', () => Engine.seekTo(parseFloat(el.dataset.t)));
         });

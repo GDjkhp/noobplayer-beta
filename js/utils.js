@@ -15,9 +15,11 @@ function esc(s) {
 }
 
 function toast(msg, type = 'info', dur = 3500) {
+  const cls = type === 'error' ? 'err' : type === 'success' ? 'ok' : type === 'warn' ? 'warn' : '';
+  const icon = type === 'error' ? 'error' : type === 'success' ? 'check_circle' : type === 'warn' ? 'warning' : 'info';
   const el = document.createElement('div');
-  el.className = `toast ${type === 'error' ? 'err' : type === 'success' ? 'ok' : type === 'warn' ? 'warn' : ''}`;
-  el.textContent = msg;
+  el.className = `toast ${cls}`;
+  el.innerHTML = `<span class="material-symbols-outlined toast-ico">${icon}</span><span class="toast-msg">${esc(msg)}</span>`;
   document.getElementById('toasts').appendChild(el);
   setTimeout(() => el.remove(), dur);
 }

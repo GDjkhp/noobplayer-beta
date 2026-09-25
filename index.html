@@ -24,7 +24,7 @@
 <div id="app" style="display:block">
 
   <div id="hdr-standalone" class="hdr" style="display:none">
-    <span class="logo">⬡ Noobplayer</span>
+    <span class="logo"><span class="material-symbols-outlined">hexagon</span>Noobplayer</span>
     <span class="pcm-badge">PCM · s16le · 48 kHz · 2ch</span>
     <span class="hdr-fill"></span>
     <div id="sdot"></div>
@@ -33,7 +33,7 @@
   </div>
 
   <div id="hdr-lobby" class="hdr" style="display:none">
-    <span class="logo">⬡ Noobplayer</span>
+    <span class="logo"><span class="material-symbols-outlined">hexagon</span>Noobplayer</span>
     <span class="lobby-code-badge" id="lobby-code-display">------</span>
     <button id="btn-copy-code" class="hdr-btn ghost" title="Copy invite code">Copy</button>
     <span class="hdr-fill"></span>
@@ -41,17 +41,14 @@
     <button id="btn-leave-lobby" class="hdr-btn danger">Leave</button>
   </div>
 
-  <div id="cors-note">⚠ CORS / connection error — check server settings.</div>
+  <div id="cors-note"><span class="material-symbols-outlined">warning</span>CORS / connection error — check server settings.</div>
 
   <div id="main">
     <!-- LEFT: PLAYER -->
     <div id="left">
       <div id="art-wrap">
         <div id="art-empty">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
-            <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/>
-            <path d="M12 2v2M12 20v2M2 12h2M20 12h2"/>
-          </svg>
+          <span class="material-symbols-outlined">album</span>
           <span>NO TRACK</span>
         </div>
         <img id="art-img" alt="">
@@ -128,15 +125,15 @@
     <!-- RIGHT: TABS -->
     <div id="right">
       <div id="tabs">
-        <button class="tab" data-tab="search">Search</button>
-        <button class="tab" data-tab="queue">Queue <span id="q-badge"></span></button>
-        <button class="tab" data-tab="lyrics">Lyrics ✦</button>
-        <button class="tab" data-tab="filters">Filters ⚙</button>
-        <button class="tab" data-tab="skins">Skins ◈</button>
-        <button class="tab" data-tab="viz">Visualizer ◉</button>
-        <button class="tab" data-tab="chat" id="tab-chat-btn" style="display:none">Chat <span id="chat-badge"></span></button>
-        <button class="tab on" data-tab="config">Config ⚙</button>
-        <button class="tab" data-tab="debug">Debug ⌁</button>
+        <button class="tab" data-tab="search"><span class="material-symbols-outlined">search</span>Search</button>
+        <button class="tab" data-tab="queue"><span class="material-symbols-outlined">queue_music</span>Queue <span id="q-badge"></span></button>
+        <button class="tab" data-tab="lyrics"><span class="material-symbols-outlined">lyrics</span>Lyrics</button>
+        <button class="tab" data-tab="filters"><span class="material-symbols-outlined">tune</span>Filters</button>
+        <button class="tab" data-tab="skins"><span class="material-symbols-outlined">palette</span>Skins</button>
+        <button class="tab" data-tab="viz"><span class="material-symbols-outlined">graphic_eq</span>Visualizer</button>
+        <button class="tab" data-tab="chat" id="tab-chat-btn" style="display:none"><span class="material-symbols-outlined">chat</span>Chat <span id="chat-badge"></span></button>
+        <button class="tab on" data-tab="config"><span class="material-symbols-outlined">settings</span>Config</button>
+        <button class="tab" data-tab="debug"><span class="material-symbols-outlined">bug_report</span>Debug</button>
       </div>
 
       <div class="pane" id="pane-search">
@@ -153,7 +150,7 @@
         </div>
         <div id="sres">
           <div class="empty">
-            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            <span class="material-symbols-outlined">search</span>
             <p>Search for tracks</p>
           </div>
         </div>
@@ -170,7 +167,7 @@
         </div>
         <div id="ql">
           <div class="empty">
-            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 6h18M3 12h18M3 18h12"/></svg>
+            <span class="material-symbols-outlined">queue_music</span>
             <p>Queue is empty</p>
           </div>
         </div>
@@ -183,7 +180,7 @@
         </div>
         <div id="lyr-body">
           <div class="empty">
-            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+            <span class="material-symbols-outlined">lyrics</span>
             <p>Play a track and fetch lyrics</p>
           </div>
         </div>
@@ -201,12 +198,12 @@
             <div class="preset-grid">
               <button class="preset-btn active" data-preset="normal">Normal<span class="preset-sub">no filters</span></button>
               <button class="preset-btn" data-preset="bassBoost">Bass Boost<span class="preset-sub">equalizer</span></button>
-              <button class="preset-btn" data-preset="nightcore">Nightcore<span class="preset-sub">timescale ↑</span></button>
-              <button class="preset-btn" data-preset="vaporwave">Vaporwave<span class="preset-sub">timescale ↓</span></button>
+              <button class="preset-btn" data-preset="nightcore">Nightcore<span class="preset-sub">timescale <span class="material-symbols-outlined">arrow_upward</span></span></button>
+              <button class="preset-btn" data-preset="vaporwave">Vaporwave<span class="preset-sub">timescale <span class="material-symbols-outlined">arrow_downward</span></span></button>
               <button class="preset-btn" data-preset="8d">8D Audio<span class="preset-sub">rotation</span></button>
               <button class="preset-btn" data-preset="echo">Echo<span class="preset-sub">delay+feedback</span></button>
               <button class="preset-btn" data-preset="karaoke">Karaoke<span class="preset-sub">vocal cut</span></button>
-              <button class="preset-btn" data-preset="chipmunk">Chipmunk<span class="preset-sub">pitch ↑↑</span></button>
+              <button class="preset-btn" data-preset="chipmunk">Chipmunk<span class="preset-sub">pitch <span class="material-symbols-outlined">keyboard_double_arrow_up</span></span></button>
             </div>
           </div>
           <div class="flt-section">
@@ -216,7 +213,7 @@
             <div class="flt-row"><label>Rate</label><input class="flt-slider" type="range" id="f-rate" min="0.5" max="2.0" step="0.05" value="1.0"><span class="flt-val" id="f-rate-v">1.0</span></div>
           </div>
           <div class="flt-section">
-            <span class="flt-label">Manual — Echo (NodeLink ✦)</span>
+            <span class="flt-label">Manual — Echo (NodeLink <span class="material-symbols-outlined">auto_awesome</span>)</span>
             <div class="flt-row"><label>Delay (ms)</label><input class="flt-slider" type="range" id="f-edel" min="0" max="2000" step="50" value="0"><span class="flt-val" id="f-edel-v">0</span></div>
             <div class="flt-row"><label>Feedback</label><input class="flt-slider" type="range" id="f-efb" min="0" max="0.9" step="0.05" value="0"><span class="flt-val" id="f-efb-v">0</span></div>
             <div class="flt-row"><label>Mix</label><input class="flt-slider" type="range" id="f-emix" min="0" max="1.0" step="0.05" value="0"><span class="flt-val" id="f-emix-v">0</span></div>
@@ -225,7 +222,7 @@
             <span class="flt-label">Manual — Rotation (8D)</span>
             <div class="flt-row"><label>Hz</label><input class="flt-slider" type="range" id="f-rot" min="0" max="2.0" step="0.05" value="0"><span class="flt-val" id="f-rot-v">0</span></div>
           </div>
-          <button id="btn-apply-flt">⚙ Apply Filters</button>
+          <button id="btn-apply-flt"><span class="material-symbols-outlined">tune</span>Apply Filters</button>
         </div>
       </div>
 
@@ -335,7 +332,7 @@
             <button class="viz-tab" data-vtab="browse">Browse</button>
           </div>
           <span id="viz-active-name" class="viz-active-name">—</span>
-          <button class="qa" id="btn-viz-full" title="Fullscreen">⛶</button>
+          <button class="qa" id="btn-viz-full" title="Fullscreen"><span class="material-symbols-outlined">fullscreen</span></button>
         </div>
 
         <div id="viz-body">
@@ -369,7 +366,7 @@
             </div>
 
             <div class="skin-actions">
-              <button id="btn-viz-run" class="overlay-btn">▶ Run</button>
+              <button id="btn-viz-run" class="overlay-btn"><span class="material-symbols-outlined">play_arrow</span>Run</button>
               <button id="btn-viz-save" class="overlay-btn ghost">Save</button>
               <button id="btn-viz-publish" class="overlay-btn ghost">Publish to Gallery</button>
               <button id="btn-viz-export" class="overlay-btn ghost">Export</button>
@@ -432,8 +429,8 @@
         <div id="cfg-body">
 
           <div class="cfg-mode-row">
-            <button class="cfg-mode-btn" data-cfgmode="lobby">🌐 Lobby</button>
-            <button class="cfg-mode-btn" data-cfgmode="standalone">🎧 Standalone</button>
+            <button class="cfg-mode-btn" data-cfgmode="lobby"><span class="material-symbols-outlined">public</span>Lobby</button>
+            <button class="cfg-mode-btn" data-cfgmode="standalone"><span class="material-symbols-outlined">headphones</span>Standalone</button>
           </div>
 
           <!-- ───────── Lobby mode settings ───────── -->
@@ -444,7 +441,7 @@
               <div class="overlay-form">
                 <label>Display name</label>
                 <input id="us-display-name" class="hi full" type="text" placeholder="Joe Metri Desh" maxlength="24" readonly onfocus="this.removeAttribute('readonly');">
-                <label>Default lobby name</label>
+                <label>Lobby name</label>
                 <input id="us-lobby-name" class="hi full" type="text" placeholder="Ghost Lobby 👻" maxlength="40" readonly onfocus="this.removeAttribute('readonly');">
                 <button id="us-save" class="overlay-btn">Save</button>
               </div>
@@ -529,7 +526,7 @@
     <div id="meaning-title"></div>
     <div id="meaning-sub"></div>
     <div id="meaning-body"></div>
-    <button id="meaning-close">✕ Close</button>
+    <button id="meaning-close"><span class="material-symbols-outlined">close</span>Close</button>
   </div>
 </div>
 

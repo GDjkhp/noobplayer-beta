@@ -755,7 +755,7 @@ canvas{display:block;width:100%;height:100%}</style>
       <button class="add-btn pnow" data-va="use">Use</button>
       <button class="add-btn" data-va="edit">Edit</button>
       ${kind === 'mine' && v._id ? '<button class="add-btn" data-va="unpublish">Unpublish</button>' : ''}
-      ${kind === 'mine' ? '<button class="add-btn" data-va="del">✕</button>' : '<button class="add-btn" data-va="save">Save</button>'}
+      ${kind === 'mine' ? '<button class="add-btn" data-va="del"><span class="material-symbols-outlined">close</span></button>' : '<button class="add-btn" data-va="save">Save</button>'}
     </div>`;
   },
 
@@ -783,7 +783,7 @@ canvas{display:block;width:100%;height:100%}</style>
           <button class="add-btn pnow" data-va="use">Use</button>
           <button class="add-btn" data-va="edit">Edit</button>
           ${!builtin && v._id ? '<button class="add-btn" data-va="unpublish">Unpublish</button>' : ''}
-          ${!builtin ? '<button class="add-btn" data-va="del">✕</button>' : ''}
+          ${!builtin ? '<button class="add-btn" data-va="del"><span class="material-symbols-outlined">close</span></button>' : ''}
         </div>
       </div>`).join('');
 

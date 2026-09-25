@@ -36,7 +36,7 @@ const Standalone = {
       const isCors = e.message.includes('Failed to fetch') || e.message.includes('NetworkError');
       if (isCors) {
         document.getElementById('cors-note').innerHTML =
-          '⚠ CORS / connection error — NodeLink must have <code>cors: true</code> and <code>enableLoadStreamEndpoint: true</code> in config.js.';
+          '<span class="material-symbols-outlined">warning</span>CORS / connection error — NodeLink must have <code>cors: true</code> and <code>enableLoadStreamEndpoint: true</code> in config.js.';
         document.getElementById('cors-note').classList.add('show');
       }
       toast(`Connection failed: ${e.message}`, 'error', 6000);

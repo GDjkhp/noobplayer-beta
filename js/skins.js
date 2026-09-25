@@ -606,7 +606,7 @@ const Skins = {
           <button class="add-btn" data-sa="apply">Apply</button>
           <button class="add-btn" data-sa="edit">Edit</button>
           ${s._id ? '<button class="add-btn" data-sa="unpublish">Unpublish</button>' : ''}
-          <button class="add-btn" data-sa="del">✕</button>
+          <button class="add-btn" data-sa="del"><span class="material-symbols-outlined">close</span></button>
         </div>
       </div>`).join('');
 

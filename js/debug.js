@@ -910,7 +910,7 @@ const Debug = {
     root.innerHTML = `
       <div class="dbg-wrap">
         <div class="dbg-toolbar">
-          <span class="dbg-title">⌁ Debug</span>
+          <span class="dbg-title"><span class="material-symbols-outlined">bug_report</span>Debug</span>
           <span class="dbg-sub">live instrumentation — network · stream + buffered waveform · player events</span>
           <button class="qa d" id="dbg-clear">Clear</button>
         </div>

@@ -570,7 +570,7 @@ const Engine = {
       return;
     }
     await this._playNowGapless(track, S.filters);
-    toast(`▶  ${track.info.title}`, 'success', 2000);
+    toast(track.info.title, 'success', 2000);
   },
 
   async togglePause() {
@@ -728,7 +728,7 @@ const Engine = {
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/shuffle', { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
-        toast('🔀 Queue shuffled', 'info', 1500);
+        toast('Queue shuffled', 'info', 1500);
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
@@ -736,7 +736,7 @@ const Engine = {
       const j = Math.floor(Math.random() * (i + 1));
       [S.queue[i], S.queue[j]] = [S.queue[j], S.queue[i]];
     }
-    UI.renderQueue(); toast('🔀 Queue shuffled', 'info', 1500);
+    UI.renderQueue(); toast('Queue shuffled', 'info', 1500);
     this._ensurePreload();
   },
 
@@ -752,7 +752,7 @@ const Engine = {
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/smart', { clientId: S.lobby.clientId, count });
         Lobby.applyControlResult(r);
-        toast(r.added ? `🔀 Smart Shuffle · +${r.added} tracks` : 'No new recommendations found', r.added ? 'success' : 'warn', 2500);
+        toast(r.added ? `Smart Shuffle · +${r.added} tracks` : 'No new recommendations found', r.added ? 'success' : 'warn', 2500);
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
@@ -779,7 +779,7 @@ const Engine = {
     }
     UI.renderQueue();
     this._ensurePreload();
-    toast(added.length ? `🔀 Smart Shuffle · +${added.length} tracks` : 'No new recommendations found',
+    toast(added.length ? `Smart Shuffle · +${added.length} tracks` : 'No new recommendations found',
           added.length ? 'success' : 'warn', 2500);
   },
 
@@ -793,7 +793,7 @@ const Engine = {
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/fair', { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
-        toast(r.changed ? '⚖️ Queue rebalanced' : 'Queue is already fair — only one person has tracks in it',
+        toast(r.changed ? 'Queue rebalanced' : 'Queue is already fair — only one person has tracks in it',
               r.changed ? 'success' : 'info', 2500);
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
@@ -826,7 +826,7 @@ const Engine = {
     S.queue = out;
     UI.renderQueue();
     this._ensurePreload();
-    toast('⚖️ Queue rebalanced', 'success', 2000);
+    toast('Queue rebalanced', 'success', 2000);
   },
 
   async clearQueue() {

@@ -83,7 +83,7 @@ const Lobby = {
     Main.enterApp();
     document.getElementById('hdr-standalone').style.display = 'none';
     document.getElementById('hdr-lobby').style.display = 'flex';
-    document.getElementById('tab-chat-btn').style.display = 'block';
+    document.getElementById('tab-chat-btn').style.display = 'flex';
     document.getElementById('lobby-code-display').textContent = code;
     document.getElementById('sdot')?.classList.add('ok');
 
