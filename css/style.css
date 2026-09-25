@@ -273,7 +273,7 @@ body::after {
 /* M3 icon button: circular hit area, no fill by default, a tinted state
    layer on hover instead of the old plain border/bg swap. */
 .cb {
-  background: none; border: 1px solid var(--brd2); border-radius: 50%; color: var(--text);
+  background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text);
   cursor: pointer; display: flex; align-items: center; justify-content: center;
   transition: background .15s, border-color .15s, transform .1s, box-shadow .15s;
 }
