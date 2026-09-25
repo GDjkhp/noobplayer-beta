@@ -71,8 +71,8 @@ const UI = {
     const ap = document.getElementById('btn-autoplay');
     if (ap) {
       const pool = S.autoQueueCount || 0;
-      const lbls = { enabled: 'AUTO ON', partial: 'AUTO ½', disabled: 'AUTO OFF' };
-      ap.textContent = S.recPending ? 'AUTO …' : lbls[S.autoplay] || 'AUTO';
+      const lbls = { enabled: 'Auto: On', partial: 'Auto: ½', disabled: 'Auto: Off' };
+      ap.textContent = S.recPending ? 'Auto …' : lbls[S.autoplay] || 'Auto';
       ap.classList.toggle('on', S.autoplay === 'enabled');
       ap.title = {
         enabled:  'Autoplay: keeps the queue going with recommendations when it runs dry',
