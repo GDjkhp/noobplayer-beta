@@ -707,7 +707,7 @@ const UI = {
     }
 
     if (S.mode === 'server' && S.lobby.active) {
-      await Lobby.leave();
+      await Lobby.leave({ autoRejoin: false });
     } else if (S.mode === 'standalone') {
       Standalone.disconnect();
     }

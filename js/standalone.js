@@ -16,7 +16,7 @@ const Standalone = {
     // Switching into standalone mode from an active lobby means leaving
     // it properly (socket disconnect, REST leave, voice teardown) rather
     // than just abandoning it client-side.
-    if (S.mode === 'server' && S.lobby.active) await Lobby.leave();
+    if (S.mode === 'server' && S.lobby.active) await Lobby.leave({ autoRejoin: false });
 
     Backend.setStandalone(host, pass);
     try {

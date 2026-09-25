@@ -224,7 +224,23 @@ const Lobby = {
     } catch (_) {}
   },
 
-  async leave() {
+  // `autoRejoin` (default true) is what keeps the app from ever landing in
+  // a lobby-less limbo: S.mode null but Backend.serverUrl still pointed at
+  // the Flask proxy (it's set once at boot and never cleared — see api.js —
+  // so it plays on regardless of S.mode). Without a lobby to hang playback
+  // off, that limbo state let you keep playing music with nothing tracking
+  // it server-side: no lobby code, nobody to share it with, no chat — a
+  // session that LOBBIES doesn't even know exists. So a plain "Leave" always
+  // walks straight into a fresh default lobby, exactly like first load (see
+  // Main.autoStart) — you're either in a lobby or explicitly in standalone
+  // mode, never in between. The two callers that already have their own
+  // follow-up (switching to standalone, switching Flask servers) pass
+  // `autoRejoin: false` so this doesn't create a lobby only to abandon it a
+  // moment later.
+  async leave(opts = {}) {
+    const { autoRejoin = true } = opts;
+    const displayName = S.lobby.displayName || localStorage.getItem('nl_display_name') || 'Guest';
+
     if (S.lobby.socket) { S.lobby.socket.disconnect(); S.lobby.socket = null; }
     if (S.lobby.hls) { try { S.lobby.hls.destroy(); } catch (_) {} S.lobby.hls = null; }
     const lobbyAudio = document.getElementById('lobby-audio');
@@ -248,6 +264,11 @@ const Lobby = {
     document.getElementById('chat-users-count').textContent = '';
     UI.updatePlayerUI(); UI.renderQueue();
     UI.updateLoopButton(); UI.updateQueueHeader();
+
+    if (autoRejoin) {
+      await this.create('New Lobby', false, displayName);   // _enterLobby leaves whatever tab was open as-is
+      return;
+    }
     UI.switchTab('config');
     UI.renderConfigTab();
   },
