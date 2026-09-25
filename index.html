@@ -135,18 +135,18 @@
     <!-- RIGHT: TABS -->
     <div id="right">
       <div id="tabs">
-        <button class="tab on" data-tab="search">Search</button>
+        <button class="tab" data-tab="search">Search</button>
         <button class="tab" data-tab="queue">Queue <span id="q-badge"></span></button>
         <button class="tab" data-tab="lyrics">Lyrics ✦</button>
         <button class="tab" data-tab="filters">Filters ⚙</button>
         <button class="tab" data-tab="skins">Skins ◈</button>
         <button class="tab" data-tab="viz">Visualizer ◉</button>
         <button class="tab" data-tab="chat" id="tab-chat-btn" style="display:none">Chat <span id="chat-badge"></span></button>
-        <button class="tab" data-tab="config">Config ⚙</button>
+        <button class="tab on" data-tab="config">Config ⚙</button>
         <button class="tab" data-tab="debug">Debug ⌁</button>
       </div>
 
-      <div class="pane on" id="pane-search">
+      <div class="pane" id="pane-search">
         <div id="search-bar">
           <input id="si" type="text" placeholder="Search songs, URLs, playlists…">
           <select id="src-sel">
@@ -435,7 +435,7 @@
         </div>
       </div>
 
-      <div class="pane" id="pane-config">
+      <div class="pane on" id="pane-config">
         <div id="cfg-body">
 
           <div class="cfg-mode-row">
@@ -446,63 +446,48 @@
           <!-- ───────── Lobby mode settings ───────── -->
           <div class="cfg-section" id="cfg-lobby">
 
-            <div class="cfg-block" id="cfg-current-lobby">
-              <span class="cfg-label">Current Lobby</span>
-              <div id="cfg-no-lobby" class="empty small"><p>Not currently in a lobby — create or join one below</p></div>
-              <div id="cfg-lobby-form" style="display:none">
-                <div class="cfg-row">
-                  <label>Code</label>
-                  <span id="cfg-lobby-code" class="mono-lg sm">------</span>
-                  <button id="cfg-copy-code" class="qa">Copy</button>
-                </div>
-                <label>Lobby name</label>
-                <input id="cfg-lobby-name" class="hi full" type="text" maxlength="40">
-                <label>Visibility</label>
-                <div class="radio-row inline">
-                  <label class="radio-opt"><input type="radio" name="cfg-vis" value="private"> Private <span class="radio-sub">(share code only)</span></label>
-                  <label class="radio-opt"><input type="radio" name="cfg-vis" value="public"> Public <span class="radio-sub">(listed for anyone)</span></label>
-                </div>
-                <label>Your display name</label>
-                <input id="cfg-display-name" class="hi full" type="text" maxlength="24">
-                <button id="cfg-save-lobby" class="overlay-btn">Save Changes</button>
-                <button id="cfg-leave-lobby" class="overlay-btn ghost">Leave Lobby</button>
+            <div class="cfg-block" id="cfg-user-settings">
+              <span class="cfg-label">User Settings</span>
+              <div class="overlay-form">
+                <label>Display name</label>
+                <input id="us-display-name" class="hi full" type="text" placeholder="Your name" maxlength="24">
+                <label>Default lobby name</label>
+                <input id="us-lobby-name" class="hi full" type="text" placeholder="Friday Night Mix" maxlength="40">
+                <button id="us-save" class="overlay-btn">Save</button>
               </div>
             </div>
 
             <div class="cfg-block">
-              <span class="cfg-label">Switch Lobby</span>
+              <span class="cfg-label">Lobby</span>
               <div class="lobby-tabs">
-                <button class="lobby-tab on" data-ltab="join">Join</button>
-                <button class="lobby-tab" data-ltab="create">Create New</button>
-                <button class="lobby-tab" data-ltab="browse">Browse Public</button>
+                <button class="lobby-tab on" data-ltab="public">Public Lobbies</button>
+                <button class="lobby-tab" data-ltab="current">Current Lobby</button>
               </div>
 
-              <div class="lobby-pane on" id="ltab-join">
-                <div class="overlay-form">
-                  <label>Display name</label>
-                  <input id="join-name" class="hi full" type="text" placeholder="Your name" maxlength="24">
-                  <label>Lobby code</label>
-                  <input id="join-code" class="hi full mono-lg" type="text" placeholder="ABCXYZ" maxlength="6" style="text-transform:uppercase">
-                  <button id="join-go" class="overlay-btn">Join Lobby</button>
-                </div>
-              </div>
-
-              <div class="lobby-pane" id="ltab-create">
-                <div class="overlay-form">
-                  <label>Display name</label>
-                  <input id="create-name" class="hi full" type="text" placeholder="Your name" maxlength="24">
-                  <label>Lobby name</label>
-                  <input id="create-lobby-name" class="hi full" type="text" placeholder="Friday Night Mix" maxlength="40">
-                  <div class="radio-row">
-                    <label class="radio-opt"><input type="radio" name="vis" value="private" checked> Private <span class="radio-sub">(share code only)</span></label>
-                    <label class="radio-opt"><input type="radio" name="vis" value="public"> Public <span class="radio-sub">(listed for anyone)</span></label>
-                  </div>
-                  <button id="create-go" class="overlay-btn">Create Lobby</button>
-                </div>
-              </div>
-
-              <div class="lobby-pane" id="ltab-browse">
+              <div class="lobby-pane on" id="ltab-public">
                 <div id="public-lobby-list" class="public-list"><div class="empty small"><p>Loading…</p></div></div>
+              </div>
+
+              <div class="lobby-pane" id="ltab-current">
+                <div id="cfg-no-lobby" class="empty small"><p>Not currently in a lobby — pick one from Public Lobbies</p></div>
+                <div id="cfg-lobby-form" style="display:none">
+                  <div class="cfg-row">
+                    <label>Code</label>
+                    <span id="cfg-lobby-code" class="mono-lg sm">------</span>
+                    <button id="cfg-copy-code" class="qa">Copy</button>
+                  </div>
+                  <label>Lobby name</label>
+                  <input id="cfg-lobby-name" class="hi full" type="text" maxlength="40">
+                  <label>Visibility</label>
+                  <div class="radio-row inline">
+                    <label class="radio-opt"><input type="radio" name="cfg-vis" value="private"> Private <span class="radio-sub">(share code only)</span></label>
+                    <label class="radio-opt"><input type="radio" name="cfg-vis" value="public"> Public <span class="radio-sub">(listed for anyone)</span></label>
+                  </div>
+                  <label>Your display name</label>
+                  <input id="cfg-display-name" class="hi full" type="text" maxlength="24">
+                  <button id="cfg-save-lobby" class="overlay-btn">Save Changes</button>
+                  <button id="cfg-leave-lobby" class="overlay-btn ghost">Leave Lobby</button>
+                </div>
               </div>
             </div>
 

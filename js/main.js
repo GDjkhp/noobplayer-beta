@@ -28,7 +28,8 @@ const Main = {
       localStorage.setItem('nl_display_name', displayName);
     }
     try { S.gaplessEnabled = localStorage.getItem('nl_gapless') === '1'; } catch (_) {}
-    await Lobby.create('New Lobby', false, displayName);
+    const lobbyName = localStorage.getItem('nl_lobby_name') || 'New Lobby';
+    await Lobby.create(lobbyName, false, displayName);
   },
 
   // Portrait layout only (see the "STICKY PLAYER" block in style.css): the
@@ -226,22 +227,13 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('cfg-save-lobby').addEventListener('click', () => UI.saveConfigLobby());
   document.getElementById('cfg-leave-lobby').addEventListener('click', () => Lobby.leave());
 
-  /* ───────── Config: switch to a different lobby (join / create / browse) ───────── */
+  /* ───────── Config: Lobby card (Public Lobbies / Current Lobby) ───────── */
   document.querySelectorAll('.lobby-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.lobby-tab').forEach(t => t.classList.toggle('on', t === tab));
-      document.querySelectorAll('.lobby-pane').forEach(p => p.classList.toggle('on', p.id === 'ltab-' + tab.dataset.ltab));
-      if (tab.dataset.ltab === 'browse') Lobby.refreshPublicList();
-    });
+    tab.addEventListener('click', () => UI.switchLobbyTab(tab.dataset.ltab));
   });
-  document.getElementById('join-go').addEventListener('click', () => {
-    Lobby.join(document.getElementById('join-code').value, document.getElementById('join-name').value.trim());
-  });
-  document.getElementById('join-code').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('join-go').click(); });
-  document.getElementById('create-go').addEventListener('click', () => {
-    const isPublic = document.querySelector('input[name="vis"]:checked').value === 'public';
-    Lobby.create(document.getElementById('create-lobby-name').value.trim(), isPublic, document.getElementById('create-name').value.trim());
-  });
+
+  /* ───────── Config: user settings (display name / default lobby name) ───────── */
+  document.getElementById('us-save').addEventListener('click', () => UI.saveUserSettings());
 
   /* ───────── Config: Flask server ───────── */
   document.querySelectorAll('input[name="cfg-srv"]').forEach(r => {

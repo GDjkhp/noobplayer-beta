@@ -33,10 +33,10 @@ const Lobby = {
           <span class="pl-count">${l.participants} online · ${l.code}</span>
         </div>`).join('');
       el.querySelectorAll('.pl-item').forEach(item => {
-        item.addEventListener('click', () => {
-          document.getElementById('join-code').value = item.dataset.code;
-          document.querySelectorAll('.lobby-tab').forEach(t => t.classList.toggle('on', t.dataset.ltab === 'join'));
-          document.querySelectorAll('.lobby-pane').forEach(p => p.classList.toggle('on', p.id === 'ltab-join'));
+        item.addEventListener('click', async () => {
+          const displayName = localStorage.getItem('nl_display_name') || 'Guest';
+          const ok = await this.join(item.dataset.code, displayName);
+          if (ok) UI.switchLobbyTab('current');
         });
       });
     } catch (e) {
@@ -56,11 +56,12 @@ const Lobby = {
 
   async join(code, displayName) {
     code = (code || '').toUpperCase().trim();
-    if (code.length !== 6) { toast('Lobby codes are 6 letters', 'warn'); return; }
+    if (code.length !== 6) { toast('Lobby codes are 6 letters', 'warn'); return false; }
     try {
       const r = await LobbyAPI.join(code, displayName || 'Guest');
       this._enterLobby(r.code, r.clientId, r.token, r.isHost, displayName || 'Guest', r.state);
-    } catch (e) { toast(`Failed to join: ${e.message}`, 'error'); }
+      return true;
+    } catch (e) { toast(`Failed to join: ${e.message}`, 'error'); return false; }
   },
 
   _enterLobby(code, clientId, token, isHost, displayName, initialState) {
@@ -266,7 +267,8 @@ const Lobby = {
     UI.updateLoopButton(); UI.updateQueueHeader();
 
     if (autoRejoin) {
-      await this.create('New Lobby', false, displayName);   // _enterLobby leaves whatever tab was open as-is
+      const lobbyName = localStorage.getItem('nl_lobby_name') || 'New Lobby';
+      await this.create(lobbyName, false, displayName);   // _enterLobby leaves whatever tab was open as-is
       return;
     }
     UI.switchTab('config');

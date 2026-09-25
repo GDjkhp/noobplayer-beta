@@ -636,7 +636,38 @@ const UI = {
     if (!this._cfgMode) this.setConfigMode(S.mode === 'standalone' ? 'standalone' : 'lobby');
     this.updateServerUrlDisplay();
     this.renderCurrentLobbyConfig();
+    this.renderUserSettings();
+    if (S.mode === 'server') Lobby.refreshPublicList();
     document.getElementById('sa-disconnect-cfg').style.display = (S.mode === 'standalone') ? 'inline-block' : 'none';
+  },
+
+  /* ───────── User Settings card ─────────
+     Display name + default lobby name live here now, instead of being
+     retyped on Join/Create every time (those tabs are gone — lobbies are
+     created automatically on startup/leave, see Main.autoStart and
+     Lobby.leave). Just two localStorage-backed fields that future lobby
+     creations/joins read from. */
+  renderUserSettings() {
+    const nameInput = document.getElementById('us-display-name');
+    const lobbyInput = document.getElementById('us-lobby-name');
+    if (!nameInput || !lobbyInput) return;
+    if (document.activeElement !== nameInput) nameInput.value = localStorage.getItem('nl_display_name') || '';
+    if (document.activeElement !== lobbyInput) lobbyInput.value = localStorage.getItem('nl_lobby_name') || '';
+  },
+
+  saveUserSettings() {
+    const name = document.getElementById('us-display-name').value.trim();
+    const lobbyName = document.getElementById('us-lobby-name').value.trim();
+    if (name) localStorage.setItem('nl_display_name', name);
+    if (lobbyName) localStorage.setItem('nl_lobby_name', lobbyName);
+    toast('User settings saved', 'success', 1500);
+  },
+
+  /* ───────── Lobby card: Public Lobbies / Current Lobby sub-tabs ───────── */
+  switchLobbyTab(name) {
+    document.querySelectorAll('.lobby-tab').forEach(t => t.classList.toggle('on', t.dataset.ltab === name));
+    document.querySelectorAll('.lobby-pane').forEach(p => p.classList.toggle('on', p.id === 'ltab-' + name));
+    if (name === 'public') Lobby.refreshPublicList();
   },
 
   updateServerUrlDisplay() {
@@ -716,7 +747,8 @@ const UI = {
     this.updateServerUrlDisplay();
 
     const displayName = localStorage.getItem('nl_display_name') || 'Guest';
-    await Lobby.create('New Lobby', false, displayName);
+    const lobbyName = localStorage.getItem('nl_lobby_name') || 'New Lobby';
+    await Lobby.create(lobbyName, false, displayName);
     this.setConfigMode('lobby');
     this.renderConfigTab();
   },

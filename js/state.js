@@ -51,7 +51,7 @@ const S = {
   lyrics: null, lyricsType: null, _lyrLastIdx: -1,
 
   // UI
-  searchResults: [], activeTab: 'search', progDrag: false,
+  searchResults: [], activeTab: 'config', progDrag: false,
 
   // Skins — look-and-feel customisation (see skins.js). `active` is the
   // skin currently painted onto the page, `mine` are the ones saved in this
