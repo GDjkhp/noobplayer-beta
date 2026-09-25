@@ -248,13 +248,35 @@ body::after {
 .cb.lg:hover { background: var(--accent2); border-color: var(--accent2); }
 .cb.lg:disabled { background: var(--brd2); border-color: var(--brd2); color: var(--muted); }
 .cb.on { color: var(--accent); border-color: var(--accent); }
-.cb svg { pointer-events: none; }
+.cb .material-symbols-outlined { pointer-events: none; }
 #ctrls-sec { display: flex; align-items: center; gap: 8px; }
 .hsep { width: 1px; height: 18px; background: var(--brd2); flex-shrink: 0; }
 #loop-btn { font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .05em; padding: 0 8px; width: auto; min-width: 44px; justify-content: center; }
 #gapless-btn { font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .05em; padding: 0 8px; width: auto; min-width: 44px; justify-content: center; }
 #vol-row { flex: 1; display: flex; align-items: center; gap: 6px; }
 .vol-ico { color: var(--muted); flex-shrink: 0; }
+
+/* ── Material Symbols (player controls) ─────────────────────────────
+   Google's standard boilerplate for the variable icon font (see
+   https://fonts.google.com/icons), plus per-context sizing so these
+   drop into the same button/row layouts the old inline SVGs used. */
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 20px;
+  display: inline-block;
+  line-height: 1;
+  text-transform: none;
+  letter-spacing: normal;
+  word-wrap: normal;
+  white-space: nowrap;
+  direction: ltr;
+  -webkit-font-smoothing: antialiased;
+}
+.cb.sm .material-symbols-outlined { font-size: 18px; }
+.cb.lg .material-symbols-outlined { font-size: 26px; }
+.vol-ico.material-symbols-outlined { font-size: 16px; }
 #vol-sl { flex: 1; -webkit-appearance: none; appearance: none; height: 3px; background: var(--brd2); outline: none; cursor: pointer; border-radius: 2px; }
 #vol-sl::-webkit-slider-thumb { -webkit-appearance: none; width: 11px; height: 11px; border-radius: 50%; background: var(--accent); cursor: pointer; }
 #vol-lbl { font-family: var(--fm); font-size: 10px; color: var(--muted); width: 30px; text-align: right; }

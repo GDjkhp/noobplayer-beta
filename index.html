@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Noobplayer</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -84,46 +85,38 @@
       <div id="ctrls">
         <div id="ctrls-main">
           <button class="cb sm" id="btn-prev" title="Previous (Shift+←)">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+            <span class="material-symbols-outlined">skip_previous</span>
           </button>
           <button class="cb sm" id="btn-b10" title="Back 10s (←)">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
-              <text x="9" y="17" font-size="5.5" fill="currentColor" stroke="none" text-anchor="middle">10</text>
-            </svg>
+            <span class="material-symbols-outlined">replay_10</span>
           </button>
           <button class="cb lg" id="btn-play" title="Play/Pause (Space)">
-            <svg id="ico-play" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-            <svg id="ico-pause" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+            <span id="ico-play" class="material-symbols-outlined">play_arrow</span>
+            <span id="ico-pause" class="material-symbols-outlined" style="display:none">pause</span>
           </button>
           <button class="cb sm" id="btn-f10" title="Forward 10s (→)">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>
-              <text x="10" y="17" font-size="5.5" fill="currentColor" stroke="none" text-anchor="middle">10</text>
-            </svg>
+            <span class="material-symbols-outlined">forward_10</span>
           </button>
           <button class="cb sm" id="btn-next" title="Skip (Shift+→)">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm8.5-6L23 18V6z"/></svg>
+            <span class="material-symbols-outlined">skip_next</span>
           </button>
           <button class="cb sm" id="btn-stop" title="Stop">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h12v12H6z"/></svg>
+            <span class="material-symbols-outlined">stop</span>
           </button>
         </div>
         <div id="ctrls-sec">
           <button class="cb sm" id="loop-btn" title="Loop (L)">OFF</button>
           <button class="cb sm" id="gapless-btn" title="Gapless playback (standalone mode)">GAPLESS OFF</button>
           <button class="cb sm" id="btn-shuf" title="Shuffle (S)">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+            <span class="material-symbols-outlined">shuffle</span>
           </button>
           <button class="cb sm" id="btn-meaning" title="Track meaning" style="font-size:13px">ℹ</button>
           <button class="cb sm" id="btn-dl" title="Download current track" disabled>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 3v12m0 0 4.5-4.5M12 15 7.5 10.5"/><path d="M4 18v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/>
-            </svg>
+            <span class="material-symbols-outlined">download</span>
           </button>
           <div class="hsep"></div>
           <div id="vol-row">
-            <svg class="vol-ico" width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+            <span class="material-symbols-outlined vol-ico">volume_up</span>
             <input id="vol-sl" type="range" min="0" max="100" value="80">
             <span id="vol-lbl">80%</span>
           </div>
