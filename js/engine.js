@@ -4,10 +4,10 @@
 
    Standalone mode: public methods act directly on the local PCMPlayer,
    fed by this client's own PCM fetch from NodeLink. Gapless playback is
-   an OPT-IN client setting (S.gaplessEnabled, default off — see
-   Engine.toggleGapless / UI.updateGaplessButton), because prefetching a
-   predicted next track costs bandwidth/data whether or not it ends up
-   playing. When on, it works by predicting whatever track will play next
+   a client setting (S.gaplessEnabled, default ON — see
+   Engine.toggleGapless / UI.updateGaplessButton) that can be switched
+   off if the prefetch-ahead bandwidth/data cost isn't wanted. When on,
+   it works by predicting whatever track will play next
    (from the queue / loop mode), prefetching its PCM in the background
    while the current track is still playing, and — when the current
    track's stream runs out — splicing the prefetched bytes straight onto
@@ -27,7 +27,7 @@
    with the server's authoritative state. Gapless is a lobby-wide,
    host-controlled setting there too (Lobby.gapless in server.py,
    mirrored into S.gaplessEnabled the same way loop mode/autoplay are —
-   see _lobbySync below and Engine.toggleGapless), also OFF by default.
+   see _lobbySync below and Engine.toggleGapless), also ON by default.
    Either way, the HLS stream and the client's connection are untouched
    by the setting — the relay always keeps encoding into the SAME
    continuous stream across a track boundary, so nobody reconnects

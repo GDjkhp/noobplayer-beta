@@ -24,10 +24,10 @@ const S = {
   // changes it through the same /gapless control endpoint as loop mode
   // and autoplay, same pattern as the block above. In standalone mode
   // this client owns it outright, persisted in localStorage under
-  // 'nl_gapless' so the choice survives a reload. Defaults OFF either
-  // way — opt-in via the player's Gapless button (see
+  // 'nl_gapless' so the choice survives a reload. Defaults ON either
+  // way — toggle off via the player's Gapless button (see
   // UI.updateGaplessButton / Engine.toggleGapless).
-  gaplessEnabled: false,
+  gaplessEnabled: true,
 
   // PCM engine
   player: null,

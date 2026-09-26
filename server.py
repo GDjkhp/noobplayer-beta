@@ -1307,8 +1307,8 @@ class Lobby:
 
         # Gapless preload — shared lobby-wide, host-controlled (see the
         # /gapless route), mirrors the standalone client's own toggle.
-        # Off by default, same as standalone. See LobbyRelay.ensure_preload.
-        self.gapless = False
+        # On by default, same as standalone. See LobbyRelay.ensure_preload.
+        self.gapless = True
 
         self.relay = LobbyRelay(self)
 
