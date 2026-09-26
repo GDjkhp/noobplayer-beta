@@ -1610,13 +1610,22 @@ async def quic_info():
     itself: which UDP port to connect to, and the self-signed cert's
     hash to pin via serverCertificateHashes (see webtransport-player.js)
     since there's no real CA involved. `path` is a template — the client
-    fills in `{code}` with the lobby it's joining."""
+    fills in `{code}` with the lobby it's joining.
+
+    `host`, when set (QUIC_PUBLIC_IP in config.py), is the IP literal
+    LobbyAPI.quicUrl (api.js) should connect to instead of trying to use
+    the page's own hostname — required because serverCertificateHashes
+    pinning only works against an IP literal, never a hostname, and
+    unlike "localhost" an arbitrary production domain can't be resolved
+    client-side. Omitted (null) when not configured, so the client falls
+    back to its own hostname/localhost handling."""
     if _quic_cert_hash_hex is None:
         return jsonify({"error": "QUIC listener not ready yet — try again in a moment"}), 503
     return jsonify({
         "port": QUIC_PORT,
         "certHashHex": _quic_cert_hash_hex,
         "path": "/api/lobby/{code}/audio",
+        "host": getattr(config, "QUIC_PUBLIC_IP", "") or None,
     })
 
 

@@ -31,6 +31,33 @@ DEBUG = True
 # just one port number to open/forward instead of two).
 QUIC_PORT = FLASK_PORT
 
+# The IP address browsers should actually open the WebTransport session
+# to, when this deployment sits behind a real domain name (like a
+# Hostinger VPS fronted by Traefik/DNS — NODELINK_HOST above being a
+# hostname is exactly this situation).
+#
+# WebTransport's serverCertificateHashes pinning (see QUIC_CERT_FILE
+# below) is ONLY accepted by browsers when the connection URL's host is
+# an IP literal, never a hostname — even one that resolves to the right
+# server. api.js's LobbyAPI.quicUrl already special-cases "localhost" to
+# 127.0.0.1 for local dev, but has no way to resolve an arbitrary
+# hostname from the browser, so on a real domain it refuses the
+# handshake with "can't open a pinned WebTransport session to
+# '<hostname>'" rather than connecting somewhere that would just fail
+# anyway.
+#
+# Set this to the server's public IPv4/IPv6 address to fix that — the
+# client will use it for the WebTransport connection specifically while
+# everything else (the REST API, Socket.IO) keeps using NODELINK_HOST /
+# whatever domain the page was loaded from.
+#
+# Leave this empty (the default) for local dev, or if you've swapped
+# QUIC_CERT_FILE/QUIC_KEY_FILE below for a real CA-signed certificate —
+# that removes the need for pinning (and this IP) entirely, and the
+# client will connect by hostname instead once serverCertificateHashes
+# is dropped there too.
+QUIC_PUBLIC_IP = ""
+
 # Self-signed cert for the WebTransport listener — regenerated
 # automatically by server.py whenever it's missing or close to expiry,
 # nothing to set up by hand. The browser trusts it via WebTransport's
