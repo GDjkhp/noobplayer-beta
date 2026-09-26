@@ -470,18 +470,18 @@ const UI = {
         return;
       }
       const d = data.data;
-      document.getElementById('lyr-src-lbl').textContent = `Source: ${d.source || '?'}`;
+      document.getElementById('lyr-src-lbl').textContent = `Source: ${d.provider || '?'}`;
+      console.log(d);
       if (Array.isArray(d.lines) && d.lines.length > 0) {
-        S.lyricsType = 'synced';
-        S.lyrics = d.lines.map(l => ({ t: typeof l.startTime === 'number' ? l.startTime : parseFloat(l.startTime || 0), txt: l.line || l.text || '' }));
+        S.lyricsType = d.synced ? 'synced' : 'plain';
+        S.lyrics = d.lines.map(l => ({ t: typeof l.time === 'number' ? l.time : parseFloat(l.time || 0), txt: l.text || '' }));
         document.getElementById('lyr-body').innerHTML =
           S.lyrics.map((l, i) => `<div class="ll" data-i="${i}" data-t="${l.t}">${esc(l.txt) || '<span class="material-symbols-outlined ll-note">music_note</span>'}</div>`).join('');
-        document.querySelectorAll('.ll').forEach(el => {
-          el.addEventListener('click', () => Engine.seekTo(parseFloat(el.dataset.t)));
-        });
-      } else if (d.text || d.lyrics) {
-        S.lyricsType = 'plain'; S.lyrics = d.text || d.lyrics;
-        document.getElementById('lyr-body').innerHTML = `<div class="lp">${esc(S.lyrics)}</div>`;
+        if (d.synced) {
+          document.querySelectorAll('.ll').forEach(el => {
+            el.addEventListener('click', () => Engine.seekTo(parseFloat(el.dataset.t)));
+          });
+        }
       } else {
         S.lyrics = null; S.lyricsType = null;
         document.getElementById('lyr-src-lbl').textContent = 'No lyrics found';
