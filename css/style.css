@@ -847,9 +847,10 @@ body::after {
       half of the player — title, progress, controls — stays frozen at the
       top of the screen, and #tabs pins directly beneath it.
 
-   Both need #main to be overflow:visible: overflow:hidden turns it into the
-   element sticky positioning is measured against, and it never scrolls, so
-   nothing would ever stick. */
+   Both need #main AND #right to be overflow:visible: overflow:hidden turns
+   whichever one still has it into the element sticky positioning is
+   measured against, and — since that element never scrolls itself, the
+   *page* does — nothing would ever actually stick to the viewport. */
 
 /* ── 1) side-by-side ── */
 @media (min-width: 1001px), (max-width: 1000px) and (orientation: landscape) {
@@ -866,7 +867,7 @@ body::after {
     max-height: 100vh; max-height: 100dvh;   /* never taller than the screen; scrolls inside itself if it has to */
     border-right: none;
   }
-  #right { border-left: 1px solid var(--brd); }
+  #right { overflow: visible; border-left: 1px solid var(--brd); }
   #tabs { position: sticky; top: 0; z-index: 20; box-shadow: var(--ev2); }
 }
 
@@ -900,6 +901,7 @@ body::after {
     top: calc(var(--player-panel-h, 190px) - var(--player-left-h, 100vw));
     box-shadow: var(--ev3);
   }
+  #right { overflow: visible; }
   /* Sticks right below the frozen player panel (rather than at the very
      top of the viewport, like the side-by-side layout above) — the panel
      itself already occupies that space once #left has stuck. */
