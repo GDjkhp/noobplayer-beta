@@ -65,7 +65,7 @@ const BUF_BIN_MS = 100;
 const HLS_BIN_MS = 50;
 const HLS_FRAG_KEEP = 40;            // HLS segments remembered for the lobby view (hls.js itself only keeps ~10s of back buffer)
 const HLS_VIEW_SPAN_S = 20;          // seconds of stream the lobby strip covers...
-const HLS_PLAYHEAD_FRAC = 0.55;      // ...with the playhead this far across it (played on the left, ready on the right)
+const HLS_PLAYHEAD_FRAC = 0.5;       // ...with the playhead centered across it (played on the left, ready on the right)
 const COL_PLAYED = 'rgba(148,163,184,.55)';
 const COL_READY = 'rgba(167,139,250,.9)';
 
