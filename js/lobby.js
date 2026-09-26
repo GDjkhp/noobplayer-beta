@@ -70,7 +70,32 @@ const Lobby = {
     } catch (e) { toast(`Failed to join: ${e.message}`, 'error'); return false; }
   },
 
+  // Tears down whatever lobby connection is currently active — socket,
+  // Hls instance, the <audio> element's src, and a best-effort server-side
+  // leave for the OLD lobby — without leave()'s auto-rejoin dance. Called
+  // from _enterLobby so both create() and join() get this for free; a
+  // plain first join (S.lobby.active still false) is a no-op.
+  _teardownCurrent() {
+    if (!S.lobby.active) return;
+    if (S.lobby.socket) { try { S.lobby.socket.disconnect(); } catch (_) {} }
+    if (S.lobby.hls) { try { S.lobby.hls.destroy(); } catch (_) {} }
+    const lobbyAudio = document.getElementById('lobby-audio');
+    if (lobbyAudio) { lobbyAudio.pause(); lobbyAudio.removeAttribute('src'); lobbyAudio.load(); }
+    if (S.lobby.code) LobbyAPI.leave(S.lobby.code, S.lobby.clientId).catch(() => {});
+  },
+
   _enterLobby(code, clientId, token, isHost, displayName, initialState) {
+    // Switching straight from one lobby into another — e.g. picking a
+    // different one from Public Lobbies while already sitting in your own
+    // auto-created lobby — skips leave()'s teardown entirely. Without this,
+    // the OLD socket and, worse, the OLD Hls instance linger alongside the
+    // new ones and both fight over the same #lobby-audio element: the new
+    // lobby's state syncs fine (so the player shows "playing"), but its
+    // real AAC segments never actually load because hls.js #1 is still
+    // attached to the element hls.js #2 just tried to claim. A first-ever
+    // join has nothing active yet, so this is a no-op then.
+    this._teardownCurrent();
+
     S.mode = 'server';
     S.lobby.active = true;
     S.lobby.code = code;
@@ -299,6 +324,11 @@ const Lobby = {
   async _connectMedia() {
     const audio = document.getElementById('lobby-audio');
     if (!audio) return;
+    // Defensive: _teardownCurrent (called from _enterLobby) should already
+    // guarantee this never runs twice without a destroy() in between, but
+    // belt-and-suspenders — two live Hls instances on the same <audio>
+    // element means the second one's segments silently never load.
+    if (S.lobby.hls) { try { S.lobby.hls.destroy(); } catch (_) {} S.lobby.hls = null; }
     const url = LobbyAPI.hlsUrl(S.lobby.code);
 
     if (window.Hls && Hls.isSupported()) {
