@@ -56,7 +56,7 @@ QUIC_PORT = FLASK_PORT
 # that removes the need for pinning (and this IP) entirely, and the
 # client will connect by hostname instead once serverCertificateHashes
 # is dropped there too.
-QUIC_PUBLIC_IP = ""
+QUIC_PUBLIC_IP = "187.127.124.78"
 
 # Self-signed cert for the WebTransport listener — regenerated
 # automatically by server.py whenever it's missing or close to expiry,
