@@ -7,3 +7,5 @@ numpy
 uvicorn
 python-socketio
 python-dotenv
+aioquic
+cryptography

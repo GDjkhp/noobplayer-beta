@@ -20,24 +20,35 @@ Architecture
   (current track, paused/playing, a position anchor + server timestamp,
   active filters, queue) AND owns the actual audio pipeline too. For each
   lobby, ONE background task (LobbyRelay, below) pulls raw PCM from
-  NodeLink, real-time-paces it, and feeds it into a per-lobby HLSMuxer,
-  which encodes it to AAC in-process (via PyAV) and holds a rolling,
-  short-segment HLS playlist (live.m3u8 + AAC segments) entirely in
-  memory — nothing is ever written to disk for this. Every connected
-  client just points an <audio> element at that lobby's live.m3u8 via
-  hls.js (or native HLS support) — no signaling handshake, no
-  per-listener server-side state, plain HTTP GETs the reverse proxy / CDN
-  can cache transparently. A slow/absent listener never affects the relay
-  itself or any other listener, and a track's actual progress no longer
-  depends on any one client's network. NodeLink is fetched once per track
-  regardless of listener count, same as before.
+  NodeLink, real-time-paces it, and hands it to a per-lobby QuicPcmRelay,
+  which fans the SAME raw s16le/48kHz/stereo frames out to every
+  currently-connected listener over its own QUIC/WebTransport session —
+  no encoding, no container, no muxing, just the bytes the relay already
+  produces written straight onto each listener's dedicated unidirectional
+  stream. Every connected client opens a WebTransport session to the
+  QUIC listener (see below) and gets the SAME live feed; a slow/absent
+  listener never affects the relay itself or any other listener (its
+  outbound queue is bounded and just drops the oldest frame if it can't
+  keep up — see QuicPcmRelay/WtListener), and a track's actual progress
+  no longer depends on any one client's network. NodeLink is fetched once
+  per track regardless of listener count, same as before.
 
-  HLS trades a little latency for that simplicity: segments are kept
-  short (HLS_SEGMENT_SECONDS, default 1s) specifically to keep listeners
-  close to the live edge, but a player typically still buffers a couple
-  of segments before it starts, so expect low-single-digit-seconds of
-  lag behind the server's authoritative position — this is NOT
-  frame-accurate sync the way the old WebRTC relay was.
+  This replaces the earlier HLS design (AAC-encode + rolling .m3u8
+  playlist, played back via hls.js) with a raw PCM stream carried over
+  QUIC — a listener's audio graph is now just PCMPlayer-style buffer
+  scheduling (see WebTransportPlayer in webtransport-player.js) instead
+  of an <audio> element + hls.js, and there's no AAC encode step (and no
+  PyAV dependency) in the live path at all anymore. QUIC/WebTransport
+  needs a TLS handshake (server certs are self-signed and pinned by hash
+  — see _ensure_quic_cert below and GET /api/quic-info) where HLS was
+  plain HTTP, but the UDP listener runs on the SAME PORT NUMBER as the
+  TCP HTTP server (TCP and UDP ports are independent namespaces, so
+  reusing the number is just a convenience — one port to forward/open in
+  a firewall, not one shared socket). Listeners still sit a little behind
+  the server's authoritative position (network + buffer margin), same
+  trade-off HLS had — this is NOT the frame-accurate sync the old WebRTC
+  relay had, just a different transport for the same "good enough, no
+  signaling" approach.
 
 - State sync + chat: pushed to clients over Socket.IO (WebSocket, with
   automatic long-polling fallback and automatic client-side reconnection).
@@ -48,7 +59,7 @@ Architecture
   off the old SSE connection (see _schedule_disconnect_check below).
   `public_state()` still includes `relayGen` (bumps on a hard cut —
   skip/seek/filter change) for the Debug tab's benefit; playback clients
-  don't need to watch it for anything — the HLS stream just keeps
+  don't need to watch it for anything — the QUIC relay just keeps
   flowing across a generation bump, no reconnect needed, same as before.
 
 Run (dev)
@@ -68,6 +79,8 @@ with zero extra configuration.
 """
 
 import asyncio
+import datetime
+import hashlib
 import io
 import json
 import random
@@ -82,11 +95,25 @@ from pathlib import Path
 
 import aiohttp
 import av
-import fractions
 import numpy as np
 import socketio
 from quart import Quart, Response, jsonify, request, send_from_directory
 from quart_cors import cors
+
+# ── QUIC / WebTransport (live lobby audio relay) ──
+# See _ensure_quic_cert / QuicPcmRelay / start_quic_server below. This is
+# the ONLY thing that talks raw QUIC in this file — REST, Socket.IO, and
+# the static frontend are all still plain HTTP/WebSocket over the normal
+# TCP server (asgi_app), untouched by any of this.
+from aioquic.asyncio import QuicConnectionProtocol, serve as quic_serve
+from aioquic.h3.connection import H3_ALPN, H3Connection
+from aioquic.h3.events import DatagramReceived, H3Event, HeadersReceived, WebTransportStreamDataReceived
+from aioquic.quic.configuration import QuicConfiguration
+from aioquic.quic.events import ConnectionTerminated, ProtocolNegotiated, QuicEvent
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 import config
 from dotenv import load_dotenv
@@ -214,37 +241,47 @@ class _InstrumentedSession:
 async def startup():
     global http_session
     http_session = _InstrumentedSession(aiohttp.ClientSession())
+    # Fire-and-forget: the QUIC/WebTransport listener (see
+    # start_quic_server further down) runs as its own UDP server
+    # alongside whatever's actually serving `asgi_app` over TCP — it
+    # doesn't block the rest of startup, and a failure here (port in
+    # use, cert generation failed) is logged rather than crashing the
+    # whole process, since REST/Socket.IO/the frontend all work fine
+    # without it — only live lobby audio depends on it.
+    asyncio.create_task(start_quic_server())
 
 
 @app.after_serving
 async def shutdown():
     if http_session:
         await http_session.close()
+    if _quic_server is not None:
+        _quic_server.close()
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Live music relay — one continuous PCM pipeline per lobby, encoded to AAC
-# and written out as a live HLS stream (rolling .m3u8 + short .ts
-# segments, see HLSMuxer) that every listener's <audio> element just
-# points at via hls.js. Replaces two earlier designs: per-client raw-PCM
-# fetch off NodeLink (a client whose network couldn't sustain ~1.5 Mbps
-# would fall behind, get forcibly reseeked by client-side drift
-# correction, and could get skipped to the next track entirely once the
-# host's own unaffected stream reached the end), and later a WebRTC relay
-# (real UDP transport, no signaling server needed to be scaled/kept warm,
-# but every listener needed a full ICE/DTLS handshake and its own
-# RTCPeerConnection, and TURN was required for anyone behind a
-# restrictive NAT/firewall). HLS trades WebRTC's near-zero latency for
-# plain HTTP: listeners are a couple of short segments behind the live
-# edge instead of sample-accurate, but there's no signaling, no ICE/TURN,
-# and any HTTP cache or CDN in front of the server can serve segments
-# for free.
+# Live music relay — one continuous PCM pipeline per lobby, fanned out
+# raw (no encode, no container) to every listener over its own
+# QUIC/WebTransport session. Replaces three earlier designs: per-client
+# raw-PCM fetch off NodeLink (a client whose network couldn't sustain
+# ~1.5 Mbps would fall behind, get forcibly reseeked by client-side
+# drift correction, and could get skipped to the next track entirely
+# once the host's own unaffected stream reached the end); a WebRTC relay
+# (real UDP transport, but every listener needed a full ICE/DTLS
+# handshake and its own RTCPeerConnection, and TURN was required behind
+# a restrictive NAT/firewall); and later HLS (AAC-encode + rolling
+# .m3u8 playlist over plain HTTP — no signaling, but an encode step and
+# a browser-side demuxer/decoder (hls.js) in the loop). QUIC/WebTransport
+# sits between the WebRTC and HLS designs: still a real UDP transport
+# and no AAC encode (raw PCM straight onto a QUIC stream), but a much
+# lighter handshake than full ICE/DTLS — one QUIC connection + one
+# WebTransport CONNECT, no STUN/TURN, no per-listener RTCPeerConnection.
 #
-# The server still does exactly ONE NodeLink fetch per track (not one per
-# listener) — every listener just re-requests the SAME lobby's live.m3u8
-# and .ts segments over plain HTTP, so the PCM itself is only ever
-# produced (and only ever encoded) once regardless of listener count,
-# same cost profile the WebRTC relay had.
+# The server still does exactly ONE NodeLink fetch per track (not one
+# per listener) — every listener's WtListener just gets a copy of the
+# SAME raw PCM frames the relay produces, so the PCM itself is only
+# ever produced once regardless of listener count, same cost profile
+# the WebRTC relay and HLS both had.
 # ═══════════════════════════════════════════════════════════════════
 PCM_RATE = 48000
 PCM_CHANNELS = 2
@@ -252,18 +289,17 @@ PCM_FRAME_SAMPLES = 960                                     # 20ms @ 48kHz
 PCM_FRAME_BYTES = PCM_FRAME_SAMPLES * PCM_CHANNELS * 2      # s16le
 OPUS_BITRATE = 96000   # still used by the separate full-track /api/download encoder (see _encode_pcm_blocking) — unrelated to the live relay now
 
-# ── HLS live output ──
-# Segments this short are what keep listeners close to the live edge —
-# standard HLS players still buffer a few segments before they start
-# playing, so end-to-end lag is roughly HLS_SEGMENT_SECONDS *
-# (HLS_LIST_SIZE + 1), a few seconds at these settings. True sub-second
-# latency needs LL-HLS (partial segments, blocking playlist reload) or a
-# WebRTC-style transport — deliberately not what this is; see the module
-# docstring.
-HLS_SEGMENT_SECONDS = getattr(config, "HLS_SEGMENT_SECONDS", 1)
-HLS_LIST_SIZE = getattr(config, "HLS_LIST_SIZE", 6)      # rolling window of segments kept in memory + in the playlist
-HLS_BITRATE = getattr(config, "HLS_BITRATE", 128000)
-AAC_FRAME_SAMPLES = 1024   # fixed, per the AAC spec — every ADTS frame is exactly this many samples/channel
+# How many 20ms frames a single listener's outbound queue holds before
+# WtListener starts dropping the OLDEST queued frame rather than growing
+# without bound. ~4s of slack: generous enough to absorb a brief stall
+# (a GC pause, a wifi hiccup) without an audible glitch, but bounded so a
+# listener whose network genuinely can't keep up drifts back toward the
+# live edge instead of building an ever-growing backlog that would just
+# mean they hear everything increasingly late forever. Mirrors the
+# "a slow HTTP GET only affects itself" property the old HLSMuxer/WebRTC
+# designs had — see WtListener.push.
+WT_LISTENER_QUEUE_FRAMES = 200
+
 # How often the idle loop wakes to top up silence while the queue is
 # empty. This used to be a single 20ms frame every 15 seconds — fine back
 # when this was one long-held streaming connection per listener (an idle
@@ -276,221 +312,131 @@ AAC_FRAME_SAMPLES = 1024   # fixed, per the AAC spec — every ADTS frame is exa
 # smooth, uninterrupted continuation a queued next track gets (there's
 # never a gap in that case — real audio just keeps flowing). Waking far
 # more often bounds that worst-case gap to something a listener's buffer
-# margin can absorb — and for HLS specifically, it's also what keeps the
-# live playlist itself rolling forward (a fresh segment needs SOME PCM,
-# even silence, arriving often enough to close it) rather than stalling
-# at the live edge for up to 15 seconds. _feed_silence itself always
-# makes up exactly however much wall-clock time has actually elapsed
-# (see its own comment) — this constant only controls how promptly it's
-# given the chance to do that, not how much silence gets fed.
+# margin can absorb. _feed_silence itself always makes up exactly however
+# much wall-clock time has actually elapsed (see its own comment) — this
+# constant only controls how promptly it's given the chance to do that,
+# not how much silence gets fed.
 IDLE_KEEPALIVE_SECONDS = 1.0
 
 
-_ADTS_SAMPLE_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350]
+# ── QUIC / WebTransport listener plumbing ──
+#
+# One WtListener per connected browser tab's WebTransport session for a
+# lobby. A session is accepted (see LobbyQuicProtocol._handle_connect
+# below) by opening ONE unidirectional QUIC stream from server to client
+# right away and handing it to a QuicPcmRelay, which just keeps writing
+# the same raw PCM frames onto it that LobbyRelay's real-time pacing loop
+# produces — no reconnect, no renegotiation, for the listener's entire
+# time in the lobby, exactly like re-requesting the same rolling .m3u8
+# used to work, just over one persistent stream instead of repeated GETs.
+class WtListener:
+    """A dedicated writer task + bounded queue decouple 'the relay just
+    produced a frame' from 'this listener's QUIC stream can currently
+    accept more data' — push() (called from the relay's own task) never
+    blocks, and a listener that can't keep up only ever hurts itself (see
+    WT_LISTENER_QUEUE_FRAMES)."""
+
+    def __init__(self, protocol, session_id):
+        self.protocol = protocol
+        self.session_id = session_id
+        # is_unidirectional=True: this stream only ever carries
+        # server->client audio bytes. Nothing is ever expected back on
+        # it — playback control (play/pause/skip/seek) all still goes
+        # through the existing REST + Socket.IO channels, untouched by
+        # any of this.
+        self.stream_id = protocol.http.create_webtransport_stream(session_id, is_unidirectional=True)
+        self.queue = asyncio.Queue(maxsize=WT_LISTENER_QUEUE_FRAMES)
+        self.closed = False
+        self._task = asyncio.create_task(self._writer())
+
+    def push(self, pcm_bytes):
+        if self.closed:
+            return
+        try:
+            self.queue.put_nowait(pcm_bytes)
+        except asyncio.QueueFull:
+            # Drop the oldest queued frame, not the new one — keeps this
+            # listener as close to the live edge as its network allows
+            # instead of accumulating an ever-growing lag.
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self.queue.put_nowait(pcm_bytes)
+            except asyncio.QueueFull:
+                pass
+
+    async def _writer(self):
+        try:
+            while True:
+                chunk = await self.queue.get()
+                if self.closed:
+                    return
+                self.protocol._quic.send_stream_data(self.stream_id, chunk)
+                self.protocol.transmit()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            traceback.print_exc()
+
+    def close(self):
+        self.closed = True
+        if self._task and not self._task.done():
+            self._task.cancel()
 
 
-def _adts_header(payload_len, sample_rate, channels):
-    """Builds the 7-byte ADTS header (no CRC — protection_absent=1) for
-    one raw AAC frame PyAV's encoder gave us. A bare CodecContext (see
-    HLSMuxer, no container involved) hands back just the raw encoded
-    bitstream with no framing at all — a muxer would normally be the
-    thing adding this, but we ARE the muxer here, by hand, since it's
-    only 7 bytes and means every segment we hand out is a
-    self-describing, independently-parseable ADTS stream (see AAC LC /
-    ADTS format, ISO/IEC 13818-7)."""
-    freq_idx = _ADTS_SAMPLE_RATES.index(sample_rate)
-    frame_len = payload_len + 7
-    buffer_fullness = 0x7FF  # VBR / unknown — the standard value when there's no meaningful bit reservoir to report
-    profile = 1              # AAC LC (object type 2) encoded as (object_type - 1)
-    h = bytearray(7)
-    h[0] = 0xFF
-    h[1] = 0xF1                                                         # syncword low nibble + MPEG-4 + Layer 00 + protection_absent=1
-    h[2] = (profile << 6) | (freq_idx << 2) | ((channels >> 2) & 0x1)
-    h[3] = ((channels & 0x3) << 6) | ((frame_len >> 11) & 0x3)
-    h[4] = (frame_len >> 3) & 0xFF
-    h[5] = ((frame_len & 0x7) << 5) | ((buffer_fullness >> 6) & 0x1F)
-    h[6] = (buffer_fullness & 0x3F) << 2                                # + number_of_raw_data_blocks_in_frame=0 (1 AAC frame per ADTS frame)
-    return bytes(h)
+class QuicPcmRelay:
+    """Fans the SAME real-time-paced raw PCM the relay produces (see
+    LobbyRelay.feed_chunk / _feed_silence) out to every WtListener
+    currently connected for this lobby — the QUIC/WebTransport
+    replacement for the old HLSMuxer, minus the AAC encode/HLS mux
+    entirely: there's no codec and no container here, just the same
+    48kHz stereo s16le frames the relay already produces, written
+    straight onto each listener's own unidirectional QUIC stream.
 
-
-class HLSMuxer:
-    """Feeds the SAME real-time-paced PCM the relay produces (see
-    LobbyRelay.feed_chunk / _feed_silence) into a bare PyAV AAC
-    CodecContext — in-process encoding, no ffmpeg subprocess, no
-    container/muxer at all. Each encoded packet PyAV hands back is
-    exactly one complete AAC frame (AAC_FRAME_SAMPLES samples), so
-    there's no need to re-derive frame boundaries by parsing bytes the
-    way a continuous byte stream off a subprocess would require —
-    _adts_header just wraps each packet with its own 7-byte ADTS header
-    and that's a complete, independently-parseable unit. Consecutive
-    frames get grouped into ~HLS_SEGMENT_SECONDS "segments" purely in
-    memory — a dict of {filename: raw AAC bytes} plus a generated
-    .m3u8 playlist string, both served straight out of RAM by
-    lobby_hls_file below. Nothing is ever written to disk for this — no
-    per-lobby directory, nothing under _hls_live or anywhere else, by
-    design. "Packed audio" (raw ADTS) HLS segments like this are
-    explicitly part of the HLS spec (RFC 8216 §3.4) — no MPEG-TS
-    container needed for audio-only content.
-
-    Same push-one-frame-at-a-time shape as the old WebRTC
-    MusicSourceTrack — LobbyRelay's real-time pacing loop needed no
-    changes at all, only where each frame ends up. Also no background
-    thread needed this time (unlike the earlier ffmpeg-subprocess
-    version) — push() runs the encode inline, synchronously, same as
-    LobbyRelay's other per-frame work already does.
-
-    One instance per lobby, opened once at Lobby creation and kept
-    alive for the lobby's entire life — a lull in pushed frames (paused,
-    or the idle keepalive falling behind) just means the in-flight
-    segment stops growing for a moment, not a reconnect, matching how
-    the WebRTC track used to just sit blocked in recv(). close() closes
-    the encoder; only called when the whole lobby goes away (see
-    LobbyRelay.shutdown / _finalize_leave), never on an ordinary
-    stop/pause.
-    """
+    One instance per lobby, created once at Lobby creation and kept
+    alive for the lobby's entire life, same lifecycle HLSMuxer had —
+    close() is only called when the whole lobby goes away (see
+    LobbyRelay.shutdown), never on an ordinary stop/pause."""
 
     def __init__(self, code):
         self.code = code
-        self.ok = False
-        self.playlist_text = None       # str once at least one segment exists, else None
-        self.segments = {}              # filename -> raw AAC bytes, in memory only
-        self._order = deque()           # (filename, duration) in playlist order, oldest first — mirrors self.segments' keys
-        self._seq = 0                   # next segment's sequence number
-        self._first_seq = 0             # sequence number of the OLDEST segment still in the playlist (EXT-X-MEDIA-SEQUENCE)
-        self._cur_frames = []           # ADTS-wrapped AAC frames accumulated for the in-flight (not yet closed) segment
-        self._target_frames = max(1, round(0.2 * PCM_RATE / AAC_FRAME_SAMPLES))   # short first segment
-        self._ts = 0                    # running sample count fed to the encoder — see push()
-        self._pcm_time_base = fractions.Fraction(1, PCM_RATE)
-        self.encoder = None
-        self.resampler = None
-        try:
-            self.encoder = av.CodecContext.create("aac", "w")
-            self.encoder.sample_rate = PCM_RATE
-            self.encoder.format = "fltp"     # the format libavcodec's built-in aac encoder actually wants
-            self.encoder.layout = "stereo"
-            self.encoder.bit_rate = HLS_BITRATE
-            self.encoder.time_base = self._pcm_time_base
-            try:
-                self.encoder.open()  # some PyAV versions open lazily on first encode() instead — harmless either way
-            except AttributeError:
-                pass
-            self.resampler = av.AudioResampler(format="fltp", layout="stereo", rate=PCM_RATE)
-            self.ok = True
-            # Prime the playlist immediately: nothing else pushes into
-            # this until a track actually starts playing (see
-            # LobbyRelay). Without this, a client joining (or even just
-            # racing the very first play) could ask for live.m3u8 before
-            # a single segment exists in memory yet.
-            warmup_frames = int(round(PCM_RATE / PCM_FRAME_SAMPLES * 0.5))
-            silent_bytes = bytes(PCM_FRAME_BYTES)
-            for _ in range(warmup_frames):
-                self.push(silent_bytes)
-            if self.playlist_text is not None:
-                print(f"[hls {code}] ready — first segment in memory")
-            else:
-                print(f"[hls {code}] WARNING: no segment ready after warm-up — encoder may need more than {warmup_frames} frames to produce its first packet (AAC encoders have some priming delay); this should resolve itself once real playback starts and keeps feeding it")
-        except Exception:
-            traceback.print_exc()
-            print(f"[hls {code}] failed to open PyAV AAC encoder for HLS output — is `av` built with an AAC encoder?")
-            self.ok = False
+        self.ok = True   # no encoder to fail open here — always ready for a listener to join
+        self.listeners = set()
+
+    def add_listener(self, listener):
+        self.listeners.add(listener)
+
+    def remove_listener(self, listener):
+        self.listeners.discard(listener)
+        listener.close()
 
     def push(self, pcm_bytes):
         """Called by the relay for every real 20ms PCM frame AND every
         silence frame — same shape either way, this never needs to know
-        which it's getting."""
-        if not self.ok:
-            return
-        try:
-            arr = np.frombuffer(pcm_bytes, dtype="<i2").reshape(1, -1)
-            frame = av.AudioFrame.from_ndarray(arr, format="s16", layout="stereo")
-            frame.sample_rate = PCM_RATE
-            frame.pts = self._ts
-            frame.time_base = self._pcm_time_base
-            self._ts += frame.samples
-            for rframe in self.resampler.resample(frame):
-                for packet in self.encoder.encode(rframe):
-                    self._on_aac_packet(bytes(packet))
-        except Exception:
-            traceback.print_exc()
-            self.ok = False
-
-    def _on_aac_packet(self, raw_aac):
-        """One fully-encoded AAC frame (no framing yet) straight from
-        the encoder — wrap it in its own ADTS header and add it to the
-        in-flight segment, closing that segment once it's hit its
-        target length."""
-        self._cur_frames.append(_adts_header(len(raw_aac), PCM_RATE, PCM_CHANNELS) + raw_aac)
-        if len(self._cur_frames) >= self._target_frames:
-            self._close_segment()
-
-    def _close_segment(self):
-        """Finalizes the in-flight segment into self.segments +
-        self.playlist_text, evicting the oldest if the rolling window is
-        full."""
-        frames = self._cur_frames
-        self._cur_frames = []
-        self._target_frames = max(1, round(HLS_SEGMENT_SECONDS * PCM_RATE / AAC_FRAME_SAMPLES))  # every segment AFTER the first uses the real target
-        if not frames:
-            return
-        filename = f"seg_{self._seq:08d}.aac"
-        duration = len(frames) * AAC_FRAME_SAMPLES / PCM_RATE
-        new_segments = dict(self.segments)
-        new_segments[filename] = b"".join(frames)
-        self._order.append((filename, duration))
-        while len(self._order) > HLS_LIST_SIZE:
-            old_name, _ = self._order.popleft()
-            new_segments.pop(old_name, None)
-            self._first_seq += 1
-        self.segments = new_segments  # whole-object reassignment — safe to read from a request handler without a lock (CPython GIL makes a single reference swap atomic)
-        self._seq += 1
-
-        lines = [
-            "#EXTM3U",
-            "#EXT-X-VERSION:3",
-            f"#EXT-X-TARGETDURATION:{max(1, round(HLS_SEGMENT_SECONDS))}",
-            f"#EXT-X-MEDIA-SEQUENCE:{self._first_seq}",
-        ]
-        for name, dur in self._order:
-            lines.append(f"#EXTINF:{dur:.3f},")
-            lines.append(name)
-        self.playlist_text = "\n".join(lines) + "\n"  # no #EXT-X-ENDLIST — this is a live, ongoing playlist
+        which it's getting (identical contract to the old HLSMuxer.push)."""
+        for listener in list(self.listeners):
+            listener.push(pcm_bytes)
 
     def close(self):
-        if self.encoder is None:
-            return
-        try:
-            # Flush whatever's left buffered inside the encoder/resampler
-            # into one final (possibly short) segment rather than just
-            # dropping it.
-            if self.ok and self.resampler:
-                for rframe in self.resampler.resample(None):
-                    for packet in self.encoder.encode(rframe):
-                        self._on_aac_packet(bytes(packet))
-            if self.ok and self.encoder:
-                for packet in self.encoder.encode(None):
-                    self._on_aac_packet(bytes(packet))
-            self._close_segment()
-        except Exception:
-            traceback.print_exc()
-        finally:
-            self.encoder = None
-            self.resampler = None
-            self.ok = False
-            self.segments = {}
-            self.playlist_text = None
+        for listener in list(self.listeners):
+            listener.close()
+        self.listeners.clear()
+        self.ok = False
 
 
 class LobbyRelay:
-    """Owns the single live NodeLink -> PCM -> HLS pipeline for one lobby."""
+    """Owns the single live NodeLink -> PCM -> QUIC pipeline for one lobby."""
 
     def __init__(self, lobby):
         self.lobby = lobby
         self.generation = 0          # bumped on every fresh session (skip/seek/filter change)
-        # The single shared HLS encode every listener's <audio> element
-        # just re-requests segments from over plain HTTP (see
-        # lobby_hls_file) — replaces the old per-listener HTTP `_Listener`
-        # queue dict, and later the WebRTC MusicSourceTrack, entirely.
-        self.hls = HLSMuxer(lobby.code)
+        # The single shared PCM fan-out every listener's WebTransport
+        # session reads from (see QuicPcmRelay) — replaces the old
+        # per-listener HTTP `_Listener` queue dict, then the WebRTC
+        # MusicSourceTrack, then the AAC/HLS encode, entirely.
+        self.audio_out = QuicPcmRelay(lobby.code)
         self._task = None
         self._resume_event = asyncio.Event()
         self._resume_event.set()     # not paused by default
@@ -501,11 +447,11 @@ class LobbyRelay:
         # its raw PCM buffered here WHILE the current track is still
         # streaming — so when the current track's NodeLink stream ends
         # naturally, _pump_track can start feeding the next track's audio
-        # into the HLS encode immediately, with no dead air. Host-controlled
+        # into the relay immediately, with no dead air. Host-controlled
         # per lobby (self.lobby.gapless — see the /gapless route);
         # ensure_preload() no-ops entirely while it's off, so a natural
         # advance falls through to _pump_track's live NodeLink fetch
-        # instead, which is what actually produces the gap — the HLS encode
+        # instead, which is what actually produces the gap — the relay
         # itself is untouched either way; only the boundary is quiet
         # rather than instant.
         # Shape: {"track": dict, "chunks": [bytes], "done": bool, "task": Task}
@@ -517,7 +463,7 @@ class LobbyRelay:
         # went dead, AND whatever played next had to establish a fresh
         # connection (see resume_or_start below). Now _run instead parks
         # itself in an idle wait right where it is: same task, same
-        # HLS encode, nobody reconnects. _feed_silence tops it up at
+        # relay, nobody reconnects. _feed_silence tops it up at
         # exactly real-time speed (see its own comment for why "exactly"
         # matters) every IDLE_KEEPALIVE_SECONDS, which keeps a listener's
         # playback buffer from ever running dry.
@@ -569,11 +515,10 @@ class LobbyRelay:
         return {
             "generation": self.generation,
             "idle": self._idle,
-            # HLS listeners are anonymous HTTP GETs, not a tracked
-            # connection — the server has no reliable way to count who's
-            # actually got the stream open, so this just reports how many
-            # participants are in the lobby as a rough proxy.
-            "listeners": len(self.lobby.participants),
+            # Unlike the old HLS design (anonymous HTTP GETs, no tracked
+            # connection), every QUIC listener is a real WtListener the
+            # server holds a reference to — an exact count, not a proxy.
+            "listeners": len(self.audio_out.listeners),
             "hasPreload": self._preload is not None,
             "framesSent": self.stats["frames_sent"],
             "pcmBytesIn": self.stats["pcm_bytes_in"],
@@ -687,7 +632,7 @@ class LobbyRelay:
     async def start_track(self, track, position_ms, filters):
         """(Re)start the pipeline for `track` at `position_ms` with
         `filters`. Bumps `generation` — the hard cut just becomes part of
-        the continuous HLS encode's next couple of frames; listeners hear
+        the continuous relay's next couple of frames; listeners hear
         it whenever their player reaches that point in the stream, no
         reconnect involved. This is for explicit, deliberate track
         changes (play/skip/seek/filters) — a NATURAL end-of-track advance
@@ -743,7 +688,7 @@ class LobbyRelay:
         self._task = None
 
     async def stop(self):
-        """Cancel the pipeline task without tearing down the HLS output
+        """Cancel the pipeline task without tearing down the relay output
         itself — the lobby may still be around and get a new track later
         (see resume_or_start), so the encode/playlist stay open, they
         just stop receiving new frames until then. For a full teardown
@@ -758,15 +703,15 @@ class LobbyRelay:
     async def shutdown(self):
         """Full teardown — called once, when the lobby's last participant
         leaves (see _finalize_leave). Stops the pipeline AND finalizes +
-        deletes the HLS output, unlike stop() above."""
+        closes out every connected listener, unlike stop() above."""
         await self.stop()
-        self.hls.close()
+        self.audio_out.close()
 
     # ---- the actual pipeline ----------------------------------------------
     # Runs for an entire GENERATION, not just one track: as long as tracks
     # keep advancing naturally (queue autoplay), this stays in ONE pipeline
-    # and just keeps pushing more PCM frames into the HLS encode — that's
-    # what makes the transition gapless (no new HLS reconnect, no generation
+    # and just keeps pushing more PCM frames into the relay — that's
+    # what makes the transition gapless (no listener reconnect, no generation
     # bump, no listener reconnect). It only returns (ending the
     # generation) when the queue truly runs dry or something external
     # bumps `generation` out from under it (explicit play/skip/seek/
@@ -837,7 +782,7 @@ class LobbyRelay:
                 # actually finished.
                 #
                 # Instead: stay right here. Task stays alive, generation
-                # doesn't change, the HLS encode keeps flowing, nobody
+                # doesn't change, the relay keeps flowing, nobody
                 # reconnects. Waking every IDLE_KEEPALIVE_SECONDS and letting
                 # _feed_silence make up exactly however much real time has
                 # passed keeps a listener's playback buffer continuously
@@ -868,7 +813,7 @@ class LobbyRelay:
             traceback.print_exc()
 
     async def _pump_track(self, track, position_ms, filters, my_generation):
-        """Streams ONE track's PCM into the HLS encode (and onward to every
+        """Streams ONE track's PCM into the relay (and onward to every
         listener over plain HTTP). Returns "ended" if the track's
         audio source ended naturally (caller should advance to whatever's
         next), "interrupted" if the session changed out from under it
@@ -893,7 +838,7 @@ class LobbyRelay:
                 return
             frame_bytes = bytes(pcm_buf) + bytes(PCM_FRAME_BYTES - len(pcm_buf))
             pcm_buf.clear()
-            self.hls.push(frame_bytes)
+            self.audio_out.push(frame_bytes)
 
         async def feed_chunk(chunk):
             nonlocal anchor_corrected
@@ -901,7 +846,7 @@ class LobbyRelay:
             while len(pcm_buf) >= PCM_FRAME_BYTES:
                 frame_bytes = bytes(pcm_buf[:PCM_FRAME_BYTES])
                 del pcm_buf[:PCM_FRAME_BYTES]
-                self.hls.push(frame_bytes)
+                self.audio_out.push(frame_bytes)
                 self.stats["frames_sent"] += 1
                 self.stats["pcm_bytes_in"] += len(frame_bytes)
                 self.stats["last_frame_ts"] = time.time()
@@ -1042,7 +987,7 @@ class LobbyRelay:
     def _feed_silence(self):
         """Enough digital silence to keep the SAME real-time clock feed_chunk
         uses (self._pace_next) caught up to wall time — pushed to
-        the HLS encode exactly like real audio, back-to-back with no
+        the relay exactly like real audio, back-to-back with no
         per-frame sleep between them (it's inaudible filler, nothing for a
         listener to sync against, so there's no reason to pace it out one
         frame at a time the way real audio has to be).
@@ -1076,7 +1021,7 @@ class LobbyRelay:
             return
         silent_bytes = bytes(PCM_FRAME_BYTES)
         for _ in range(frame_count):
-            self.hls.push(silent_bytes)
+            self.audio_out.push(silent_bytes)
 
     async def _advance_for_gapless(self, my_generation):
         """A track's audio source just ended naturally. Pop the next one
@@ -1447,6 +1392,235 @@ async def broadcast(lobby, event, data):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# QUIC / WebTransport listener — the actual transport for QuicPcmRelay/
+# WtListener (defined earlier). Runs as its own UDP server, independent
+# of the TCP server uvicorn runs for `asgi_app` — WebTransport needs a
+# real QUIC connection (an HTTP/3 CONNECT), which nothing in the Quart/
+# ASGI stack speaks, so this is a second, much smaller server started
+# alongside it (see start_quic_server, kicked off from the existing
+# `startup()` hook above). It only ever handles ONE thing: the
+# WebTransport handshake for /api/lobby/<code>/audio — no general HTTP/3
+# request handling, no static files, nothing else. REST, Socket.IO and
+# the frontend are all still served over the normal TCP HTTP server,
+# completely untouched by any of this.
+#
+# Defined down here (after LOBBIES exists) purely for readability —
+# LobbyQuicProtocol only looks LOBBIES up at connect time, long after
+# the whole module has finished loading, so the actual definition order
+# doesn't matter to Python.
+# ═══════════════════════════════════════════════════════════════════
+QUIC_PORT = getattr(config, "QUIC_PORT", config.FLASK_PORT)   # same NUMBER as the HTTP server — TCP and UDP are independent port namespaces, so this is just a convenience (one number to open/forward in a firewall), never a shared socket
+QUIC_CERT_FILE = Path(getattr(config, "QUIC_CERT_FILE", "quic_cert.pem"))
+QUIC_KEY_FILE = Path(getattr(config, "QUIC_KEY_FILE", "quic_key.pem"))
+# WebTransport's serverCertificateHashes pinning (see GET /api/quic-info
+# below) — how a browser trusts this self-signed cert with no real CA
+# involved — requires the certificate's validity window to be 14 days or
+# less. Regenerating a couple of days early leaves slack so the server
+# is never caught serving an already-expired cert after being offline a
+# while.
+QUIC_CERT_DAYS = getattr(config, "QUIC_CERT_DAYS", 12)
+
+_quic_cert_hash_hex = None   # hex sha-256 of the DER cert; set by _ensure_quic_cert() below
+_quic_server = None          # the aioquic asyncio.Server instance once start_quic_server() has run
+
+
+def _ensure_quic_cert():
+    """Self-signed EC (P-256) cert for the WebTransport listener,
+    (re)generated whenever it's missing, unreadable, or within a day of
+    expiring. Returns the SHA-256 hash (hex) of the DER-encoded
+    certificate — what the browser pins via serverCertificateHashes
+    instead of validating a real certificate chain (see /api/quic-info
+    and the connect code in webtransport-player.js). EC P-256 + SHA-256
+    signing matches aioquic's own test fixtures — the combination it's
+    most thoroughly exercised against."""
+    global _quic_cert_hash_hex
+    regenerate = True
+    if QUIC_CERT_FILE.exists() and QUIC_KEY_FILE.exists():
+        try:
+            existing = x509.load_pem_x509_certificate(QUIC_CERT_FILE.read_bytes())
+            if existing.not_valid_after_utc > datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1):
+                regenerate = False
+        except Exception:
+            pass  # unreadable/corrupt on disk — fall through and regenerate
+
+    if regenerate:
+        import ipaddress
+        key = ec.generate_private_key(ec.SECP256R1())
+        subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "nodelink-lobby")])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(minutes=5))
+            .not_valid_after(now + datetime.timedelta(days=QUIC_CERT_DAYS))
+            .add_extension(
+                x509.SubjectAlternativeName([x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256())
+        )
+        QUIC_CERT_FILE.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        QUIC_KEY_FILE.write_bytes(key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption(),
+        ))
+        print(f"[quic] generated a fresh self-signed cert (valid {QUIC_CERT_DAYS}d) at {QUIC_CERT_FILE}")
+
+    cert = x509.load_pem_x509_certificate(QUIC_CERT_FILE.read_bytes())
+    _quic_cert_hash_hex = hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).digest().hex()
+    return _quic_cert_hash_hex
+
+
+_LOBBY_AUDIO_PATH_RE = re.compile(r"^/api/lobby/([A-Za-z0-9]{6})/audio$")
+
+
+class LobbyQuicProtocol(QuicConnectionProtocol):
+    """One instance per QUIC connection — i.e. one browser tab's
+    WebTransport connection to the lobby relay. Handles exactly one
+    HTTP/3 request shape: an extended CONNECT with `:protocol:
+    webtransport` to /api/lobby/<code>/audio, accepted by replying
+    `:status: 200` on that same stream (the WebTransport-over-HTTP/3
+    handshake) — then hands the resulting session straight to that
+    lobby's QuicPcmRelay as a new WtListener. Nothing else is served
+    here; a client never reuses this connection for anything but that
+    one session."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.http = None
+        self._listeners = {}   # session_id (== the CONNECT stream's id) -> WtListener
+
+    def quic_event_received(self, event: QuicEvent):
+        if isinstance(event, ProtocolNegotiated):
+            if event.alpn_protocol in H3_ALPN:
+                self.http = H3Connection(self._quic, enable_webtransport=True)
+        elif isinstance(event, ConnectionTerminated):
+            # NOTE: aioquic's QuicServer drives each QUIC connection's
+            # protocol instance by hand (there's one real asyncio
+            # transport for the whole UDP socket, shared across every
+            # client) — so unlike a normal asyncio protocol, this
+            # server-side instance's own connection_lost() is NEVER
+            # called by anything; ConnectionTerminated arriving here is
+            # the only reliable signal that this client is gone (tab
+            # closed, navigated away, network dropped). Confirmed by
+            # testing: overriding connection_lost() looked correct but
+            # silently never ran.
+            self._cleanup_listeners()
+        if self.http is not None:
+            for h3_event in self.http.handle_event(event):
+                self._h3_event_received(h3_event)
+
+    def _h3_event_received(self, event: H3Event):
+        if isinstance(event, HeadersReceived):
+            self._handle_connect(event)
+        # WebTransportStreamDataReceived / DatagramReceived (client ->
+        # server) are deliberately ignored — this session is one-way
+        # (server -> client audio only); playback control stays on the
+        # existing REST + Socket.IO channels.
+
+    def _handle_connect(self, event: HeadersReceived):
+        headers = dict(event.headers)
+        method = headers.get(b":method", b"").decode()
+        protocol = headers.get(b":protocol", b"").decode()
+        path = headers.get(b":path", b"").decode()
+
+        def reject(status: bytes):
+            self.http.send_headers(stream_id=event.stream_id, headers=[(b":status", status)], end_stream=True)
+            self.transmit()
+
+        if method != "CONNECT" or protocol != "webtransport":
+            reject(b"400")
+            return
+        m = _LOBBY_AUDIO_PATH_RE.match(path)
+        lobby = LOBBIES.get(m.group(1).upper()) if m else None
+        if lobby is None:
+            reject(b"404")
+            return
+
+        # Per the WebTransport-over-HTTP/3 draft, the session id IS the
+        # CONNECT request's own stream id — accepting just means
+        # answering that stream with a 200, no body.
+        session_id = event.stream_id
+        self.http.send_headers(stream_id=session_id, headers=[(b":status", b"200")])
+        self.transmit()
+
+        listener = WtListener(self, session_id)
+        self._listeners[session_id] = listener
+        lobby.relay.audio_out.add_listener(listener)
+        print(f"[quic {lobby.code}] listener connected ({len(lobby.relay.audio_out.listeners)} total)")
+        listener._lobby_relay = lobby.relay  # so _cleanup_listeners below can unregister it
+
+    def _cleanup_listeners(self):
+        for listener in list(self._listeners.values()):
+            relay = getattr(listener, "_lobby_relay", None)
+            if relay is not None:
+                relay.audio_out.remove_listener(listener)
+            else:
+                listener.close()
+        self._listeners.clear()
+
+
+async def start_quic_server():
+    """Starts the UDP/QUIC listener on the SAME PORT NUMBER as the HTTP
+    server (see QUIC_PORT above). Called fire-and-forget from the
+    existing `startup()` hook, so it starts in the same asyncio event
+    loop/process uvicorn actually ends up serving `asgi_app` from.
+    Failure here (port in use, cert generation failed, `aioquic` not
+    installed correctly) is logged and swallowed rather than crashing
+    the whole process — REST/Socket.IO/the frontend all work fine
+    without it; only live lobby audio depends on it."""
+    global _quic_server
+    if _quic_server is not None:
+        return
+    try:
+        cert_hash = _ensure_quic_cert()
+        configuration = QuicConfiguration(alpn_protocols=H3_ALPN, is_client=False)
+        # WebTransport (H3Connection(enable_webtransport=True)) advertises
+        # H3_DATAGRAM support in its SETTINGS regardless of whether this
+        # app actually uses unreliable datagrams (it doesn't — audio only
+        # ever goes out on reliable per-listener streams, see WtListener)
+        # — but that advertisement is a protocol violation unless the
+        # QUIC layer itself has the datagram extension turned on, which
+        # is exactly this line. Skipping it, the connection completes its
+        # TLS handshake and then immediately tears itself down with
+        # H3_SETTINGS_ERROR the moment the client sends its own SETTINGS
+        # frame — caught by testing (see the WebTransport E2E test run
+        # against this file), not something you'd notice from a plain
+        # syntax check.
+        configuration.max_datagram_frame_size = 65536
+        configuration.load_cert_chain(str(QUIC_CERT_FILE), str(QUIC_KEY_FILE))
+        bind_host = config.FLASK_HOST
+        _quic_server = await quic_serve(
+            bind_host,
+            QUIC_PORT,
+            configuration=configuration,
+            create_protocol=LobbyQuicProtocol,
+        )
+        print(f"[quic] WebTransport listener on udp://{bind_host}:{QUIC_PORT} (cert sha-256 {cert_hash[:16]}…)")
+    except Exception:
+        traceback.print_exc()
+        print("[quic] failed to start the WebTransport listener — lobby audio will not work until this is fixed (is the UDP port already in use? is `aioquic`/`cryptography` installed?)")
+
+
+@app.route("/api/quic-info")
+async def quic_info():
+    """Everything a browser needs to open a lobby's WebTransport session
+    itself: which UDP port to connect to, and the self-signed cert's
+    hash to pin via serverCertificateHashes (see webtransport-player.js)
+    since there's no real CA involved. `path` is a template — the client
+    fills in `{code}` with the lobby it's joining."""
+    if _quic_cert_hash_hex is None:
+        return jsonify({"error": "QUIC listener not ready yet — try again in a moment"}), 503
+    return jsonify({
+        "port": QUIC_PORT,
+        "certHashHex": _quic_cert_hash_hex,
+        "path": "/api/lobby/{code}/audio",
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Participant departure — shared by the explicit /leave endpoint AND by
 # Socket.IO disconnects (tab close, refresh, network drop). A dropped
 # socket alone isn't necessarily a real departure — socket.io auto-
@@ -1458,7 +1632,7 @@ async def broadcast(lobby, event, data):
 async def _finalize_leave(lobby, client_id):
     """Remove a participant for real: promote a new host if they were
     host, broadcast the change, and tear the whole lobby down (including
-    its HLS output) if that was the last participant."""
+    every listener's session) if that was the last participant."""
     if client_id not in lobby.participants:
         return  # already handled by a prior call (explicit leave + a
                  # later-expiring grace-period check both land here)
@@ -1876,40 +2050,6 @@ async def post_chat(code):
 
 def _require_host(lobby, client_id):
     return lobby.host_id == client_id
-
-
-@app.route("/api/lobby/<code>/hls/<path:filename>")
-async def lobby_hls_file(code, filename):
-    """Serves one lobby's live HLS output — live.m3u8 and its rolling
-    AAC segments (see HLSMuxer) — straight out of memory, nothing ever
-    touches disk for this. This IS the music transport now (see
-    Lobby._connectMedia in lobby.js): every listener's <audio> element
-    points hls.js at .../hls/live.m3u8 and the browser does the rest
-    with plain HTTP GETs, no signaling involved."""
-    lobby = get_lobby_or_404(code)
-    if not lobby or not lobby.relay.hls.ok:
-        return jsonify({"error": "not found"}), 404
-    hls = lobby.relay.hls
-    norm = filename.replace("\\", "/")
-    if ".." in norm or "/" in norm:
-        return jsonify({"error": "not found"}), 404
-
-    if norm == "live.m3u8":
-        playlist = hls.playlist_text
-        if playlist is None:
-            return jsonify({"error": "not ready yet"}), 404
-        # The playlist rewrites on every segment — a cached copy is a
-        # stale (or, worse, half-evicted-segment) one.
-        return Response(playlist, mimetype="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
-
-    data = hls.segments.get(norm)
-    if data is None:
-        return jsonify({"error": "not found"}), 404
-    # Segments themselves are immutable once written (a new filename
-    # every time), so a short cache is safe — but they DO get evicted
-    # from memory once HLS_LIST_SIZE segments have passed them, so keep
-    # this well under how long that eviction typically takes.
-    return Response(data, mimetype="audio/aac", headers={"Cache-Control": "public, max-age=10"})
 
 
 
@@ -2795,7 +2935,7 @@ if __name__ == "__main__":
     import uvicorn
 
     print(f"[NodeLink Lobby Server] NodeLink node: {NL_HOST}")
-    print(f"[NodeLink Lobby Server] Lobby music transport: HLS (AAC, {HLS_SEGMENT_SECONDS}s segments)")
+    print(f"[NodeLink Lobby Server] Lobby music transport: raw PCM over QUIC/WebTransport (udp/{QUIC_PORT})")
     print(f"[NodeLink Lobby Server] Realtime transport: Socket.IO (WebSocket, long-polling fallback)")
     print(f"[NodeLink Lobby Server] Listening on http://{config.FLASK_HOST}:{config.FLASK_PORT}")
 

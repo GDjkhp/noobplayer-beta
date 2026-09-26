@@ -87,8 +87,12 @@ const S = {
     displayName: '',
     participants: [],
     socket: null,       // Socket.IO client
-    hls: null,           // Hls.js instance attached to #lobby-audio (see Lobby._connectMedia) — null when native HLS (Safari) is used instead
+    // No `hls`/transport handle here anymore — the WebTransport session
+    // and its audio scheduler both live inside S.player (a
+    // WebTransportPlayer, see webtransport-player.js /
+    // Lobby._connectMedia), destroyed the same way for every mode via
+    // S.player.destroy().
     lastServerState: null,
-    relayGen: 0,        // last-seen LobbyRelay generation — bumps on a hard cut (skip/seek/filter change); the HLS stream itself keeps flowing across this, nothing client-side needs to react to it anymore
+    relayGen: 0,        // last-seen LobbyRelay generation — bumps on a hard cut (skip/seek/filter change); the relay's PCM stream itself keeps flowing across this, nothing client-side needs to react to it anymore
   },
 };

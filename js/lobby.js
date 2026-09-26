@@ -3,12 +3,15 @@
    Lobby — server mode. Talks to the Flask backend for:
      - lobby create/join/browse (REST)
      - shared playback state + chat (Socket.IO push)
-     - music over a live HLS stream (see Lobby._connectMedia) — a plain
-       HTTP GET of the lobby's rolling .m3u8 playlist, played back via
-       hls.js (native HLS in Safari). Replaces the old WebRTC relay:
-       no signaling, no ICE/TURN, but a couple of seconds behind the
-       live edge instead of sample-accurate (see server.py's HLSMuxer).
-       Voice chat has been removed along with WebRTC.
+     - music over a live QUIC/WebTransport session (see
+       Lobby._connectMedia) — one raw-PCM stream straight out of the
+       server's relay, no signaling handshake beyond the WebTransport
+       CONNECT itself (see server.py's QuicPcmRelay/LobbyQuicProtocol).
+       Replaces the old WebRTC relay (no ICE/TURN, but a little behind
+       the live edge instead of sample-accurate) and, later, HLS (no
+       AAC encode/container or hls.js dependency anymore either — see
+       WebTransportPlayer). Voice chat has been removed along with
+       WebRTC.
 ═══════════════════════════════════════════ */
 const Lobby = {
 
@@ -71,16 +74,14 @@ const Lobby = {
   },
 
   // Tears down whatever lobby connection is currently active — socket,
-  // Hls instance, the <audio> element's src, and a best-effort server-side
-  // leave for the OLD lobby — without leave()'s auto-rejoin dance. Called
-  // from _enterLobby so both create() and join() get this for free; a
-  // plain first join (S.lobby.active still false) is a no-op.
+  // the WebTransport session, and a best-effort server-side leave for
+  // the OLD lobby — without leave()'s auto-rejoin dance. Called from
+  // _enterLobby so both create() and join() get this for free; a plain
+  // first join (S.lobby.active still false) is a no-op.
   _teardownCurrent() {
     if (!S.lobby.active) return;
     if (S.lobby.socket) { try { S.lobby.socket.disconnect(); } catch (_) {} }
-    if (S.lobby.hls) { try { S.lobby.hls.destroy(); } catch (_) {} }
-    const lobbyAudio = document.getElementById('lobby-audio');
-    if (lobbyAudio) { lobbyAudio.pause(); lobbyAudio.removeAttribute('src'); lobbyAudio.load(); }
+    if (S.player) { try { S.player.destroy(); } catch (_) {} S.player = null; }
     if (S.lobby.code) LobbyAPI.leave(S.lobby.code, S.lobby.clientId).catch(() => {});
   },
 
@@ -88,12 +89,12 @@ const Lobby = {
     // Switching straight from one lobby into another — e.g. picking a
     // different one from Public Lobbies while already sitting in your own
     // auto-created lobby — skips leave()'s teardown entirely. Without this,
-    // the OLD socket and, worse, the OLD Hls instance linger alongside the
-    // new ones and both fight over the same #lobby-audio element: the new
-    // lobby's state syncs fine (so the player shows "playing"), but its
-    // real AAC segments never actually load because hls.js #1 is still
-    // attached to the element hls.js #2 just tried to claim. A first-ever
-    // join has nothing active yet, so this is a no-op then.
+    // the OLD socket and, worse, the OLD WebTransportPlayer linger
+    // alongside the new ones: the new lobby's state syncs fine (so the
+    // player shows "playing"), but its real audio never actually arrives
+    // because there's still a session #1 connected and reading frames
+    // instead of session #2. A first-ever join has nothing active yet,
+    // so this is a no-op then.
     this._teardownCurrent();
 
     S.mode = 'server';
@@ -113,7 +114,7 @@ const Lobby = {
     document.getElementById('sdot')?.classList.add('ok');
 
     this._connectSocket(code, clientId);
-    this._connectMedia();  // fire-and-forget — points #lobby-audio at the lobby's live HLS stream; see below
+    this._connectMedia();  // fire-and-forget — opens the lobby's live WebTransport audio session; see below
     UI.applyLockState();
     UI.renderConfigTab();
     toast(`Joined lobby ${code}${isHost ? ' as host' : ''}`, 'success');
@@ -274,11 +275,8 @@ const Lobby = {
     const displayName = S.lobby.displayName || localStorage.getItem('nl_display_name') || 'Guest';
 
     if (S.lobby.socket) { S.lobby.socket.disconnect(); S.lobby.socket = null; }
-    if (S.lobby.hls) { try { S.lobby.hls.destroy(); } catch (_) {} S.lobby.hls = null; }
-    const lobbyAudio = document.getElementById('lobby-audio');
-    if (lobbyAudio) { lobbyAudio.pause(); lobbyAudio.removeAttribute('src'); lobbyAudio.load(); }
     if (S.lobby.code) await LobbyAPI.leave(S.lobby.code, S.lobby.clientId);
-    Engine._stopLocal();
+    Engine._stopLocal();  // also destroys S.player (the WebTransportPlayer, if any) — see engine.js
     S.current = null; S.queue = [];
     // loopMode/autoplay/autoQueue were MIRRORS of the lobby's server-side
     // values while we were in it. Leaving hands ownership back to this
@@ -288,7 +286,7 @@ const Lobby = {
     S.autoQueue = []; S.autoQueueCount = 0;
     S.history = [];
     S.mode = null;
-    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, hls:null, lastServerState:null, relayGen:0 };
+    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, lastServerState:null, relayGen:0 };
     document.getElementById('hdr-lobby').style.display = 'none';
     document.getElementById('tab-chat-btn').style.display = 'none';
     document.getElementById('chat-log').innerHTML = '';
@@ -306,70 +304,38 @@ const Lobby = {
     UI.renderConfigTab();
   },
 
-  /* ───────── music — live HLS stream ─────────
-     _connectMedia() runs once, right on joining the lobby: it points
-     #lobby-audio at the lobby's rolling live.m3u8 playlist (see
-     LobbyAPI.hlsUrl / server.py's HLSMuxer) via hls.js, which handles
-     the playlist polling and segment fetch/buffer/feed loop. Safari (and
-     any browser with native HLS support) skips hls.js entirely and just
-     sets the <audio> element's src directly — canPlayType covers that.
+  /* ───────── music — live WebTransport/QUIC audio session ─────────
+     _connectMedia() runs once, right on joining the lobby: it opens a
+     WebTransport session to the lobby's live PCM relay (see
+     LobbyAPI.quicInfo/quicUrl, server.py's QuicPcmRelay/
+     LobbyQuicProtocol) and hands it to S.player (a WebTransportPlayer —
+     see webtransport-player.js), which reads the raw PCM straight into
+     its own AudioContext scheduler.
 
-     No signaling round-trip like the old WebRTC connect — the URL is
-     stable and joinable immediately, hls.js just starts pulling
-     segments over plain HTTP. A hard cut (skip/seek/filter change,
-     `relayGen` bumping) doesn't need a reconnect either: it's just more
-     audio arriving in the same continuous stream (see HLSMuxer in
-     server.py) — hls.js's own live-playlist polling picks it up on its
-     own. */
+     Ordering note: S.player is normally created lazily by
+     Engine._lobbySync the first time server-authoritative state comes
+     in — and _enterLobby applies `initialState` synchronously right
+     after calling this (fire-and-forget), so _lobbySync very likely
+     runs and creates S.player BEFORE this function's own await calls
+     resolve. This creates S.player itself too, guarded the same way,
+     so it works regardless of which one gets there first.
+
+     No signaling round-trip like the old WebRTC connect beyond the one
+     WebTransport handshake itself — once connected, a hard cut
+     (skip/seek/filter change, `relayGen` bumping) doesn't need a
+     reconnect either: it's just more audio arriving in the same
+     continuous relay (see QuicPcmRelay in server.py) — the read loop in
+     WebTransportPlayer picks it up on its own. */
   async _connectMedia() {
-    const audio = document.getElementById('lobby-audio');
-    if (!audio) return;
-    // Defensive: _teardownCurrent (called from _enterLobby) should already
-    // guarantee this never runs twice without a destroy() in between, but
-    // belt-and-suspenders — two live Hls instances on the same <audio>
-    // element means the second one's segments silently never load.
-    if (S.lobby.hls) { try { S.lobby.hls.destroy(); } catch (_) {} S.lobby.hls = null; }
-    const url = LobbyAPI.hlsUrl(S.lobby.code);
-
-    if (window.Hls && Hls.isSupported()) {
-      const hls = new Hls({
-        // Keep the client's own buffer short too — a big buffer just
-        // means sitting further from the live edge, which defeats the
-        // point of the server's short (see config.HLS_SEGMENT_SECONDS)
-        // segments. liveSyncDurationCount is "how many segments behind
-        // the playlist head to target", the hls.js analogue of
-        // HLS_LIST_SIZE on the server.
-        liveSyncDurationCount: 3,
-        maxLiveSyncPlaybackRate: 1.1, // nudges playback slightly faster when it drifts behind the live edge, instead of just accumulating lag forever
-        backBufferLength: 10,
-      });
-      S.lobby.hls = hls;
-      hls.on(Hls.Events.ERROR, (_evt, data) => {
-        if (!data.fatal) return;
-        console.warn('hls.js fatal error:', data.type, data.details);
-        switch (data.type) {
-          case Hls.ErrorTypes.NETWORK_ERROR:
-            toast('Lobby stream connection dropped — retrying…', 'warn', 3000);
-            hls.startLoad();
-            break;
-          case Hls.ErrorTypes.MEDIA_ERROR:
-            hls.recoverMediaError();
-            break;
-          default:
-            toast('Lobby stream error — try leaving and rejoining', 'error', 6000);
-            break;
-        }
-      });
-      hls.loadSource(url);
-      hls.attachMedia(audio);
-    } else if (audio.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari (and any browser with native HLS support) plays an HLS
-      // playlist directly off a plain src — no library needed.
-      S.lobby.hls = null;
-      audio.src = url;
-    } else {
-      toast('This browser can\u2019t play the lobby\u2019s audio stream (no HLS support)', 'error', 8000);
-      return;
+    if (!S.player) S.player = new WebTransportPlayer();
+    const player = S.player;
+    try {
+      const info = await LobbyAPI.quicInfo();
+      const url = LobbyAPI.quicUrl(S.lobby.code, info);
+      await player.connect(url, info.certHashHex);
+    } catch (e) {
+      console.warn('Failed to connect lobby audio:', e);
+      toast(`Couldn't connect to the lobby's audio (${e.message}) — try leaving and rejoining`, 'error', 8000);
     }
 
     // Playback itself starts once Engine._lobbySync (driven by the

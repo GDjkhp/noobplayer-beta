@@ -154,11 +154,31 @@ const LobbyAPI = {
     return res.json();
   },
 
-  // The lobby's live HLS playlist — this IS the music transport in
-  // server mode now (see Lobby._connectMedia in lobby.js). Plain HTTP
-  // GET, no signaling.
-  hlsUrl(code) {
-    return `${this.base()}/api/lobby/${code}/hls/live.m3u8`;
+  // The lobby's live audio relay — WebTransport connection info (see
+  // QuicPcmRelay/LobbyQuicProtocol in server.py). Replaces hlsUrl(): the
+  // relay isn't a plain URL you can point an <audio> element at anymore,
+  // opening the session itself needs the self-signed cert's hash too
+  // (see WebTransportPlayer.connect in webtransport-player.js).
+  async quicInfo() {
+    const res = await fetch(`${this.base()}/api/quic-info`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();   // { port, certHashHex, path }
+  },
+
+  // Builds the actual WebTransport URL for one lobby's audio session.
+  // WebTransport always uses an https:// URL even though the real
+  // transport underneath is QUIC/UDP on its own port (see QUIC_PORT in
+  // config.py) — and Chromium's serverCertificateHashes pinning (how
+  // the browser trusts our self-signed cert without a real CA, see
+  // quicInfo() above) only works when connecting to an IP literal, not
+  // a hostname, so this prefers whatever IP the page's own serverUrl
+  // already resolved to. A real (CA-signed, non-pinned) deployment
+  // wouldn't need any of this — see the comment in
+  // WebTransportPlayer.connect for that path.
+  quicUrl(code, info) {
+    const host = new URL(this.base()).hostname;
+    const path = info.path.replace('{code}', code);
+    return `https://${host}:${info.port}${path}`;
   },
 };
 

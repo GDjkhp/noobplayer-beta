@@ -3,10 +3,10 @@
    Debug — the "Debug" tab.
 
    Design goal: instrument the app WITHOUT editing engine.js, pcm-player.js,
-   audio-el-player.js, lobby.js or api.js. Everything here is either a
+   webtransport-player.js, lobby.js or api.js. Everything here is either a
    monkey-patch (wrap a function on an existing prototype/object and call
    the original) or a direct DOM listener on elements that already exist
-   in index.html (#lobby-audio). That keeps every other
+   in index.html. That keeps every other
    module's diff to ~nothing and means this file can be deleted with zero
    side effects on the rest of the app.
 
@@ -14,18 +14,22 @@
      - Server requests + latency   → window.fetch is wrapped once; every
        call the app already makes (lobby control, chat, skins gallery,
        NodeLink proxy, stream open TTFB…) is logged automatically.
-     - Buffer dropouts (standalone) → PCMPlayer.prototype.feed is
+     - Buffer dropouts (both modes) → PCMPlayer.prototype.feed is
        wrapped. The original already decides "am I behind schedule"
        every call (that's the whole point of `nextTime` vs
        `ctx.currentTime`); this just reads that same math before/after
-       calling through.
+       calling through. Lobby mode's WebTransportPlayer composes a real
+       PCMPlayer internally for its own AudioContext scheduling (see
+       webtransport-player.js), so this one wrap now covers both modes
+       identically — nothing lobby-specific needed here at all anymore.
      - Stream waveform → a rolling window sampled from
        S.player.getWaveform(), the analyser feed both PCMPlayer and
-       AudioElPlayer expose identically, so it works unmodified in both
-       modes. A detected dropout (either side) injects a few red glitch
-       columns instead of a real reading — see _injectWaveGlitch. An
-       optional segment grid (seconds, toggled in the UI) draws over this
-       strip, with a scrolling time label per line — see _drawSegments.
+       WebTransportPlayer expose identically, so it works unmodified in
+       both modes. A detected dropout (either side) injects a few red
+       glitch columns instead of a real reading — see _injectWaveGlitch.
+       An optional segment grid (seconds, toggled in the UI) draws over
+       this strip, with a scrolling time label per line — see
+       _drawSegments.
      - Buffered waveform → everything this BROWSER has already received and
        is holding ready to play, drawn as a waveform, with what has already
        been played in a different colour and a playhead between the two.
@@ -37,12 +41,21 @@
            "played" is just `scheduled time <= ctx.currentTime`. Whole-
            track view; if the gapless preload has fetched the next track,
            S.preload is drawn after it.
-         - lobby: a thin hls.js loader wrapper copies every HLS segment as
-           it's fetched; the copy is decoded (decodeAudioData) into 50ms
-           peaks and drawn wherever <audio>.buffered says the element
-           really holds it, scrolling with the element's playhead.
-     - Audio element stalls/waits/playing (lobby)  → listeners attached
-       straight to #lobby-audio.
+         - lobby: the SAME PCMPlayer.feed() wrap records every raw PCM
+           chunk the relay sends over WebTransport (see
+           WebTransportPlayer in webtransport-player.js) — there's no
+           AAC decode step to do anymore, the bytes are already exactly
+           what gets binned. Since the relay is one continuous stream
+           with no client-visible track boundaries, this ends up as one
+           ever-growing segment for the whole session; the strip just
+           windows the last LIVE_VIEW_SPAN_S seconds of it, scrolling
+           with a centered playhead, the same "live view" shape the old
+           HLS-based strip had.
+     - Audio element stalls/waits/playing (lobby)  → replaced by a thin
+       wrap on WebTransportPlayer.prototype.connect/destroy (see
+       patchWebTransportPlayer) — there's no <audio> element to listen to
+       anymore, so this logs the WebTransport session's own lifecycle
+       instead (connecting/connected/closed/error).
      - Player action → time-to-audible latency  → Engine's public
        methods (playTrack/togglePause/skip/prev/stop/seekTo) are
        wrapped to open a "pending action"; it's closed by whichever
@@ -60,12 +73,11 @@ const NET_CAP = 40, EVT_CAP = 30;
 const WAVE_MAX_COLS = 360, WAVE_TICK_MS = 30;
 // Buffered-waveform resolution + look. Standalone draws a whole track in one
 // strip so it's coarse (100ms per bar); the lobby view only spans ~20s so it
-// can afford 50ms.
+// could afford finer bins too, but reuses the same BUF_BIN_MS PCMPlayer.feed()
+// already bins at (see _bufRecord) rather than a second binning pass.
 const BUF_BIN_MS = 100;
-const HLS_BIN_MS = 50;
-const HLS_FRAG_KEEP = 40;            // HLS segments remembered for the lobby view (hls.js itself only keeps ~10s of back buffer)
-const HLS_VIEW_SPAN_S = 20;          // seconds of stream the lobby strip covers...
-const HLS_PLAYHEAD_FRAC = 0.5;       // ...with the playhead centered across it (played on the left, ready on the right)
+const LIVE_VIEW_SPAN_S = 20;          // seconds of stream the lobby strip covers...
+const LIVE_PLAYHEAD_FRAC = 0.5;       // ...with the playhead centered across it (played on the left, ready on the right)
 const COL_PLAYED = 'rgba(148,163,184,.55)';
 const COL_READY = 'rgba(167,139,250,.9)';
 
@@ -93,10 +105,10 @@ const Debug = {
   // scheduled) chunks are tracked separately in _bufPre.
   _bufSegs: [],
   _bufPre: null,      // { ref: S.preload, seg, sampled } — the preloaded next track, binned as its chunks arrive
-  // lobby: every HLS segment hls.js fetched: sn -> { frag, raw, peaks, state }
-  _hlsFrags: new Map(),
-  _hlsDecodeCtx: null,
-  _hlsDecodeErr: null,
+  // lobby: SAME single ever-growing entry _bufSegs[0] as standalone would
+  // use for one track — see _bufRecord/the module doc comment above.
+  // Nothing lobby-specific tracked here anymore now that both modes'
+  // audio arrives via the same PCMPlayer.feed() this is all built on.
 
   server: null,       // last snapshot pushed over the socket by the server
 
@@ -117,11 +129,9 @@ const Debug = {
     this._initDone = true;
     this.installFetchHook();
     this.patchPCMPlayer();
-    this.patchAudioElPlayer();
-    this.patchLobbyMedia();
+    this.patchWebTransportPlayer();
     this.patchEngineActions();
     this.patchSwitchTab();
-    this.attachAudioElListeners();
   },
 
   installFetchHook() {
@@ -234,69 +244,35 @@ const Debug = {
     };
   },
 
-  // Lobby mode plays an HLS stream through hls.js (see Lobby._connectMedia).
-  // Wrap that so the fresh Hls instance can be tapped for the segments it
-  // fetches — they ARE the buffered audio, so decoding them is the honest
-  // way to draw it. _connectMedia has no awaits before it stores
-  // S.lobby.hls, so by the time it returns the instance exists.
-  patchLobbyMedia() {
-    if (typeof Lobby === 'undefined' || Lobby._dbgPatched) return;
-    Lobby._dbgPatched = true;
+  // WebTransportPlayer's connect()/destroy() are the lobby-mode analogue
+  // of the old #lobby-audio DOM listeners: the only lifecycle events left
+  // to watch now that there's no <audio> element (see webtransport-player.js)
+  // — actual dropout detection and "audible now" signaling both already
+  // come for free from patchPCMPlayer above, since WebTransportPlayer
+  // composes a real PCMPlayer internally for its own scheduling.
+  patchWebTransportPlayer() {
+    if (typeof WebTransportPlayer === 'undefined' || WebTransportPlayer.prototype._dbgPatched) return;
+    WebTransportPlayer.prototype._dbgPatched = true;
     const self = this;
-    const orig = Lobby._connectMedia;
-    Lobby._connectMedia = function (...args) {
-      const r = orig.apply(this, args);
-      self._attachHls(S.lobby.hls);
-      return r;
+
+    const origConnect = WebTransportPlayer.prototype.connect;
+    WebTransportPlayer.prototype.connect = async function (...args) {
+      self.audioElEvent('connecting', {});
+      try {
+        const r = await origConnect.apply(this, args);
+        self.audioElEvent('connected', {});
+        return r;
+      } catch (e) {
+        self.audioElEvent('error', { message: (e && e.message) || String(e) });
+        throw e;
+      }
     };
-  },
 
-  patchAudioElPlayer() {
-    if (typeof AudioElPlayer === 'undefined' || AudioElPlayer.prototype._dbgPatched) return;
-    AudioElPlayer.prototype._dbgPatched = true;
-    const self = this;
-    const origPause = AudioElPlayer.prototype.pause;
-    AudioElPlayer.prototype.pause = function (...args) {
-      const r = origPause.apply(this, args);
-      self.actionReady();
-      return r;
+    const origDestroy = WebTransportPlayer.prototype.destroy;
+    WebTransportPlayer.prototype.destroy = async function (...args) {
+      self.audioElEvent('closed', {});
+      return origDestroy.apply(this, args);
     };
-    // resume() intentionally NOT patched for latency — audio.play()
-    // resolving doesn't mean audio is audible yet (it can still be
-    // buffering). The 'playing' DOM event listened for below is the
-    // real signal, same as the reconnect-buffering logic in engine.js
-    // already treats it.
-  },
-
-  // #lobby-audio exists in the DOM from page load regardless of mode
-  // (see index.html), so this can attach immediately at init instead of
-  // waiting for a lobby to exist.
-  attachAudioElListeners() {
-    const audio = document.getElementById('lobby-audio');
-    if (!audio || audio._dbgAttached) return;
-    audio._dbgAttached = true;
-    const self = this;
-    let waitStart = null;
-    ['waiting', 'stalled', 'playing', 'pause', 'play', 'error', 'ended', 'progress'].forEach(type => {
-      audio.addEventListener(type, () => {
-        const now = performance.now();
-        if (type === 'waiting' || type === 'stalled') {
-          if (waitStart === null) waitStart = now;
-        }
-        if (type === 'playing') {
-          if (waitStart !== null) { self.dropout(now - waitStart, 'lobby stream stall'); waitStart = null; }
-          self.actionReady();
-        }
-        self.audioElEvent(type, { t: audio.currentTime, buffered: self._bufferedAheadSec(audio) });
-      });
-    });
-  },
-
-  _bufferedAheadSec(audio) {
-    try {
-      if (!audio.buffered || !audio.buffered.length) return 0;
-      return Math.max(0, audio.buffered.end(audio.buffered.length - 1) - audio.currentTime);
-    } catch (_) { return 0; }
   },
 
   // Wraps Engine's public transport methods so every user-triggered
@@ -407,9 +383,6 @@ const Debug = {
     clearInterval(this._renderTimer); this._renderTimer = setInterval(() => this.render(), 280);
     this.render();
     this._startWave();
-    // HLS segments that arrived while the tab was closed are kept raw —
-    // decode them now so the played half of the strip isn't empty.
-    for (const e of this._hlsFrags.values()) this._hlsDecode(e);
   },
   stop() {
     this._running = false;
@@ -518,16 +491,16 @@ const Debug = {
          already fetched the next track, S.preload's chunks are binned too
          (_bufPollPreload) and drawn after it, all "ready".
 
-       - lobby: a thin loader wrapper takes a copy of every HLS segment
-         hls.js fetches (see _attachHls). Each is an independently decodable
-         ADTS/AAC file, so a copy is run through decodeAudioData and reduced
-         to HLS_BIN_MS peaks (_hlsDecode). The strip is a window that
-         scrolls with the <audio> element's playhead, and a span only draws
-         where <audio>.buffered says the element really has it — so "ready"
-         is what it can play right now, "played" is what it hasn't evicted
-         from its back buffer yet. If a segment can't be decoded (or the
-         browser is playing HLS natively, with no hls.js in the loop) the
-         buffered ranges are still drawn, as flat lines. */
+       - lobby: the SAME PCMPlayer.feed() wrap (see patchPCMPlayer) records
+         every raw PCM chunk WebTransportPlayer reads off the relay's
+         WebTransport stream — no AAC decode step needed, the bytes ARE
+         already what gets binned. Since the relay is one continuous
+         stream with no client-visible track boundaries, this is always
+         exactly one ever-growing segment (_bufSegs[0]) for the whole
+         session; the strip windows just the last LIVE_VIEW_SPAN_S
+         seconds of it around a centered, scrolling playhead — "ready" is
+         everything received but not yet heard, "played" is everything
+         before the audio clock's current position. */
 
   // ── standalone ──
   _bufNewSeg(track) {
@@ -602,88 +575,12 @@ const Debug = {
   _bufTick() {
     if (S.mode === 'standalone') this._bufPollPreload(); else this._bufPre = null;
     // A track that has played all the way through drops off once something
-    // else is queued after it.
+    // else is queued after it. Lobby mode never has more than one segment
+    // to begin with (see _bufRecord/the module doc comment) — this is a
+    // no-op there, by design; _drawBufLobby only ever looks at the last
+    // LIVE_VIEW_SPAN_S seconds of it regardless of how long it's grown.
     const p = S.player, now = p && p.ctx ? p.ctx.currentTime : 0;
     while (this._bufSegs.length > 1 && this._bufSegs[0].endCtx <= now) this._bufSegs.shift();
-  },
-
-  // ── lobby ──
-  // hls.js gives no usable segment bytes through its events: by the time
-  // FRAG_LOADED fires the payload has already been transferred to its
-  // transmuxer worker (detached, byteLength 0). The loader itself is the
-  // one place the bytes exist intact, and hls.js reads config.fLoader afresh
-  // for every fragment request — so slot a thin subclass of whatever loader
-  // is configured in there. It changes nothing about the request; it just
-  // takes a copy of the response on its way past. No extra network traffic.
-  _attachHls(hls) {
-    this._hlsFrags.clear();
-    this._hlsDecodeErr = null;
-    if (!hls || !hls.config || hls._dbgAttached) return;
-    const Base = hls.config.fLoader || hls.config.loader;
-    if (!Base) return;
-    hls._dbgAttached = true;
-    const self = this;
-    hls.config.fLoader = class extends Base {
-      load(context, config, callbacks) {
-        const onSuccess = callbacks.onSuccess;
-        const tapped = Object.assign({}, callbacks, {
-          onSuccess(response, stats, ctx, details) {
-            try {
-              if (context.frag && response && response.data instanceof ArrayBuffer) self._onHlsFrag(context.frag, response.data);
-            } catch (_) {}
-            return onSuccess(response, stats, ctx, details);
-          },
-        });
-        return super.load(context, config, tapped);
-      }
-    };
-  },
-
-  _onHlsFrag(frag, buffer) {
-    if (frag.type && frag.type !== 'main') return;
-    // `frag` is kept by reference on purpose: hls.js refines frag.start to the
-    // real media-timeline position once it has parsed the segment, and the
-    // strip is drawn against <audio>.currentTime, which lives on that timeline.
-    const entry = { frag, raw: buffer.slice(0), peaks: null, state: 'raw' };
-    this._hlsFrags.set(frag.sn, entry);
-    if (this._hlsFrags.size > HLS_FRAG_KEEP) {
-      let oldest = Infinity;
-      for (const k of this._hlsFrags.keys()) if (k < oldest) oldest = k;
-      this._hlsFrags.delete(oldest);
-    }
-    if (this._running) this._hlsDecode(entry);
-  },
-
-  async _hlsDecode(e) {
-    if (e.state !== 'raw') return;
-    e.state = 'decoding';
-    try {
-      const AC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-      if (!this._hlsDecodeCtx) this._hlsDecodeCtx = new AC(2, 1, 48000);
-      const buf = await this._hlsDecodeCtx.decodeAudioData(e.raw);   // detaches e.raw
-      e.raw = null;
-      e.peaks = this._peaksOf(buf, HLS_BIN_MS);
-      e.state = 'done';
-    } catch (err) {
-      e.raw = null;
-      e.state = 'failed';
-      this._hlsDecodeErr = (err && err.message) || String(err);
-    }
-  },
-
-  _peaksOf(audioBuf, binMs) {
-    const n = audioBuf.length, binSamples = Math.max(1, Math.round(audioBuf.sampleRate * binMs / 1000));
-    const bins = Math.ceil(n / binSamples), out = new Uint8Array(bins);
-    const chans = [];
-    for (let c = 0; c < audioBuf.numberOfChannels; c++) chans.push(audioBuf.getChannelData(c));
-    for (let b = 0; b < bins; b++) {
-      let peak = 0;
-      for (let i = b * binSamples, end = Math.min(n, i + binSamples); i < end; i += 4) {
-        for (let c = 0; c < chans.length; c++) { const v = Math.abs(chans[c][i]); if (v > peak) peak = v; }
-      }
-      out[b] = Math.min(255, Math.round(peak * 255));
-    }
-    return out;
   },
 
   /* ───────── drawing ───────── */
@@ -812,53 +709,51 @@ const Debug = {
     }
   },
 
+  // Lobby mode's WebTransportPlayer composes a real PCMPlayer for its own
+  // AudioContext scheduling (see webtransport-player.js), so this reads
+  // the exact same seg.amps/seg.ctxT data _drawBufStandalone does — just
+  // windowed to the last LIVE_VIEW_SPAN_S seconds around a centered,
+  // scrolling playhead (there's no fixed track length to lay out against,
+  // it's a live, unseekable relay) rather than the whole-track layout
+  // standalone uses. See _bufRecord/the module doc comment for how
+  // seg.amps gets filled — nothing lobby-specific happens there anymore.
   _drawBufLobby(ctx, W, H) {
-    const audio = document.getElementById('lobby-audio');
-    if (!audio) { this._drawBufNote(ctx, W, H, 'no <audio> element'); return; }
-    const now = audio.currentTime || 0;
+    const wt = S.player;                      // a WebTransportPlayer
+    const p = wt && wt._pcm;                  // its inner PCMPlayer — see webtransport-player.js
+    const seg = this._bufSegs[0];             // always exactly one segment for the whole session — see _bufRecord
+    if (!p || !p.ctx || !seg || !seg.amps.length) { this._drawBufNote(ctx, W, H, 'nothing buffered yet'); return; }
+
+    const now = p.ctx.currentTime;
     const midY = H / 2, maxH = H / 2 - 4;
-    const pxPerSec = W / HLS_VIEW_SPAN_S, playX = W * HLS_PLAYHEAD_FRAC;
+    const pxPerSec = W / LIVE_VIEW_SPAN_S, playX = W * LIVE_PLAYHEAD_FRAC;
     const xOf = (t) => playX + (t - now) * pxPerSec;
+    const binS = BUF_BIN_MS / 1000, barW = Math.max(1, binS * pxPerSec - 0.5);
 
-    const ranges = [];
-    for (let i = 0; i < audio.buffered.length; i++) ranges.push([audio.buffered.start(i), audio.buffered.end(i)]);
-    if (!ranges.length) { this._drawBufNote(ctx, W, H, 'nothing buffered'); return; }
-    const inBuffer = (t) => { for (const r of ranges) if (t >= r[0] - 0.02 && t <= r[1] + 0.02) return true; return false; };
-
-    // 1) What the element holds, as a flat line — always drawn, so the range
-    //    is visible even where there's no decoded waveform to put on it.
-    for (const [s, e] of ranges) {
-      const a = Math.max(0, xOf(s)), b = Math.min(W, xOf(e)), split = Math.min(b, Math.max(a, xOf(now)));
-      if (b <= a) continue;
-      ctx.fillStyle = COL_PLAYED; ctx.fillRect(a, midY - 1, split - a, 2);
-      ctx.fillStyle = COL_READY;  ctx.fillRect(split, midY - 1, b - split, 2);
+    let drawn = false, lastReadyT = -Infinity;
+    const amps = seg.amps, ctxT = seg.ctxT;
+    for (let b = 0; b < amps.length; b++) {
+      const t = ctxT[b];
+      if (t === undefined) continue;
+      const x = xOf(t);
+      if (x < -barW || x > W + barW) continue;
+      drawn = true;
+      if (t > lastReadyT) lastReadyT = t;
+      ctx.fillStyle = t <= now ? COL_PLAYED : COL_READY;
+      const h = Math.max(1, amps[b] * maxH);
+      ctx.fillRect(x, midY - h, barW, h * 2);
     }
+    if (!drawn) { this._drawBufNote(ctx, W, H, 'nothing buffered yet'); return; }
 
-    // 2) Decoded waveform on top of it.
-    const binS = HLS_BIN_MS / 1000, barW = Math.max(1, binS * pxPerSec - 0.5);
-    for (const e of this._hlsFrags.values()) {
-      if (e.state !== 'done' || !e.peaks) continue;
-      const t0 = e.frag.start;
-      if (!isFinite(t0)) continue;
-      for (let k = 0; k < e.peaks.length; k++) {
-        const t = t0 + k * binS, x = xOf(t);
-        if (x > W || x + barW < 0) continue;
-        if (!inBuffer(t + binS / 2)) continue;
-        ctx.fillStyle = t + binS / 2 <= now ? COL_PLAYED : COL_READY;
-        const h = Math.max(1, (e.peaks[k] / 255) * maxH);
-        ctx.fillRect(x, midY - h, barW, h * 2);
-      }
-    }
-
-    // Playhead + how much is on either side of it.
+    // Playhead + how far the relay's lead currently extends past it — the
+    // live-stream analogue of "how much is buffered ahead", now read
+    // straight off the PCM scheduler's own lookahead instead of an
+    // <audio> element's buffered ranges.
     ctx.fillStyle = 'rgba(255,255,255,.85)';
     ctx.fillRect(playX, 2, 1.5, H - 4);
-    let behind = 0, ahead = 0;
-    for (const [s, e] of ranges) if (now >= s - 0.05 && now <= e + 0.05) { behind = now - s; ahead = e - now; }
+    const aheadS = Math.max(0, lastReadyT - now);
     ctx.font = '9px ui-monospace, monospace'; ctx.textBaseline = 'top';
     ctx.fillStyle = 'rgba(255,255,255,.55)';
-    ctx.textAlign = 'left';  ctx.fillText(`${behind.toFixed(1)}s played`, 3, 2);
-    ctx.textAlign = 'right'; ctx.fillText(`${ahead.toFixed(1)}s ready`, W - 3, 2);
+    ctx.textAlign = 'right'; ctx.fillText(`${aheadS.toFixed(1)}s ready`, W - 3, 2);
   },
 
   // Vertical grid lines toggled via the Off/Seconds control, one per
@@ -1016,11 +911,7 @@ const Debug = {
     if (S.mode !== 'server' && S.mode !== 'standalone') {
       el.textContent = 'not connected';
     } else if (S.mode === 'server') {
-      el.textContent = !S.lobby.hls
-        ? 'native HLS playback — no hls.js to tap, so only the buffered ranges can be drawn'
-        : this._hlsDecodeErr
-          ? `couldn't decode HLS segments (${this._hlsDecodeErr}) — showing buffered ranges only`
-          : 'HLS segments this browser has buffered, decoded for display · scrolls with the playhead';
+      el.textContent = 'raw PCM the relay has sent over WebTransport · last 20s, scrolls with the playhead';
     } else {
       el.textContent = 'PCM this browser has received · whole track, playhead = audio clock · next track appears once preloaded';
     }
@@ -1141,11 +1032,11 @@ const Debug = {
     if (!list) return;
     count.textContent = `(${this.audioElEvents.length})`;
     list.innerHTML = this.audioElEvents.slice(0, 20).map(a => `
-      <div class="dbg-list-row ${['waiting', 'stalled', 'error'].includes(a.type) ? 'dbg-row-warn' : ''}">
+      <div class="dbg-list-row ${a.type === 'error' ? 'dbg-row-warn' : ''}">
         <span class="dbg-mono">${this._fmtTime(a.ts)}</span>
         <span>${esc(a.type)}</span>
-        <span class="dbg-muted">${a.meta ? `t=${(a.meta.t || 0).toFixed(1)}s · buf+${(a.meta.buffered || 0).toFixed(1)}s` : ''}</span>
-      </div>`).join('') || `<div class="dbg-empty-row">no audio element events yet</div>`;
+        <span class="dbg-muted">${a.meta && a.meta.message ? esc(a.meta.message) : ''}</span>
+      </div>`).join('') || `<div class="dbg-empty-row">no WebTransport session events yet</div>`;
   },
 
   // Standalone: S.autoQueue is already client-side (nothing hidden).

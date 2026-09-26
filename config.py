@@ -15,27 +15,39 @@ FLASK_HOST = "0.0.0.0"
 FLASK_PORT = 42069
 DEBUG = True
 
-# ── Lobby music transport (HLS) ──
-# Lobby mode's shared music relay is delivered as a live HLS stream (AAC,
-# short rolling segments) — see HLSMuxer / LobbyRelay in server.py. No
-# STUN/TURN needed: it's just an <audio> element pointed at a .m3u8 URL
-# over plain HTTP.
+# ── Lobby music transport (QUIC / WebTransport) ──
+# Lobby mode's shared music relay is delivered as a live raw-PCM stream
+# over a QUIC/WebTransport session — see QuicPcmRelay / WtListener /
+# LobbyQuicProtocol in server.py. No AAC encode, no container, no CDN-
+# cacheable playlist the way HLS had: each listener's browser opens one
+# WebTransport connection and gets the same 48kHz/stereo/s16le frames
+# the relay produces, written straight onto its own QUIC stream.
+#
+# This DOES need a TLS handshake (QUIC always does), unlike the old HLS
+# design's plain HTTP <audio> element — see QUIC_CERT_FILE/QUIC_KEY_FILE
+# below. The WebTransport listener runs as its own UDP server, on the
+# SAME PORT NUMBER as FLASK_PORT above (TCP and UDP are independent
+# port namespaces, so this never conflicts with the HTTP server — it's
+# just one port number to open/forward instead of two).
+QUIC_PORT = FLASK_PORT
 
-# Segment length in seconds. Shorter = listeners sit closer to the live
-# edge, at the cost of more segment files and a bit more HTTP overhead.
-# 1s is a reasonable floor without moving to LL-HLS (partial segments) —
-# see the module docstring in server.py for why true sub-second latency
-# needs more than this.
-HLS_SEGMENT_SECONDS = 1
+# Self-signed cert for the WebTransport listener — regenerated
+# automatically by server.py whenever it's missing or close to expiry,
+# nothing to set up by hand. The browser trusts it via WebTransport's
+# serverCertificateHashes pinning (the client fetches the current hash
+# from GET /api/quic-info) rather than a real CA chain, which is why
+# this can just be a throwaway self-signed cert instead of something
+# from Let's Encrypt or similar.
+QUIC_CERT_FILE = "quic_cert.pem"
+QUIC_KEY_FILE = "quic_key.pem"
 
-# How many segments stay listed in the rolling playlist (and on disk —
-# older ones are deleted automatically). Also roughly how many segments
-# a player buffers before it starts, so end-to-end lag is on the order of
-# HLS_SEGMENT_SECONDS * (HLS_LIST_SIZE + 1).
-HLS_LIST_SIZE = 6
-
-# AAC encode bitrate for the live relay (bits/sec).
-HLS_BITRATE = 128000
+# How long (days) each generated cert stays valid before server.py
+# rotates it. WebTransport's serverCertificateHashes pinning REQUIRES a
+# validity window of 14 days or less (see the WebTransport spec) — this
+# just needs to be comfortably under that; going all the way to 14 risks
+# briefly serving an already-expired cert if the server happens to be
+# offline right at the boundary.
+QUIC_CERT_DAYS = 12
 
 # ── Lobbies ──
 LOBBY_CODE_LENGTH = 6

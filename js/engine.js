@@ -17,22 +17,25 @@
    (`_localPlay`), same as before this setting existed.
 
    Server mode: public methods (for the host) send REST control calls to
-   the lobby; actual audio comes from ONE server-side live HLS relay per
-   lobby (see server.py's LobbyRelay / HLSMuxer), and every client — host
-   included — has an <audio> element fed by hls.js pointed at that
-   lobby's live.m3u8 (see AudioElPlayer, Lobby._connectMedia). There's no
-   local PCM stream, no drift correction, and no per-client NodeLink
-   fetch: Lobby.onState() calling Engine._lobbySync() just keeps that
-   <audio> element (and the reused PCMPlayer-shaped UI hooks) in sync
-   with the server's authoritative state. Gapless is a lobby-wide,
-   host-controlled setting there too (Lobby.gapless in server.py,
-   mirrored into S.gaplessEnabled the same way loop mode/autoplay are —
-   see _lobbySync below and Engine.toggleGapless), also ON by default.
-   Either way, the HLS stream and the client's connection are untouched
-   by the setting — the relay always keeps encoding into the SAME
-   continuous stream across a track boundary, so nobody reconnects
-   regardless. What the setting actually controls server-side is whether
-   the NEXT track's audio was already buffered ahead of time
+   the lobby; actual audio comes from ONE server-side live PCM relay per
+   lobby (see server.py's LobbyRelay / QuicPcmRelay), and every client —
+   host included — opens a WebTransport session carrying that raw PCM,
+   fed straight into a PCMPlayer-backed scheduler (see
+   WebTransportPlayer, Lobby._connectMedia). There's no local PCM
+   *fetch* (no per-client NodeLink request, no drift correction against
+   a file), but the actual sound now IS scheduled client-side by the
+   same PCMPlayer engine standalone mode uses: Lobby.onState() calling
+   Engine._lobbySync() keeps WebTransportPlayer's UI-facing position
+   (its anchor mirror, not the scheduler) in sync with the server's
+   authoritative state. Gapless is a lobby-wide, host-controlled setting
+   there too (Lobby.gapless in server.py, mirrored into S.gaplessEnabled
+   the same way loop mode/autoplay are — see _lobbySync below and
+   Engine.toggleGapless), also ON by default. Either way, the relay and
+   the client's WebTransport session are untouched by the setting — the
+   relay always keeps producing the SAME continuous PCM stream across a
+   track boundary, so nobody reconnects regardless. What the setting
+   actually controls server-side is whether the NEXT track's audio was
+   already buffered ahead of time
    (LobbyRelay.ensure_preload) — off just means the boundary goes quiet
    for a moment while a fresh NodeLink fetch catches up, instead of
    picking up on the next track's audio instantly.
@@ -934,38 +937,38 @@ const Engine = {
     await this._restreamWithFilters(filters);
   },
 
-  /* ───────── called by Lobby.onState() to drive the shared <audio> element off server-authoritative state ─────────
-     Lobby mode no longer runs a local PCM stream at all — the server
-     produces the track's PCM once and encodes it into a live HLS stream
-     (see HLSMuxer in server.py), so the client here is just an <audio>
-     element fed by hls.js pointed at that stream (see Lobby._connectMedia),
-     and this just reflects play/pause. There's no drift correction
+  /* ───────── called by Lobby.onState() to drive WebTransportPlayer off server-authoritative state ─────────
+     Lobby mode no longer runs a local NodeLink PCM fetch at all — the
+     server produces the track's PCM once and fans it out raw over QUIC
+     (see QuicPcmRelay in server.py), so the client here just reads that
+     stream into a WebTransportPlayer (see Lobby._connectMedia) and
+     reflects play/pause. There's no drift correction against a file
      because there's nothing to drift: the server IS the single source of
      the actual audio, not just a position number every client has to
      independently chase with its own PCM fetch.
 
      Gapless note: a gapless server-side advance (current track ends
-     naturally and LobbyRelay stitches the next one into the SAME HLS
-     encode — see server.py) changes `currentTrack` without any reconnect
-     on this end at all — hls.js just keeps pulling more segments off the
-     same rolling playlist. Nor does a hard cut (skip/seek/filter change,
+     naturally and LobbyRelay stitches the next one into the SAME PCM
+     relay — see server.py) changes `currentTrack` without any reconnect
+     on this end at all — WebTransportPlayer just keeps reading more PCM
+     off the same session. Nor does a hard cut (skip/seek/filter change,
      `relayGen` bumping) — it's just more audio arriving in that same
      continuous stream.
 
      Latency note: unlike the old WebRTC relay (near-zero, tens-of-ms
-     jitter buffer), HLS listeners genuinely sit a few seconds behind the
-     server's authoritative position — however many segments hls.js has
-     buffered (see liveSyncDurationCount in Lobby._connectMedia). State
-     from the server is still applied here as soon as it arrives (no
-     deferred-swap dance to compensate — that would mean estimating and
-     tracking the HLS buffer lag itself, which isn't done here), so the
-     progress bar reflects the server's position, not necessarily the
-     exact instant of audio currently audible. This is the accepted
-     trade-off of moving off WebRTC — see the module docstring in
+     jitter buffer), listeners genuinely sit a bit behind the server's
+     authoritative position — network transit plus however much the
+     PCMPlayer scheduler inside WebTransportPlayer buffers ahead (see
+     pcm-player.js). State from the server is still applied here as soon
+     as it arrives (no deferred-swap dance to compensate — that would
+     mean estimating and tracking that buffer lag itself, which isn't
+     done here), so the progress bar reflects the server's position, not
+     necessarily the exact instant of audio currently audible. This is
+     the accepted trade-off of moving off WebRTC — see the module
+     docstring in
      server.py. */
   async _lobbySync(state) {
-    const audio = document.getElementById('lobby-audio');
-    if (!S.player) S.player = new AudioElPlayer(audio);
+    if (!S.player) S.player = new WebTransportPlayer();
 
     S.filters = state.filters || {};
     UI.updateFilterStatus();
@@ -990,7 +993,7 @@ const Engine = {
 
     if (!state.currentTrack) {
       // Nothing queued right now — but the relay deliberately keeps the
-      // SAME HLS encode flowing rather than tearing the session down
+      // SAME PCM stream flowing rather than tearing the session down
       // (it feeds silence frames instead; see the idle wait in
       // server.py's LobbyRelay._run), so there's nothing to reconnect
       // here either.
