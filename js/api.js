@@ -168,15 +168,23 @@ const LobbyAPI = {
   // Builds the actual WebTransport URL for one lobby's audio session.
   // WebTransport always uses an https:// URL even though the real
   // transport underneath is QUIC/UDP on its own port (see QUIC_PORT in
-  // config.py) — and Chromium's serverCertificateHashes pinning (how
-  // the browser trusts our self-signed cert without a real CA, see
-  // quicInfo() above) only works when connecting to an IP literal, not
-  // a hostname, so this prefers whatever IP the page's own serverUrl
-  // already resolved to. A real (CA-signed, non-pinned) deployment
-  // wouldn't need any of this — see the comment in
-  // WebTransportPlayer.connect for that path.
+  // config.py) — and per the WebTransport spec, serverCertificateHashes
+  // pinning (how the browser trusts our self-signed cert without a real
+  // CA, see quicInfo() above) is ONLY accepted when the URL's host is an
+  // IP literal, not a hostname — "localhost" included, even though it
+  // resolves to 127.0.0.1. Browsers reject the handshake before it ever
+  // reaches the server if this isn't an IP (surfaces as a generic
+  // "Opening handshake failed." with no further detail — see
+  // WebTransportPlayer.connect). We can't DNS-resolve an arbitrary
+  // hostname from JS, but "localhost" specifically is safe to hardcode.
+  // A real (CA-signed, non-pinned) deployment wouldn't hit this at all —
+  // see the comment in WebTransportPlayer.connect for that path.
   quicUrl(code, info) {
-    const host = new URL(this.base()).hostname;
+    let host = new URL(this.base()).hostname;
+    if (host === 'localhost') host = '127.0.0.1';
+    else if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(host) && !host.startsWith('[')) {
+      throw new Error(`can't open a pinned WebTransport session to "${host}" — connect via its IP address instead (or use a CA-signed cert to skip pinning entirely)`);
+    }
     const path = info.path.replace('{code}', code);
     return `https://${host}:${info.port}${path}`;
   },
