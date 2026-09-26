@@ -3,12 +3,14 @@
    Lobby — server mode. Talks to the Flask backend for:
      - lobby create/join/browse (REST)
      - shared playback state + chat (Socket.IO push)
-     - music over a live HLS stream (see Lobby._connectMedia) — a plain
-       HTTP GET of the lobby's rolling .m3u8 playlist, played back via
-       hls.js (native HLS in Safari). Replaces the old WebRTC relay:
-       no signaling, no ICE/TURN, but a couple of seconds behind the
-       live edge instead of sample-accurate (see server.py's HLSMuxer).
-       Voice chat has been removed along with WebRTC.
+     - music over a live LL-HLS stream (see Lobby._connectMedia) — a
+       plain HTTP GET of the lobby's rolling .m3u8 playlist, played back
+       via hls.js in low-latency mode (native HLS in Safari, which
+       doesn't get the low-latency behavior — see the fallback branch
+       below). Replaces the old WebRTC relay: no signaling, no
+       ICE/TURN, but not quite sample-accurate either (see server.py's
+       HLSMuxer for exactly how close). Voice chat has been removed
+       along with WebRTC.
 ═══════════════════════════════════════════ */
 const Lobby = {
 
@@ -113,7 +115,7 @@ const Lobby = {
     document.getElementById('sdot')?.classList.add('ok');
 
     this._connectSocket(code, clientId);
-    this._connectMedia();  // fire-and-forget — points #lobby-audio at the lobby's live HLS stream; see below
+    this._connectMedia();  // fire-and-forget — points #lobby-audio at the lobby's live LL-HLS stream; see below
     UI.applyLockState();
     UI.renderConfigTab();
     toast(`Joined lobby ${code}${isHost ? ' as host' : ''}`, 'success');
@@ -306,20 +308,26 @@ const Lobby = {
     UI.renderConfigTab();
   },
 
-  /* ───────── music — live HLS stream ─────────
+  /* ───────── music — live LL-HLS stream ─────────
      _connectMedia() runs once, right on joining the lobby: it points
      #lobby-audio at the lobby's rolling live.m3u8 playlist (see
-     LobbyAPI.hlsUrl / server.py's HLSMuxer) via hls.js, which handles
-     the playlist polling and segment fetch/buffer/feed loop. Safari (and
-     any browser with native HLS support) skips hls.js entirely and just
-     sets the <audio> element's src directly — canPlayType covers that.
+     LobbyAPI.hlsUrl / server.py's HLSMuxer) via hls.js with
+     lowLatencyMode on, which handles the blocking-playlist-reload +
+     partial-segment loading dance against the EXT-X-PART /
+     EXT-X-PRELOAD-HINT tags the server now emits. Safari (and any
+     browser with native HLS support) skips hls.js entirely and just
+     sets the <audio> element's src directly — canPlayType covers that;
+     it does NOT get the low-latency behavior (Safari's native HLS
+     player doesn't do LL-HLS blocking reload the way hls.js does), so
+     it'll sit further behind the live edge than a browser running
+     hls.js.
 
      No signaling round-trip like the old WebRTC connect — the URL is
-     stable and joinable immediately, hls.js just starts pulling
-     segments over plain HTTP. A hard cut (skip/seek/filter change,
-     `relayGen` bumping) doesn't need a reconnect either: it's just more
-     audio arriving in the same continuous stream (see HLSMuxer in
-     server.py) — hls.js's own live-playlist polling picks it up on its
+     stable and joinable immediately, hls.js just starts pulling parts
+     over plain HTTP. A hard cut (skip/seek/filter change, `relayGen`
+     bumping) doesn't need a reconnect either: it's just more audio
+     arriving in the same continuous stream (see HLSMuxer in
+     server.py) — hls.js's own playlist reload picks it up on its
      own. */
   async _connectMedia() {
     const audio = document.getElementById('lobby-audio');
@@ -333,12 +341,21 @@ const Lobby = {
 
     if (window.Hls && Hls.isSupported()) {
       const hls = new Hls({
-        // Keep the client's own buffer short too — a big buffer just
-        // means sitting further from the live edge, which defeats the
-        // point of the server's short (see config.HLS_SEGMENT_SECONDS)
-        // segments. liveSyncDurationCount is "how many segments behind
-        // the playlist head to target", the hls.js analogue of
-        // HLS_LIST_SIZE on the server.
+        // This is what actually gets latency down near
+        // config.LL_HLS_PART_SECONDS instead of
+        // HLS_SEGMENT_SECONDS * (HLS_LIST_SIZE + 1): hls.js auto-detects
+        // the EXT-X-PART/EXT-X-PART-INF/EXT-X-SERVER-CONTROL tags the
+        // server's playlist now carries and switches to fetching parts
+        // individually plus blocking playlist reload (the _HLS_msn/
+        // _HLS_part query params — see server.py's lobby_hls_file)
+        // instead of polling live.m3u8 on a fixed interval.
+        lowLatencyMode: true,
+        // Fallback target only — used before hls.js has enough part
+        // history to derive an LL target from PART-TARGET/
+        // PART-HOLD-BACK (e.g. the first couple of seconds after
+        // joining), or if something in front of this strips the LL
+        // tags. Once LL-HLS kicks in, hls.js computes the live-edge
+        // target itself and this is ignored.
         liveSyncDurationCount: 3,
         maxLiveSyncPlaybackRate: 1.1, // nudges playback slightly faster when it drifts behind the live edge, instead of just accumulating lag forever
         backBufferLength: 10,

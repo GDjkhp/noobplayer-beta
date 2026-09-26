@@ -32,12 +32,18 @@ Architecture
   depends on any one client's network. NodeLink is fetched once per track
   regardless of listener count, same as before.
 
-  HLS trades a little latency for that simplicity: segments are kept
-  short (HLS_SEGMENT_SECONDS, default 1s) specifically to keep listeners
-  close to the live edge, but a player typically still buffers a couple
-  of segments before it starts, so expect low-single-digit-seconds of
-  lag behind the server's authoritative position — this is NOT
-  frame-accurate sync the way the old WebRTC relay was.
+  This now runs Low-Latency HLS (LL-HLS), not plain HLS: each full
+  segment is also chopped into short "parts" (EXT-X-PART,
+  LL_HLS_PART_SECONDS default 0.2s) that get their own playlist entries
+  as soon as they're encoded, and clients use HLS's blocking-playlist-
+  reload mechanism (the `_HLS_msn`/`_HLS_part` query params —
+  RFC 8216bis §6.2.4 / §6.3.5) to be handed the next part the instant
+  it exists instead of polling on a fixed interval. That's what gets
+  end-to-end lag down to roughly a couple of PART durations behind the
+  server's authoritative position, plain HLS's client-side segment
+  buffering plus fixed-interval polling — this still isn't
+  frame-accurate sync the way the old WebRTC relay was, but it's much
+  closer than the target-duration-sized segments plain HLS needs.
 
 - State sync + chat: pushed to clients over Socket.IO (WebSocket, with
   automatic long-polling fallback and automatic client-side reconnection).
@@ -253,17 +259,28 @@ PCM_FRAME_BYTES = PCM_FRAME_SAMPLES * PCM_CHANNELS * 2      # s16le
 OPUS_BITRATE = 96000   # still used by the separate full-track /api/download encoder (see _encode_pcm_blocking) — unrelated to the live relay now
 
 # ── HLS live output ──
-# Segments this short are what keep listeners close to the live edge —
-# standard HLS players still buffer a few segments before they start
-# playing, so end-to-end lag is roughly HLS_SEGMENT_SECONDS *
-# (HLS_LIST_SIZE + 1), a few seconds at these settings. True sub-second
-# latency needs LL-HLS (partial segments, blocking playlist reload) or a
-# WebRTC-style transport — deliberately not what this is; see the module
-# docstring.
+# HLS_SEGMENT_SECONDS/HLS_LIST_SIZE still govern the full segments (what
+# gets evicted from memory and how big EXT-X-TARGETDURATION is), but the
+# actual live-edge latency now comes from LL_PART_SECONDS below — each
+# full segment is also chopped into short PARTs that show up in the
+# playlist (and are individually fetchable) well before their enclosing
+# segment closes. See HLSMuxer and the module docstring.
 HLS_SEGMENT_SECONDS = getattr(config, "HLS_SEGMENT_SECONDS", 1)
 HLS_LIST_SIZE = getattr(config, "HLS_LIST_SIZE", 6)      # rolling window of segments kept in memory + in the playlist
 HLS_BITRATE = getattr(config, "HLS_BITRATE", 128000)
 AAC_FRAME_SAMPLES = 1024   # fixed, per the AAC spec — every ADTS frame is exactly this many samples/channel
+
+# LL-HLS part target duration. Each part needs at least one full AAC
+# frame (~21.3ms @ 48kHz), so this is effectively rounded up to a whole
+# number of AAC frames by _target_part_frames below — 0.2s is ~9-10
+# frames. Smaller = closer to the live edge but more playlist/part
+# request overhead; keep it well under HLS_SEGMENT_SECONDS.
+LL_PART_SECONDS = getattr(config, "LL_HLS_PART_SECONDS", 0.2)
+
+# Matches a part filename as produced in HLSMuxer._close_part /
+# _publish, e.g. "seg_00000012.part003.aac" -> (12, 3). Used by
+# lobby_hls_file to tell a part request apart from a full-segment one.
+_HLS_PART_RE = re.compile(r"^seg_(\d{8})\.part(\d{3})\.aac$")
 # How often the idle loop wakes to top up silence while the queue is
 # empty. This used to be a single 20ms frame every 15 seconds — fine back
 # when this was one long-held streaming connection per listener (an idle
@@ -322,15 +339,35 @@ class HLSMuxer:
     there's no need to re-derive frame boundaries by parsing bytes the
     way a continuous byte stream off a subprocess would require —
     _adts_header just wraps each packet with its own 7-byte ADTS header
-    and that's a complete, independently-parseable unit. Consecutive
-    frames get grouped into ~HLS_SEGMENT_SECONDS "segments" purely in
-    memory — a dict of {filename: raw AAC bytes} plus a generated
-    .m3u8 playlist string, both served straight out of RAM by
+    Consecutive
+    frames get grouped two ways at once, purely in memory: into short
+    ~LL_PART_SECONDS "parts" (EXT-X-PART — the LL-HLS unit clients can
+    fetch and get notified about before their enclosing segment is even
+    done) and into the larger ~HLS_SEGMENT_SECONDS "segments" plain HLS
+    always had (EXTINF — still what gets evicted from memory and what
+    HLS_LIST_SIZE governs). Two dicts ({filename: raw AAC bytes} for
+    segments, {(seq, part_idx): raw AAC bytes} for parts) plus a
+    generated .m3u8 playlist string, all served straight out of RAM by
     lobby_hls_file below. Nothing is ever written to disk for this — no
     per-lobby directory, nothing under _hls_live or anywhere else, by
-    design. "Packed audio" (raw ADTS) HLS segments like this are
+    design. "Packed audio" (raw ADTS) HLS segments/parts like this are
     explicitly part of the HLS spec (RFC 8216 §3.4) — no MPEG-TS
-    container needed for audio-only content.
+    container, no EXT-X-MAP init segment, needed for audio-only content;
+    every ADTS frame is independently self-describing, which is also
+    exactly why parts don't need to be aligned to anything in
+    particular — any prefix of a segment's frames is a valid part.
+
+    Low-latency comes from two things working together, both handled
+    here: (1) the playlist gets rewritten (_publish) the instant a PART
+    closes, not just when a whole segment does, and always carries an
+    EXT-X-PRELOAD-HINT for the NEXT part — one that doesn't exist yet —
+    so a client can open that request early; (2) wait_for() lets both
+    the playlist route and that not-yet-existing part's route BLOCK
+    until the content the client asked for (by exact msn/part number)
+    actually exists, instead of either 404ing or the client having to
+    poll on a fixed interval. That blocking-reload dance (RFC 8216bis
+    §6.2.4/§6.3.5) is the actual LL-HLS mechanism — short parts alone
+    wouldn't help if clients still discovered them via ordinary polling.
 
     Same push-one-frame-at-a-time shape as the old WebRTC
     MusicSourceTrack — LobbyRelay's real-time pacing loop needed no
@@ -352,13 +389,27 @@ class HLSMuxer:
     def __init__(self, code):
         self.code = code
         self.ok = False
-        self.playlist_text = None       # str once at least one segment exists, else None
-        self.segments = {}              # filename -> raw AAC bytes, in memory only
-        self._order = deque()           # (filename, duration) in playlist order, oldest first — mirrors self.segments' keys
-        self._seq = 0                   # next segment's sequence number
+        self.playlist_text = None       # str once at least one part exists, else None
+        self.segments = {}              # filename -> raw AAC bytes (full, closed segments), in memory only
+        self.parts = {}                 # (seq, part_idx) -> raw AAC bytes (LL-HLS parts), in memory only
+        self._order = deque()           # (filename, duration, seq) in playlist order, oldest first — mirrors self.segments' keys
+        self._seq = 0                   # next (currently forming) segment's sequence number
         self._first_seq = 0             # sequence number of the OLDEST segment still in the playlist (EXT-X-MEDIA-SEQUENCE)
         self._cur_frames = []           # ADTS-wrapped AAC frames accumulated for the in-flight (not yet closed) segment
         self._target_frames = max(1, round(0.2 * PCM_RATE / AAC_FRAME_SAMPLES))   # short first segment
+        self._cur_part_frames = []      # ADTS-wrapped AAC frames accumulated for the in-flight (not yet closed) PART
+        self._target_part_frames = max(1, round(LL_PART_SECONDS * PCM_RATE / AAC_FRAME_SAMPLES))
+        self._part_idx = 0              # next part's index within the currently-forming segment
+        self._cur_part_names = []       # (name, duration, idx) for parts already closed within the currently-forming segment
+        # Bumped (and a fresh asyncio.Event set/replaced) on every new part
+        # or segment — wait_for() below is what makes blocking playlist
+        # reload / preload-hint requests actually block on this instead of
+        # the caller having to poll. Safe without a lock: nothing here ever
+        # awaits between checking state and grabbing self._new_content, and
+        # asyncio is single-threaded, so there's no interleaving that could
+        # slip a bump in between (see wait_for's comment).
+        self._version = 0
+        self._new_content = asyncio.Event()
         self._ts = 0                    # running sample count fed to the encoder — see push()
         self._pcm_time_base = fractions.Fraction(1, PCM_RATE)
         self.encoder = None
@@ -380,15 +431,15 @@ class HLSMuxer:
             # this until a track actually starts playing (see
             # LobbyRelay). Without this, a client joining (or even just
             # racing the very first play) could ask for live.m3u8 before
-            # a single segment exists in memory yet.
+            # a single part exists in memory yet.
             warmup_frames = int(round(PCM_RATE / PCM_FRAME_SAMPLES * 0.5))
             silent_bytes = bytes(PCM_FRAME_BYTES)
             for _ in range(warmup_frames):
                 self.push(silent_bytes)
             if self.playlist_text is not None:
-                print(f"[hls {code}] ready — first segment in memory")
+                print(f"[hls {code}] ready — first part in memory")
             else:
-                print(f"[hls {code}] WARNING: no segment ready after warm-up — encoder may need more than {warmup_frames} frames to produce its first packet (AAC encoders have some priming delay); this should resolve itself once real playback starts and keeps feeding it")
+                print(f"[hls {code}] WARNING: no part ready after warm-up — encoder may need more than {warmup_frames} frames to produce its first packet (AAC encoders have some priming delay); this should resolve itself once real playback starts and keeps feeding it")
         except Exception:
             traceback.print_exc()
             print(f"[hls {code}] failed to open PyAV AAC encoder for HLS output — is `av` built with an AAC encoder?")
@@ -415,53 +466,137 @@ class HLSMuxer:
             self.ok = False
 
     def _on_aac_packet(self, raw_aac):
-        """One fully-encoded AAC frame (no framing yet) straight from
-        the encoder — wrap it in its own ADTS header and add it to the
-        in-flight segment, closing that segment once it's hit its
-        target length."""
-        self._cur_frames.append(_adts_header(len(raw_aac), PCM_RATE, PCM_CHANNELS) + raw_aac)
+        """One fully-encoded AAC frame (no framing yet) straight from the
+        encoder — wrap it in its own ADTS header and add it to BOTH the
+        in-flight part and the in-flight segment (every part is just a
+        prefix of its segment's frames), closing whichever one(s) have
+        hit their target length. A part always closes at or before its
+        enclosing segment — target_part_frames is always <= target_frames
+        by construction (LL_PART_SECONDS < HLS_SEGMENT_SECONDS) — so the
+        segment-close branch below can never fire on a frame that hasn't
+        already been accounted for in the current part."""
+        adts = _adts_header(len(raw_aac), PCM_RATE, PCM_CHANNELS) + raw_aac
+        self._cur_frames.append(adts)
+        self._cur_part_frames.append(adts)
+        if len(self._cur_part_frames) >= self._target_part_frames:
+            self._close_part()
         if len(self._cur_frames) >= self._target_frames:
             self._close_segment()
 
+    def _close_part(self):
+        """Finalizes the in-flight PART into self.parts + this segment's
+        _cur_part_names, then publishes. This is what actually drives
+        low latency — it runs many times per segment, not once."""
+        frames = self._cur_part_frames
+        self._cur_part_frames = []
+        if not frames:
+            return
+        data = b"".join(frames)
+        duration = len(frames) * AAC_FRAME_SAMPLES / PCM_RATE
+        idx = self._part_idx
+        name = f"seg_{self._seq:08d}.part{idx:03d}.aac"
+        self.parts[(self._seq, idx)] = data
+        self._cur_part_names.append((name, duration, idx))
+        self._part_idx += 1
+        self._publish()
+
     def _close_segment(self):
-        """Finalizes the in-flight segment into self.segments +
-        self.playlist_text, evicting the oldest if the rolling window is
-        full."""
+        """Finalizes the in-flight segment into self.segments, evicting
+        the oldest (and its now-out-of-window parts) if the rolling
+        window is full, then resets part bookkeeping for the next
+        segment and publishes."""
+        self._close_part()  # flush whatever partial part is in flight into one final short part for this segment first
         frames = self._cur_frames
         self._cur_frames = []
         self._target_frames = max(1, round(HLS_SEGMENT_SECONDS * PCM_RATE / AAC_FRAME_SAMPLES))  # every segment AFTER the first uses the real target
         if not frames:
+            self._part_idx = 0
+            self._cur_part_names = []
             return
         filename = f"seg_{self._seq:08d}.aac"
         duration = len(frames) * AAC_FRAME_SAMPLES / PCM_RATE
+        seq = self._seq
         new_segments = dict(self.segments)
         new_segments[filename] = b"".join(frames)
-        self._order.append((filename, duration))
+        self._order.append((filename, duration, seq))
         while len(self._order) > HLS_LIST_SIZE:
-            old_name, _ = self._order.popleft()
+            old_name, _old_dur, old_seq = self._order.popleft()
             new_segments.pop(old_name, None)
             self._first_seq += 1
+            for k in [k for k in self.parts if k[0] == old_seq]:
+                del self.parts[k]
         self.segments = new_segments  # whole-object reassignment — safe to read from a request handler without a lock (CPython GIL makes a single reference swap atomic)
         self._seq += 1
+        self._part_idx = 0
+        self._cur_part_names = []
+        self._publish()
 
+    def _publish(self):
+        """Rebuilds playlist_text (full segments + the current forming
+        segment's parts-so-far + a preload hint for the next, not-yet-
+        produced part) and wakes anyone blocked in wait_for()."""
         lines = [
             "#EXTM3U",
-            "#EXT-X-VERSION:3",
+            "#EXT-X-VERSION:9",
             f"#EXT-X-TARGETDURATION:{max(1, round(HLS_SEGMENT_SECONDS))}",
+            f"#EXT-X-PART-INF:PART-TARGET={LL_PART_SECONDS:.3f}",
+            f"#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK={LL_PART_SECONDS * 3:.3f}",
             f"#EXT-X-MEDIA-SEQUENCE:{self._first_seq}",
         ]
-        for name, dur in self._order:
+        for name, dur, _seq in self._order:
             lines.append(f"#EXTINF:{dur:.3f},")
             lines.append(name)
+        for name, dur, _idx in self._cur_part_names:
+            lines.append(f'#EXT-X-PART:DURATION={dur:.3f},URI="{name}",INDEPENDENT=YES')
+        hint_name = f"seg_{self._seq:08d}.part{self._part_idx:03d}.aac"
+        lines.append(f'#EXT-X-PRELOAD-HINT:TYPE=PART,URI="{hint_name}"')
         self.playlist_text = "\n".join(lines) + "\n"  # no #EXT-X-ENDLIST — this is a live, ongoing playlist
+        self._version += 1
+        ev = self._new_content
+        self._new_content = asyncio.Event()
+        ev.set()
+
+    def _has(self, seq, idx):
+        """Whether part `idx` of segment `seq` already exists — either
+        because that whole segment is already closed (seq < self._seq,
+        so every part of it, closed or not, is moot to ask about), or
+        because it's a part of the currently-forming segment that's
+        already been closed (idx < self._part_idx)."""
+        if seq < self._seq:
+            return True
+        if seq > self._seq:
+            return False
+        return idx < self._part_idx
+
+    async def wait_for(self, seq, idx, timeout):
+        """Blocks until part `idx` of segment `seq` exists, or `timeout`
+        seconds pass — this is the actual LL-HLS blocking-reload
+        mechanism (RFC 8216bis §6.2.4/§6.3.5): both the playlist route
+        (for `?_HLS_msn=&_HLS_part=`) and a not-yet-existing part route
+        (for the EXT-X-PRELOAD-HINT URI) await this instead of either
+        polling or 404ing. No lock needed: the _has() check and grabbing
+        self._new_content happen with no `await` between them, and
+        asyncio only switches tasks at an `await`, so nothing can bump
+        the version in between and get missed."""
+        deadline = time.monotonic() + timeout
+        while not self._has(seq, idx):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            ev = self._new_content
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return False
+        return True
 
     def close(self):
         if self.encoder is None:
             return
         try:
             # Flush whatever's left buffered inside the encoder/resampler
-            # into one final (possibly short) segment rather than just
-            # dropping it.
+            # into one final (possibly short) part+segment rather than
+            # just dropping it.
             if self.ok and self.resampler:
                 for rframe in self.resampler.resample(None):
                     for packet in self.encoder.encode(rframe):
@@ -477,7 +612,9 @@ class HLSMuxer:
             self.resampler = None
             self.ok = False
             self.segments = {}
+            self.parts = {}
             self.playlist_text = None
+
 
 
 class LobbyRelay:
@@ -1880,12 +2017,28 @@ def _require_host(lobby, client_id):
 
 @app.route("/api/lobby/<code>/hls/<path:filename>")
 async def lobby_hls_file(code, filename):
-    """Serves one lobby's live HLS output — live.m3u8 and its rolling
-    AAC segments (see HLSMuxer) — straight out of memory, nothing ever
-    touches disk for this. This IS the music transport now (see
-    Lobby._connectMedia in lobby.js): every listener's <audio> element
-    points hls.js at .../hls/live.m3u8 and the browser does the rest
-    with plain HTTP GETs, no signaling involved."""
+    """Serves one lobby's live LL-HLS output — live.m3u8, its rolling
+    full AAC segments, AND its short-lived AAC parts (see HLSMuxer) —
+    straight out of memory, nothing ever touches disk for this. This IS
+    the music transport now (see Lobby._connectMedia in lobby.js):
+    every listener's <audio> element points hls.js at .../hls/live.m3u8
+    and the browser does the rest.
+
+    Two LL-HLS-specific behaviors live here, both just delegating to
+    HLSMuxer.wait_for so the actual "block until ready" logic stays in
+    one place:
+      - The playlist supports blocking reload via the `_HLS_msn` /
+        `_HLS_part` query params hls.js appends once it sees
+        EXT-X-SERVER-CONTROL: CAN-BLOCK-RELOAD=YES — instead of
+        returning immediately (which is what makes plain HLS clients
+        poll on a fixed interval), this holds the request open until
+        the requested part actually exists.
+      - A part URI that doesn't exist yet (the one the playlist just
+        advertised via EXT-X-PRELOAD-HINT) also blocks rather than
+        404ing, so a client that opened that request early gets served
+        the instant it's ready.
+    Either way, a client that times out just reloads the playlist again
+    (the spec-recommended fallback) — see the `timeout=` below."""
     lobby = get_lobby_or_404(code)
     if not lobby or not lobby.relay.hls.ok:
         return jsonify({"error": "not found"}), 404
@@ -1895,12 +2048,34 @@ async def lobby_hls_file(code, filename):
         return jsonify({"error": "not found"}), 404
 
     if norm == "live.m3u8":
+        msn = request.args.get("_HLS_msn", type=int)
+        if msn is not None:
+            part = request.args.get("_HLS_part", type=int) or 0
+            await hls.wait_for(msn, part, timeout=HLS_SEGMENT_SECONDS * 4)
+            # Whether it arrived in time or we just timed out, fall
+            # through and serve whatever the playlist is right now.
         playlist = hls.playlist_text
         if playlist is None:
             return jsonify({"error": "not ready yet"}), 404
-        # The playlist rewrites on every segment — a cached copy is a
-        # stale (or, worse, half-evicted-segment) one.
+        # The playlist rewrites on every part/segment — a cached copy is
+        # a stale (or, worse, half-evicted-segment) one.
         return Response(playlist, mimetype="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
+
+    part_match = _HLS_PART_RE.match(norm)
+    if part_match:
+        seq, idx = int(part_match.group(1)), int(part_match.group(2))
+        if hls.parts.get((seq, idx)) is None:
+            # Almost certainly a client that fetched the current
+            # EXT-X-PRELOAD-HINT URI before it exists — that's the
+            # whole point of a preload hint. Block for it.
+            await hls.wait_for(seq, idx, timeout=HLS_SEGMENT_SECONDS * 4)
+        data = hls.parts.get((seq, idx))
+        if data is None:
+            return jsonify({"error": "not found"}), 404
+        # Parts are short-lived (superseded by their full segment, and
+        # by definition already stale the moment a newer part exists),
+        # so never let a cache hold onto one.
+        return Response(data, mimetype="audio/aac", headers={"Cache-Control": "no-store"})
 
     data = hls.segments.get(norm)
     if data is None:
@@ -1910,6 +2085,8 @@ async def lobby_hls_file(code, filename):
     # from memory once HLS_LIST_SIZE segments have passed them, so keep
     # this well under how long that eviction typically takes.
     return Response(data, mimetype="audio/aac", headers={"Cache-Control": "public, max-age=10"})
+
+
 
 
 
@@ -2795,7 +2972,7 @@ if __name__ == "__main__":
     import uvicorn
 
     print(f"[NodeLink Lobby Server] NodeLink node: {NL_HOST}")
-    print(f"[NodeLink Lobby Server] Lobby music transport: HLS (AAC, {HLS_SEGMENT_SECONDS}s segments)")
+    print(f"[NodeLink Lobby Server] Lobby music transport: LL-HLS (AAC, {HLS_SEGMENT_SECONDS}s segments / {LL_PART_SECONDS}s parts)")
     print(f"[NodeLink Lobby Server] Realtime transport: Socket.IO (WebSocket, long-polling fallback)")
     print(f"[NodeLink Lobby Server] Listening on http://{config.FLASK_HOST}:{config.FLASK_PORT}")
 

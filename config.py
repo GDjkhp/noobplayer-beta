@@ -37,6 +37,18 @@ HLS_LIST_SIZE = 6
 # AAC encode bitrate for the live relay (bits/sec).
 HLS_BITRATE = 128000
 
+# Low-Latency HLS: each full segment above is ALSO chopped into short
+# "parts" (EXT-X-PART) that the playlist advertises individually, and
+# listeners' clients use HLS's blocking-playlist-reload query params
+# (_HLS_msn/_HLS_part) to be notified the instant a new part exists
+# instead of polling the playlist on a fixed interval — see
+# HLSMuxer._publish/_has/wait_for in server.py. This is what actually
+# gets end-to-end lag down near LL_HLS_PART_SECONDS * a small constant,
+# rather than HLS_SEGMENT_SECONDS * (HLS_LIST_SIZE + 1) under plain HLS.
+# Keep it well under HLS_SEGMENT_SECONDS — a handful of parts per
+# segment is the point.
+LL_HLS_PART_SECONDS = 0.2
+
 # ── Lobbies ──
 LOBBY_CODE_LENGTH = 6
 CHAT_HISTORY_LIMIT = 100
