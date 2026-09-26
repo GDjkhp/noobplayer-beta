@@ -107,7 +107,7 @@ body::after {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   background: var(--accent); color: #05050f; border: none; border-radius: var(--sh-full);
   font-family: var(--fn); font-weight: 700; font-size: 13px;
-  letter-spacing: .01em; padding: 12px; box-shadow: var(--ev1);
+  letter-spacing: .01em; text-transform: uppercase; padding: 12px; box-shadow: var(--ev1);
   cursor: pointer; margin-top: 16px; transition: opacity .2s, box-shadow .2s; width: 100%;
 }
 .overlay-btn .material-symbols-outlined { font-size: 16px; }
@@ -169,7 +169,7 @@ body::after {
 .hdr-btn {
   background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text);
   font-family: var(--fn); font-weight: 700; font-size: 11px;
-  letter-spacing: .04em; padding: 7px 16px;
+  letter-spacing: .04em; text-transform: uppercase; padding: 7px 16px;
   cursor: pointer; transition: all .15s; flex-shrink: 0;
 }
 .hdr-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--st-hover); }
@@ -330,7 +330,7 @@ body::after {
 .tab {
   display: inline-flex; align-items: center; gap: 6px;
   background: none; border: none; border-bottom: 3px solid transparent; color: var(--muted);
-  font-family: var(--fn); font-weight: 700; font-size: 11px; letter-spacing: .06em;
+  font-family: var(--fn); font-weight: 700; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
   padding: 11px 18px; cursor: pointer; transition: color .2s, border-color .2s, background .2s; white-space: nowrap;
 }
 .tab .material-symbols-outlined { font-size: 16px; }
@@ -346,7 +346,7 @@ body::after {
 #src-sel { background: var(--bg); border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text); font-family: var(--fm); font-size: 11px; padding: 7px 10px; outline: none; cursor: pointer; flex-shrink: 0; }
 #src-sel option { background: var(--surf2); }
 /* M3 filled button. */
-#btn-srch { background: var(--accent); color: #05050f; border: none; border-radius: var(--sh-full); font-family: var(--fn); font-weight: 700; font-size: 12px; letter-spacing: .02em; padding: 8px 20px; cursor: pointer; box-shadow: var(--ev1); transition: opacity .2s, box-shadow .2s; flex-shrink: 0; white-space: nowrap; }
+#btn-srch { background: var(--accent); color: #05050f; border: none; border-radius: var(--sh-full); font-family: var(--fn); font-weight: 700; font-size: 12px; letter-spacing: .02em; text-transform: uppercase; padding: 8px 20px; cursor: pointer; box-shadow: var(--ev1); transition: opacity .2s, box-shadow .2s; flex-shrink: 0; white-space: nowrap; }
 #btn-srch:hover { opacity: .9; box-shadow: var(--ev2); }
 #sres { flex: 1; overflow-y: auto; padding: 8px; scrollbar-width: thin; }
 .si { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid transparent; border-radius: var(--sh-sm); cursor: pointer; transition: background .15s, border-color .15s; margin-bottom: 2px; }
@@ -363,7 +363,7 @@ body::after {
 /* M3 tonal button — the small in-row action buttons throughout (Play,
    +Queue, download, presets, etc.) all share this treatment now: pill
    shape, filled on the primary action, otherwise a quiet outline. */
-.add-btn { display: inline-flex; align-items: center; gap: 4px; background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text); font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .04em; padding: 5px 10px; cursor: pointer; transition: background .15s, border-color .15s; white-space: nowrap; }
+.add-btn { display: inline-flex; align-items: center; gap: 4px; background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text); font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 5px 10px; cursor: pointer; transition: background .15s, border-color .15s; white-space: nowrap; }
 .add-btn .material-symbols-outlined { font-size: 13px; }
 .add-btn:hover { background: var(--accent); border-color: var(--accent); color: #05050f; }
 .add-btn.pnow:hover { background: var(--green); border-color: var(--green); color: #05050f; }
@@ -372,7 +372,7 @@ body::after {
 #q-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
 #q-info { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }
 /* M3 outlined button (small, icon+label) — queue toolbar actions. */
-.qa { display: inline-flex; align-items: center; gap: 4px; background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--muted); font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .03em; padding: 5px 10px; cursor: pointer; transition: all .15s; }
+.qa { display: inline-flex; align-items: center; gap: 4px; background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--muted); font-family: var(--fm); font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; padding: 5px 10px; cursor: pointer; transition: all .15s; }
 .qa .material-symbols-outlined { font-size: 14px; }
 .qa:hover { border-color: var(--accent); color: var(--accent); background: var(--st-hover); }
 .qa.d:hover { border-color: var(--red); color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
@@ -423,7 +423,7 @@ body::after {
 
 #lyr-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
 #lyr-src-lbl { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }
-#btn-lyr { background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--muted); font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .03em; padding: 5px 10px; cursor: pointer; transition: all .15s; }
+#btn-lyr { background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--muted); font-family: var(--fm); font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; padding: 5px 10px; cursor: pointer; transition: all .15s; }
 #btn-lyr:hover { border-color: var(--accent); color: var(--accent); background: var(--st-hover); }
 #lyr-body { flex: 1; overflow-y: auto; padding: 20px 24px; scrollbar-width: thin; scroll-behavior: smooth; }
 .ll { font-size: 18px; font-weight: 600; line-height: 1.7; color: var(--muted); border-radius: var(--sh-xs); transition: color .3s, font-size .2s; cursor: pointer; padding: 2px 6px; margin: 0 -6px; }
@@ -452,7 +452,7 @@ body::after {
 .flt-slider:disabled { opacity: .3; }
 .flt-val { font-family: var(--fm); font-size: 10px; color: var(--muted); width: 36px; text-align: right; }
 /* M3 tonal button (secondary emphasis — accent2 "container"). */
-#btn-apply-flt { display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--accent2); color: #05050f; border: none; border-radius: var(--sh-full); font-family: var(--fn); font-weight: 700; font-size: 12px; letter-spacing: .02em; padding: 10px 20px; cursor: pointer; box-shadow: var(--ev1); transition: opacity .2s, box-shadow .2s; width: 100%; }
+#btn-apply-flt { display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--accent2); color: #05050f; border: none; border-radius: var(--sh-full); font-family: var(--fn); font-weight: 700; font-size: 12px; letter-spacing: .02em; text-transform: uppercase; padding: 10px 20px; cursor: pointer; box-shadow: var(--ev1); transition: opacity .2s, box-shadow .2s; width: 100%; }
 #btn-apply-flt .material-symbols-outlined { font-size: 15px; }
 #btn-apply-flt:hover { opacity: .9; box-shadow: var(--ev2); }
 #btn-apply-flt:disabled { opacity: .3; cursor: not-allowed; box-shadow: none; }
@@ -473,7 +473,7 @@ body::after {
 #chat-input-row { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
 #chat-input { flex: 1; background: var(--bg); border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text); font-family: var(--fn); font-size: 13px; padding: 9px 16px; outline: none; transition: border-color .2s, box-shadow .2s; }
 #chat-input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-#chat-send { background: var(--accent); color: #05050f; border: none; border-radius: var(--sh-full); font-family: var(--fn); font-weight: 700; font-size: 11px; letter-spacing: .02em; padding: 9px 18px; cursor: pointer; box-shadow: var(--ev1); transition: opacity .2s, box-shadow .2s; }
+#chat-send { background: var(--accent); color: #05050f; border: none; border-radius: var(--sh-full); font-family: var(--fn); font-weight: 700; font-size: 11px; letter-spacing: .02em; text-transform: uppercase; padding: 9px 18px; cursor: pointer; box-shadow: var(--ev1); transition: opacity .2s, box-shadow .2s; }
 #chat-send:hover { opacity: .9; box-shadow: var(--ev2); }
 
 /* ═══════════════ Chat pane: log + input (left) / user list (right) ═══════════════ */
@@ -556,7 +556,7 @@ body::after {
 #meaning-sub { font-family: var(--fm); font-size: 11px; color: var(--muted); margin-bottom: 16px; }
 #meaning-body { font-size: 13px; line-height: 1.75; color: var(--muted); }
 #meaning-body p { margin-bottom: 12px; }
-#meaning-close { display: flex; align-items: center; justify-content: center; gap: 5px; margin-top: 16px; background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--muted); font-family: var(--fm); font-size: 11px; padding: 8px 16px; cursor: pointer; transition: all .15s; }
+#meaning-close { display: flex; align-items: center; justify-content: center; gap: 5px; margin-top: 16px; background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--muted); font-family: var(--fm); font-size: 11px; text-transform: uppercase; padding: 8px 16px; cursor: pointer; transition: all .15s; }
 #meaning-close .material-symbols-outlined { font-size: 14px; }
 #meaning-close:hover { border-color: var(--red); color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
 
