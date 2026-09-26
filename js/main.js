@@ -158,7 +158,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   /* ───────── Lyrics ───────── */
-  document.getElementById('btn-lyr').addEventListener('click', () => UI.fetchLyrics());
 
   /* ───────── Download (now-playing) ───────── */
   document.getElementById('btn-dl').addEventListener('click', e => UI.openDownloadMenu(e.currentTarget, S.current));

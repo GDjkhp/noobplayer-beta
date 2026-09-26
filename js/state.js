@@ -48,7 +48,11 @@ const S = {
   activePreset: 'normal',
 
   // Lyrics
-  lyrics: null, lyricsType: null, _lyrLastIdx: -1,
+  // lyricsFetchedFor holds the encoded track lyrics were last fetched (or
+  // attempted) for, so UI.updatePlayerUI can auto-trigger a fetch on every
+  // track change without re-fetching on every unrelated re-render (queue
+  // updates, lobby state syncs that didn't change the track, etc).
+  lyrics: null, lyricsType: null, _lyrLastIdx: -1, lyricsFetchedFor: null,
 
   // UI
   searchResults: [], activeTab: 'config', progDrag: false,

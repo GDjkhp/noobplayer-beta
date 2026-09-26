@@ -423,8 +423,6 @@ body::after {
 
 #lyr-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
 #lyr-src-lbl { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }
-#btn-lyr { background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--muted); font-family: var(--fm); font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; padding: 5px 10px; cursor: pointer; transition: all .15s; }
-#btn-lyr:hover { border-color: var(--accent); color: var(--accent); background: var(--st-hover); }
 #lyr-body { flex: 1; overflow-y: auto; padding: 20px 24px; scrollbar-width: thin; scroll-behavior: smooth; }
 .ll { font-size: 18px; font-weight: 600; line-height: 1.7; color: var(--muted); border-radius: var(--sh-xs); transition: color .3s, font-size .2s; cursor: pointer; padding: 2px 6px; margin: 0 -6px; }
 .ll-note { font-size: 16px !important; opacity: .5; vertical-align: -2px; }
@@ -833,16 +831,21 @@ body::after {
 .dbg-list-row.dbg-row-err { border-left-color: var(--red); color: var(--red); }
 .dbg-list-row.dbg-row-warn { border-left-color: var(--amber); color: var(--amber); }
 .dbg-muted { color: var(--muted); margin-left: auto; }
-/* ═══════════════ STICKY PLAYER ═══════════════
+/* ═══════════════ STICKY PLAYER + TABS ═══════════════
    The tab panes grow with their content and the *page* scrolls (they don't
-   scroll internally), so left to itself the player scrolls away with them.
-   Two layouts, matching how the player is laid out:
+   scroll internally), so left to itself both the player AND the #tabs bar
+   scroll away with them — including a very long search/queue list, or the
+   lyrics pane's own auto-scroll to the active line. #tabs is pinned right
+   alongside the player so the tab buttons stay reachable no matter how far
+   the pane content has scrolled. Two layouts, matching how the player is
+   laid out:
 
    1) Side-by-side (desktop, and any phone/tablet held in landscape): the
-      whole player column stays pinned to the side while the tabs scroll.
+      whole player column stays pinned to the side, and #tabs pins to the
+      top of the #right column right next to it.
    2) Stacked (portrait phone): the album art scrolls away, but the bottom
       half of the player — title, progress, controls — stays frozen at the
-      top of the screen so it's always in reach.
+      top of the screen, and #tabs pins directly beneath it.
 
    Both need #main to be overflow:visible: overflow:hidden turns it into the
    element sticky positioning is measured against, and it never scrolls, so
@@ -864,6 +867,7 @@ body::after {
     border-right: none;
   }
   #right { border-left: 1px solid var(--brd); }
+  #tabs { position: sticky; top: 0; z-index: 20; box-shadow: var(--ev2); }
 }
 
 /* Landscape phones / small tablets: side-by-side instead of the portrait
@@ -895,6 +899,14 @@ body::after {
     position: sticky; z-index: 30;
     top: calc(var(--player-panel-h, 190px) - var(--player-left-h, 100vw));
     box-shadow: var(--ev3);
+  }
+  /* Sticks right below the frozen player panel (rather than at the very
+     top of the viewport, like the side-by-side layout above) — the panel
+     itself already occupies that space once #left has stuck. */
+  #tabs {
+    position: sticky; z-index: 20;
+    top: var(--player-panel-h, 190px);
+    box-shadow: var(--ev2);
   }
 }
 

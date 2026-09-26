@@ -106,6 +106,12 @@ const UI = {
       document.getElementById('info-title').style.color = 'var(--text)';
       document.getElementById('info-artist').textContent = t.info.author;
       document.getElementById('t-tot').textContent = fmt(t.info.length);
+      // Lyrics used to need a manual "Fetch Lyrics" click — now they load
+      // automatically whenever the current track changes. fetchLyrics()
+      // itself no-ops if it's already fetched (or is fetching) for this
+      // exact track, so calling it on every updatePlayerUI() re-render is
+      // cheap and safe.
+      this.fetchLyrics();
     } else {
       img.classList.remove('vis'); empty.style.display = 'flex';
       document.getElementById('info-src-txt').textContent = '— IDLE —';
@@ -458,7 +464,13 @@ const UI = {
   },
 
   async fetchLyrics() {
-    if (!S.current) { toast('Play a track first', 'warn'); return; }
+    if (!S.current) return;
+    // Already fetched (or currently fetching) lyrics for this exact track —
+    // nothing to do. This is what makes it safe to call fetchLyrics() from
+    // updatePlayerUI() on every re-render instead of only from a manual
+    // button click.
+    if (S.lyricsFetchedFor === S.current.encoded) return;
+    S.lyricsFetchedFor = S.current.encoded;
     document.getElementById('lyr-src-lbl').textContent = 'Loading…';
     document.getElementById('lyr-body').innerHTML = `<div class="empty"><div class="dots"><span></span><span></span><span></span></div><p>Fetching lyrics…</p></div>`;
     try {
