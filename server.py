@@ -2795,7 +2795,7 @@ if __name__ == "__main__":
     import uvicorn
 
     print(f"[NodeLink Lobby Server] NodeLink node: {NL_HOST}")
-    print(f"[NodeLink Lobby Server] Lobby music transport: HLS (AAC, {HLS_SEGMENT_SECONDS}s segments) — voice chat removed")
+    print(f"[NodeLink Lobby Server] Lobby music transport: HLS (AAC, {HLS_SEGMENT_SECONDS}s segments)")
     print(f"[NodeLink Lobby Server] Realtime transport: Socket.IO (WebSocket, long-polling fallback)")
     print(f"[NodeLink Lobby Server] Listening on http://{config.FLASK_HOST}:{config.FLASK_PORT}")
 

@@ -471,7 +471,6 @@ const UI = {
       }
       const d = data.data;
       document.getElementById('lyr-src-lbl').textContent = `Source: ${d.provider || '?'}`;
-      console.log(d);
       if (Array.isArray(d.lines) && d.lines.length > 0) {
         S.lyricsType = d.synced ? 'synced' : 'plain';
         S.lyrics = d.lines.map(l => ({ t: typeof l.time === 'number' ? l.time : parseFloat(l.time || 0), txt: l.text || '' }));
