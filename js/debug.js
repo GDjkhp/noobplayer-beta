@@ -842,12 +842,18 @@ const Debug = {
           </div>
         </div>
 
-        <div class="dbg-section">
-          <div class="dbg-section-title">Player events <span class="dbg-count" id="dbg-evt-count"></span></div>
-          <div class="dbg-scroll"><table class="dbg-table">
-            <thead><tr><th>time</th><th>action</th><th>mode</th><th>latency</th></tr></thead>
-            <tbody id="dbg-evt-body"></tbody>
-          </table></div>
+        <div class="dbg-cols">
+          <div class="dbg-section">
+            <div class="dbg-section-title">Player events <span class="dbg-count" id="dbg-evt-count"></span></div>
+            <div class="dbg-scroll"><table class="dbg-table">
+              <thead><tr><th>time</th><th>action</th><th>mode</th><th>latency</th></tr></thead>
+              <tbody id="dbg-evt-body"></tbody>
+            </table></div>
+          </div>
+          <div class="dbg-section">
+            <div class="dbg-section-title">Audio element events <span class="dbg-count" id="dbg-ael-count"></span></div>
+            <div class="dbg-scroll"><div id="dbg-ael-list" class="dbg-list"></div></div>
+          </div>
         </div>
 
         <div class="dbg-cols">
@@ -859,11 +865,6 @@ const Debug = {
             <div class="dbg-section-title">History Queue <span class="dbg-lane-hint">already played · most recent first</span> <span class="dbg-count" id="dbg-hq-count"></span></div>
             <div class="dbg-scroll"><div id="dbg-hq-list" class="dbg-list"></div></div>
           </div>
-        </div>
-
-        <div class="dbg-section">
-          <div class="dbg-section-title">Audio element events <span class="dbg-count" id="dbg-ael-count"></span></div>
-          <div class="dbg-scroll"><div id="dbg-ael-list" class="dbg-list"></div></div>
         </div>
 
         <div class="dbg-section" id="dbg-server-section" style="display:none">
