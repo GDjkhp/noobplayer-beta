@@ -91,6 +91,7 @@ const S = {
     clientId: null,
     token: null,
     isHost: false,
+    isDj: false,        // appointed by the host — can control the player and queue like the host (see UI.canControl)
     displayName: '',
     participants: [],
     socket: null,       // Socket.IO client

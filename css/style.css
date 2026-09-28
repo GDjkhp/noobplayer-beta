@@ -482,7 +482,10 @@ body::after {
 
 /* ═══════════════ Config tab ═══════════════ */
 #pane-config { overflow-y: auto; scrollbar-width: thin; }
-#cfg-body { padding: 18px; display: flex; flex-direction: column; gap: 20px; }
+/* container-type so the card grid below reacts to the width of the Config pane
+   itself (which is the viewport minus the side-by-side player on desktop),
+   not the viewport — two columns when there's room, one when there isn't. */
+#cfg-body { padding: 18px; display: flex; flex-direction: column; gap: 20px; container-type: inline-size; }
 .cfg-mode-row { display: flex; gap: 8px; }
 /* M3 outlined → tonal on select (segmented-button style). */
 .cfg-mode-btn {
@@ -495,7 +498,23 @@ body::after {
 .cfg-mode-btn:hover { border-color: var(--accent); color: var(--text); background: var(--st-hover); }
 .cfg-mode-btn.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .cfg-section { display: none; flex-direction: column; gap: 20px; }
-.cfg-section.on { display: flex; }
+.cfg-section.on { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+@container (min-width: 820px) {
+  .cfg-section.on { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.cfg-hint { font-family: var(--fm); font-size: 10px; color: var(--muted); line-height: 1.5; margin-bottom: 6px; }
+.dj-list { display: flex; flex-direction: column; gap: 4px; }
+.dj-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 10px; background: none; border: 1px solid transparent; border-radius: var(--sh-md, var(--sh-sm)); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background .15s, border-color .15s; }
+.dj-item:hover:not(:disabled) { background: var(--st-hover); border-color: var(--brd2); }
+.dj-item:disabled { cursor: default; }
+.dj-item.is-dj { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.dj-name { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dj-you { color: var(--muted); font-size: 10px; }
+.dj-tag { font-family: var(--fm); font-size: 9px; color: var(--accent); letter-spacing: .05em; }
+.dj-ico { font-size: 18px; color: var(--muted); }
+.dj-item.is-dj .dj-ico { color: var(--accent); }
+.dj-item:hover:not(:disabled) .dj-ico { color: var(--accent); }
+.pchip.is-dj { border-color: var(--accent2, var(--accent)); }
 /* M3 filled card (surface-container). */
 .cfg-block { display: flex; flex-direction: column; gap: 6px; padding: 18px; background: var(--surf); border: 1px solid var(--brd); border-radius: var(--sh-lg); }
 .cfg-block .overlay-form { gap: 6px; }

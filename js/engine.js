@@ -496,7 +496,7 @@ const Engine = {
 
   async playTrack(track) {
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can change tracks', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can change tracks', 'warn'); return; }
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'play', { clientId: S.lobby.clientId, track });
         Lobby.applyControlResult(r);
@@ -509,7 +509,7 @@ const Engine = {
 
   async togglePause() {
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host controls playback', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ controls playback', 'warn'); return; }
       if (!S.current) { toast('Queue is empty', 'warn'); return; }
       const action = (S.player && !S.player.isPaused) ? 'pause' : 'resume';
       try {
@@ -530,7 +530,7 @@ const Engine = {
 
   async skip() {
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can skip', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can skip', 'warn'); return; }
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'skip', { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
@@ -548,7 +548,7 @@ const Engine = {
 
   async prev() {
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can change tracks', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can change tracks', 'warn'); return; }
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'prev', { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
@@ -563,7 +563,7 @@ const Engine = {
 
   async stop() {
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can stop playback', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can stop playback', 'warn'); return; }
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'stop', { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
@@ -579,7 +579,7 @@ const Engine = {
   async seekTo(posMs) {
     posMs = Math.max(0, posMs);
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can seek', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can seek', 'warn'); return; }
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'seek', { clientId: S.lobby.clientId, positionMs: posMs });
         Lobby.applyControlResult(r);
@@ -640,7 +640,7 @@ const Engine = {
   // "swap tracks" by dropping one onto another's slot).
   async moveQueueItem(from, to) {
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can reorder the queue', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can reorder the queue', 'warn'); return; }
       if (from === to) return;
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/move', { clientId: S.lobby.clientId, fromIndex: from, toIndex: to });
@@ -658,7 +658,7 @@ const Engine = {
 
   async shuffleQueue() {
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can shuffle the queue', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can shuffle the queue', 'warn'); return; }
       if (!S.queue.length) { toast('Queue is empty', 'warn'); return; }
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/shuffle', { clientId: S.lobby.clientId });
@@ -681,7 +681,7 @@ const Engine = {
   // exposes as `smart`.
   async smartShuffle(count = 20) {
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can run Smart Shuffle', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can run Smart Shuffle', 'warn'); return; }
       if (!S.current) { toast('Play something first — recommendations come from the current track', 'warn'); return; }
       toast('Finding tracks like this one…', 'info', 2000);
       try {
@@ -725,7 +725,7 @@ const Engine = {
   // requester, so the button is disabled there (see UI.updateFairButton).
   async toggleFair() {
     if (S.mode !== 'server') return;
-    if (!S.lobby.isHost) { toast('Only the host can change Fair Queue', 'warn'); return; }
+    if (!UI.canControl()) { toast('Only the host or a DJ can change Fair Queue', 'warn'); return; }
     try {
       const r = await LobbyAPI.control(S.lobby.code, 'fair', { clientId: S.lobby.clientId, enabled: !S.fairEnabled });
       Lobby.applyControlResult(r);
@@ -735,7 +735,7 @@ const Engine = {
 
   async clearQueue() {
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can clear the queue', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can clear the queue', 'warn'); return; }
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/clear', { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
@@ -754,7 +754,7 @@ const Engine = {
     const next = modes[(modes.indexOf(S.loopMode) + 1) % 3];
 
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can change loop mode', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can change loop mode', 'warn'); return; }
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'loop', { clientId: S.lobby.clientId, mode: next });
         Lobby.applyControlResult(r);   // loopMode comes back in the state, UI follows
@@ -777,7 +777,7 @@ const Engine = {
     const next = modes[(modes.indexOf(S.autoplay) + 1) % 3];
 
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can change autoplay', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can change autoplay', 'warn'); return; }
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'autoplay', { clientId: S.lobby.clientId, mode: next });
         Lobby.applyControlResult(r);
@@ -803,7 +803,7 @@ const Engine = {
   // localStorage so the choice survives a reload.
   async toggleGapless() {
     if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can change gapless playback', 'warn'); return; }
+      if (!UI.canControl()) { toast('Only the host or a DJ can change gapless playback', 'warn'); return; }
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'gapless', { clientId: S.lobby.clientId, enabled: !S.gaplessEnabled });
         Lobby.applyControlResult(r);

@@ -5,7 +5,11 @@
 ═══════════════════════════════════════════ */
 const UI = {
 
-  isLocked() { return S.mode === 'server' && !S.lobby.isHost; },
+  // Host OR an appointed DJ (see the Disc Jockey card) may drive the player
+  // and the queue; everyone else in a lobby is locked out of those controls.
+  // Lobby SETTINGS and DJ management stay host-only and check isHost directly.
+  canControl() { return S.mode !== 'server' || S.lobby.isHost || S.lobby.isDj; },
+  isLocked() { return S.mode === 'server' && !this.canControl(); },
 
   applyLockState() {
     const locked = this.isLocked();
@@ -609,9 +613,39 @@ const UI = {
         <div class="cu-avatar ${p.isHost ? 'is-host' : ''}">${esc(initial)}</div>
         <div class="cu-meta">
           <div class="cu-name" title="${esc(p.name)}">${esc(p.name)}</div>
-          ${p.isHost ? '<div class="cu-tag">HOST</div>' : ''}
+          ${p.isHost ? '<div class="cu-tag">HOST</div>' : p.isDj ? '<div class="cu-tag">DJ</div>' : ''}
         </div>
       </div>`;
+    }).join('');
+  },
+
+  /* ───────── Disc Jockey card ─────────
+     The host clicks a connected user to make them a DJ, and clicks again to
+     remove them. DJs can drive the player and queue exactly like the host
+     (see UI.canControl / Lobby.djs in server.py). Everyone else sees the
+     same list read-only, so it's clear who can do what. */
+  renderDjCard(list) {
+    const wrap = document.getElementById('dj-list');
+    if (!wrap) return;
+    list = list || S.lobby.participants || [];
+    const isHost = S.mode === 'server' && S.lobby.isHost;
+    const hint = document.getElementById('dj-hint');
+    if (hint) hint.textContent = isHost
+      ? 'Click a user to make them a DJ. DJs can control the player and queue. Click again to remove.'
+      : 'DJs can control the player and queue like the host. Only the host can appoint them.';
+    if (!list.length) { wrap.innerHTML = `<div class="cu-empty">No one here yet</div>`; return; }
+    wrap.innerHTML = list.map(p => {
+      const initial = (p.name || '?').trim().charAt(0).toUpperCase() || '?';
+      const me = p.id === S.lobby.clientId;
+      const canToggle = isHost && !p.isHost;
+      const tag = p.isHost ? 'HOST' : p.isDj ? 'DJ' : '';
+      return `<button type="button" class="dj-item ${p.isDj ? 'is-dj' : ''} ${p.isHost ? 'is-host' : ''}" data-id="${esc(p.id)}" ${canToggle ? '' : 'disabled'}
+                title="${p.isHost ? 'The host always has full control' : canToggle ? (p.isDj ? 'Remove DJ' : 'Make DJ') : ''}">
+        <span class="cu-avatar ${p.isHost ? 'is-host' : ''}">${esc(initial)}</span>
+        <span class="dj-name">${esc(p.name)}${me ? ' <span class="dj-you">(you)</span>' : ''}</span>
+        ${tag ? `<span class="dj-tag">${tag}</span>` : ''}
+        ${canToggle ? `<span class="material-symbols-outlined dj-ico">${p.isDj ? 'remove_circle' : 'add_circle'}</span>` : ''}
+      </button>`;
     }).join('');
   },
 
@@ -633,6 +667,7 @@ const UI = {
     if (!this._cfgMode) this.setConfigMode(S.mode === 'standalone' ? 'standalone' : 'lobby');
     this.updateServerUrlDisplay();
     this.renderCurrentLobbyConfig();
+    this.renderDjCard();
     this.renderUserSettings();
     if (S.mode === 'server') Lobby.refreshPublicList();
     document.getElementById('sa-disconnect-cfg').style.display = (S.mode === 'standalone') ? 'inline-block' : 'none';

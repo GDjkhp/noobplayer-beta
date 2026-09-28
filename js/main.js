@@ -96,6 +96,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-qsmart').addEventListener('click', () => Engine.smartShuffle());
   document.getElementById('btn-qfair').addEventListener('click', () => Engine.toggleFair());
   document.getElementById('btn-autoplay').addEventListener('click', () => Engine.cycleAutoplay());
+  document.getElementById('dj-list').addEventListener('click', (e) => {
+    const b = e.target.closest('.dj-item');
+    if (b && !b.disabled) Lobby.toggleDj(b.dataset.id);
+  });
   document.getElementById('btn-qclr').addEventListener('click', () => {
     if (!S.queue.length) { toast('Queue is already empty', 'warn'); return; }
     Engine.clearQueue();

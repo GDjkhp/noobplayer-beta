@@ -154,11 +154,14 @@ const Lobby = {
 
   _applyState(state) {
     S.lobby.lastServerState = state;
-    const wasHost = S.lobby.isHost;
+    const wasHost = S.lobby.isHost, wasDj = S.lobby.isDj;
     S.lobby.isHost = state.hostId === S.lobby.clientId;
-    if (wasHost !== S.lobby.isHost) {
+    S.lobby.isDj = !S.lobby.isHost && (state.djs || []).includes(S.lobby.clientId);
+    if (wasHost !== S.lobby.isHost || wasDj !== S.lobby.isDj) {
       UI.applyLockState();
       if (S.lobby.isHost && !wasHost) toast('You are now the host', 'info');
+      else if (S.lobby.isDj && !wasDj) toast('You are now a DJ — you can control the player and queue', 'success', 4000);
+      else if (wasDj && !S.lobby.isDj && !S.lobby.isHost) toast('You are no longer a DJ', 'info');
     }
 
     S.queue = state.queue || [];
@@ -186,6 +189,17 @@ const Lobby = {
     } catch (e) { toast(`Error: ${e.message}`, 'error'); return false; }
   },
 
+  // Host-only: appoint/remove a DJ. The server toggles, broadcasts the new
+  // participants + state to everyone, and we apply the returned state so
+  // the host's own UI updates without waiting for the socket echo.
+  async toggleDj(targetId) {
+    if (!S.lobby.isHost) { toast('Only the host can appoint DJs', 'warn'); return; }
+    try {
+      const r = await LobbyAPI.control(S.lobby.code, 'dj', { clientId: S.lobby.clientId, targetId });
+      this._applyState(r.state);
+    } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+  },
+
   // Anyone can rename THEMSELVES at any time from the Config tab.
   async rename(displayName) {
     try {
@@ -201,9 +215,10 @@ const Lobby = {
     const strip = document.getElementById('participants-strip');
     strip.innerHTML = list.slice(0, 8).map(p => {
       const initial = (p.name || '?').trim().charAt(0).toUpperCase() || '?';
-      return `<div class="pchip ${p.isHost ? 'is-host' : ''}" title="${esc(p.name)}${p.isHost ? ' (host)' : ''}">${esc(initial)}</div>`;
+      return `<div class="pchip ${p.isHost ? 'is-host' : ''} ${p.isDj ? 'is-dj' : ''}" title="${esc(p.name)}${p.isHost ? ' (host)' : p.isDj ? ' (DJ)' : ''}">${esc(initial)}</div>`;
     }).join('');
     UI.renderChatUsers(list);
+    UI.renderDjCard(list);
   },
 
   _applyChat(msg) {
@@ -286,7 +301,7 @@ const Lobby = {
     S.autoQueue = []; S.autoQueueCount = 0;
     S.history = [];
     S.mode = null;
-    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, displayName:'', participants:[], socket:null, lastServerState:null, relayGen:0 };
+    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, isDj:false, displayName:'', participants:[], socket:null, lastServerState:null, relayGen:0 };
     document.getElementById('hdr-lobby').style.display = 'none';
     document.getElementById('tab-chat-btn').style.display = 'none';
     document.getElementById('chat-log').innerHTML = '';

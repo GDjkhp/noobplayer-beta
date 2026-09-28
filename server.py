@@ -1538,6 +1538,13 @@ class Lobby:
         # shuffle, smart shuffle) instead of waiting for a manual button.
         self.fair = True
 
+        # Disc Jockeys — participants the host has appointed (client ids).
+        # They pass _require_controller like the host does, so they can drive
+        # playback and the queue; host-only things (lobby settings, managing
+        # DJs) stay with the host. Cleaned up when someone leaves and when
+        # they become host (see remove_participant / /dj).
+        self.djs = set()
+
         self.relay = LobbyRelay(self)
 
     def apply_fair(self):
@@ -1658,10 +1665,11 @@ class Lobby:
             "historyCount": len(self.history),
             "gapless": self.gapless,
             "fair": self.fair,
+            "djs": sorted(self.djs),
         }
 
     def participant_list(self):
-        return [{"id": p.id, "name": p.name, "isHost": p.id == self.host_id} for p in self.participants.values()]
+        return [{"id": p.id, "name": p.name, "isHost": p.id == self.host_id, "isDj": p.id in self.djs} for p in self.participants.values()]
 
 
 LOBBIES = {}
@@ -1943,6 +1951,7 @@ async def _finalize_leave(lobby, client_id):
                  # later-expiring grace-period check both land here)
 
     p = lobby.participants.pop(client_id, None)
+    lobby.djs.discard(client_id)
     for sid in lobby.sids.pop(client_id, set()):
         _sid_registry.pop(sid, None)
         try:
@@ -1954,6 +1963,7 @@ async def _finalize_leave(lobby, client_id):
     was_host = lobby.host_id == client_id
     if was_host and lobby.participants:
         lobby.host_id = next(iter(lobby.participants))
+        lobby.djs.discard(lobby.host_id)   # the host already controls everything
 
     if not lobby.participants:
         await lobby.relay.shutdown()
@@ -2357,6 +2367,13 @@ def _require_host(lobby, client_id):
     return lobby.host_id == client_id
 
 
+def _require_controller(lobby, client_id):
+    """Host OR a DJ the host has appointed (see /dj and Lobby.djs). This is
+    the gate for everything that drives the player and the queue; lobby
+    settings and DJ management stay host-only (_require_host)."""
+    return lobby.host_id == client_id or client_id in lobby.djs
+
+
 
 @app.route("/api/lobby/<code>/play", methods=["POST"])
 async def lobby_play(code):
@@ -2365,8 +2382,8 @@ async def lobby_play(code):
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
     client_id = data.get("clientId")
-    if not _require_host(lobby, client_id):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, client_id):
+        return jsonify({"error": "host or DJ only"}), 403
     # Resuming from true silence (nothing currently playing) reuses the
     # existing pipeline if the relay is still parked idle-alive; interrupting
     # a track that's actively playing still needs a hard restart, since
@@ -2395,8 +2412,8 @@ async def lobby_pause(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     lobby.position_anchor_ms = lobby.current_position_ms()
     lobby.paused = True
     lobby.anchor_time = time.time()
@@ -2412,8 +2429,8 @@ async def lobby_resume(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     lobby.paused = False
     lobby.anchor_time = time.time()
     lobby.relay.set_paused(False)
@@ -2428,8 +2445,8 @@ async def lobby_seek(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     lobby.position_anchor_ms = float(data.get("positionMs", 0))
     lobby.anchor_time = time.time()
     await lobby.relay.reseek(lobby.position_anchor_ms)
@@ -2444,8 +2461,8 @@ async def lobby_skip(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     # skip_track_loop: pressing next under "repeat one" should move on, not
     # replay the same track forever. Everything else (repeat all re-queuing
     # the finished track, autoplay topping up an empty queue) applies here
@@ -2478,8 +2495,8 @@ async def lobby_stop(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     lobby.current_track = None
     lobby.queue = []
     lobby.auto_queue = []
@@ -2501,8 +2518,8 @@ async def lobby_prev(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     prev = lobby.previous_track()
     if prev is None:
         return jsonify({"error": "no previous track"}), 400
@@ -2528,8 +2545,8 @@ async def lobby_loop(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     mode = data.get("mode")
     if mode not in ("none", "track", "queue"):
         return jsonify({"error": "bad mode"}), 400
@@ -2551,8 +2568,8 @@ async def lobby_autoplay(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     mode = data.get("mode")
     if mode not in ("enabled", "partial", "disabled"):
         return jsonify({"error": "bad mode"}), 400
@@ -2583,13 +2600,50 @@ async def lobby_gapless(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     lobby.gapless = bool(data.get("enabled"))
     lobby.relay.ensure_preload()  # ON: start prefetching now; OFF: drop whatever was in flight
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})
+
+
+@app.route("/api/lobby/<code>/dj", methods=["POST"])
+async def lobby_dj(code):
+    """Host-only: appoint (or remove) a Disc Jockey. A DJ can control the
+    player and the queue exactly like the host — play/pause/seek/skip/stop,
+    loop/autoplay/gapless/fair, and every queue operation — but can't change
+    lobby settings or appoint other DJs. `enabled` omitted toggles."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    target = data.get("targetId")
+    p = lobby.participants.get(target)
+    if not p:
+        return jsonify({"error": "that user isn't in the lobby"}), 404
+    if target == lobby.host_id:
+        return jsonify({"error": "the host already controls everything"}), 400
+    enabled = data.get("enabled")
+    enabled = (target not in lobby.djs) if enabled is None else bool(enabled)
+    if enabled == (target in lobby.djs):
+        return jsonify({"ok": True, "isDj": enabled, "state": lobby.public_state()})
+    if enabled:
+        lobby.djs.add(target)
+    else:
+        lobby.djs.discard(target)
+    await broadcast(lobby, "chat", {
+        "system": True,
+        "text": f"🎧 {p.name} is now a DJ" if enabled else f"{p.name} is no longer a DJ",
+        "ts": time.time() * 1000,
+    })
+    await broadcast(lobby, "participants", lobby.participant_list())
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "isDj": enabled, "state": state})
 
 
 @app.route("/api/lobby/<code>/settings", methods=["POST"])
@@ -2723,7 +2777,7 @@ async def lobby_queue_remove(code):
     # added themselves. Removing your own mistake shouldn't need the host,
     # and letting anyone clear anyone's picks makes shared queues miserable.
     entry = lobby.queue[idx]
-    if not _require_host(lobby, client_id) and requester_key(entry) != client_id:
+    if not _require_controller(lobby, client_id) and requester_key(entry) != client_id:
         return jsonify({"error": "you can only remove tracks you added"}), 403
     lobby.queue.pop(idx)
     lobby.apply_fair()
@@ -2741,8 +2795,8 @@ async def lobby_queue_shuffle(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     random.shuffle(lobby.queue)
     lobby.apply_fair()   # with Fair on this only shuffles within each person's own tracks
     lobby.relay.ensure_preload()
@@ -2761,8 +2815,8 @@ async def lobby_queue_clear(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     removed = len(lobby.queue)
     lobby.queue = []
     lobby.auto_queue = []
@@ -2783,8 +2837,8 @@ async def lobby_queue_smart(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     if not lobby.current_track:
         return jsonify({"error": "nothing playing to base recommendations on"}), 400
 
@@ -2841,8 +2895,8 @@ async def lobby_fair(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     lobby.fair = bool(data.get("enabled"))
     changed = lobby.apply_fair()
     if changed:
@@ -2862,8 +2916,8 @@ async def lobby_queue_move(code):
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
     from_idx = data.get("fromIndex")
     to_idx = data.get("toIndex")
     fair_snapped = False
