@@ -504,6 +504,34 @@ class QuicPcmRelay:
         self.ok = False
 
 
+class PcmCache:
+    """One track's raw PCM, downloaded from NodeLink at position 0 and kept
+    in memory so the relay can seek by BYTE OFFSET instead of asking
+    NodeLink for `position: N`.
+
+    Why: NodeLink's `loadstream` position handling is not sample-exact for
+    every source, so audio started "at N ms" could really begin slightly
+    before/after N while the timeline (and therefore the progress bar and
+    the synced lyrics) claimed N exactly. A stream from position 0 has no
+    such offset, and s16le/48kHz/stereo is a fixed 192000 bytes/s, so
+    sample-exact seeking is just arithmetic (see LobbyRelay._pos_to_offset).
+
+    `key` = (encoded track, filters) — NodeLink bakes filters into the
+    PCM, so a different filter set is a different cache."""
+    __slots__ = ("key", "encoded", "buf", "done", "failed", "task",
+                 "started", "first_byte_at")
+
+    def __init__(self, key, encoded):
+        self.key = key
+        self.encoded = encoded
+        self.buf = bytearray()
+        self.done = False        # NodeLink stream ended cleanly: buf is the whole track
+        self.failed = False      # connection died before done: buf is partial
+        self.task = None
+        self.started = time.monotonic()
+        self.first_byte_at = None
+
+
 class LobbyRelay:
     """Owns the single live NodeLink -> PCM -> QUIC pipeline for one lobby."""
 
@@ -532,8 +560,14 @@ class LobbyRelay:
         # instead, which is what actually produces the gap — the relay
         # itself is untouched either way; only the boundary is quiet
         # rather than instant.
-        # Shape: {"track": dict, "chunks": [bytes], "done": bool, "task": Task}
+        # Shape: {"track": dict, "cache": PcmCache, "task": Task}
         self._preload = None
+
+        # ---- seek cache ---------------------------------------------
+        # The CURRENT track's full PCM (see PcmCache). The pump reads from
+        # it — not straight off the NodeLink socket — so every seek is a
+        # sample-exact byte offset. A claimed gapless preload becomes this.
+        self._cache = None
 
         # ---- idle keep-alive ----------------------------------------
         # When the queue naturally runs dry, _run used to just return,
@@ -598,6 +632,7 @@ class LobbyRelay:
             # server holds a reference to — an exact count, not a proxy.
             "listeners": len(self.audio_out.listeners),
             "hasPreload": self._preload is not None,
+            "seekCacheBytes": len(self._cache.buf) if self._cache else 0,
             "framesSent": self.stats["frames_sent"],
             "pcmBytesIn": self.stats["pcm_bytes_in"],
             "wireBytesOut": self.audio_out.bytes_out,   # Opus bytes produced (before per-listener fan-out)
@@ -674,8 +709,9 @@ class LobbyRelay:
         self._cancel_preload()
         if next_track is None:
             return
-        pre = {"track": next_track, "chunks": [], "done": False, "task": None}
-        pre["task"] = asyncio.create_task(self._preload_fetch(pre))
+        cache = PcmCache(self._cache_key(next_track, None), next_track.get("encoded"))
+        pre = {"track": next_track, "cache": cache, "task": None}
+        cache.task = pre["task"] = asyncio.create_task(self._fill_cache(cache, None))
         self._preload = pre
 
     def _cancel_preload(self):
@@ -683,29 +719,122 @@ class LobbyRelay:
             self._preload["task"].cancel()
         self._preload = None
 
-    async def _preload_fetch(self, pre):
-        """Background task: open the NodeLink connection for `pre["track"]`
-        early and keep buffering its raw PCM so it's ready (or at least
-        well underway) by the time the current track ends."""
-        body = {"encodedTrack": pre["track"].get("encoded"), "position": 0}
+    # ---- seek cache -----------------------------------------------------
+    @staticmethod
+    def _cache_key(track, filters):
+        return (track.get("encoded"), json.dumps(filters or {}, sort_keys=True, default=str))
+
+    @staticmethod
+    def _pos_to_offset(position_ms):
+        """Track position -> byte offset into the PCM. Whole frames only
+        (4 bytes: 2ch x s16), so the L/R samples can never swap."""
+        return int(round(max(0.0, position_ms) * PCM_RATE / 1000.0)) * (PCM_CHANNELS * 2)
+
+    @staticmethod
+    def _changes_duration(filters):
+        # timescale speed/rate make the output shorter/longer than the
+        # source, so output bytes no longer map 1:1 to source position.
+        ts = (filters or {}).get("timescale") or {}
+        return any(float(ts.get(k, 1.0) or 1.0) != 1.0 for k in ("speed", "rate"))
+
+    def _cacheable(self, track, filters):
+        if not getattr(config, "SEEK_CACHE_ENABLED", True):
+            return False
+        info = track.get("info") or {}
+        if info.get("isStream"):
+            return False
+        length = info.get("length")
+        max_s = getattr(config, "SEEK_CACHE_MAX_SECONDS", 900)
+        if not isinstance(length, (int, float)) or length <= 0 or length > max_s * 1000:
+            return False
+        return not self._changes_duration(filters)
+
+    def _cancel_cache(self):
+        c = self._cache
+        if c is not None and c.task and not c.task.done():
+            c.task.cancel()
+        self._cache = None
+
+    def _set_cache(self, cache):
+        if self._cache is not cache:
+            self._cancel_cache()
+        self._cache = cache
+
+    def _acquire_cache(self, track, filters):
+        """The cache for (track, filters), starting its download if needed.
+        None if this track can't/shouldn't be cached (live stream, longer
+        than SEEK_CACHE_MAX_SECONDS, or timescale in use) — the caller then
+        falls back to a live NodeLink fetch at `position`."""
+        if not self._cacheable(track, filters):
+            self._cancel_cache()
+            return None
+        key = self._cache_key(track, filters)
+        c = self._cache
+        if c is not None and c.key == key and not (c.failed and not c.done):
+            return c
+        self._cancel_cache()
+        c = PcmCache(key, track.get("encoded"))
+        c.task = asyncio.create_task(self._fill_cache(c, filters))
+        self._cache = c
+        return c
+
+    async def _fill_cache(self, cache, filters):
+        """Background task: pull the whole track from NodeLink at position
+        0 (NOT the seek target) into cache.buf as fast as NodeLink sends it."""
+        body = {"encodedTrack": cache.encoded, "position": 0}
+        if filters:
+            body["filters"] = filters
         try:
             async with http_session.post(f"{NL_HOST}/v4/loadstream", json=body,
                                           headers={"Authorization": NL_PASS},
                                           timeout=NODELINK_STREAM_TIMEOUT) as r:
                 if r.status != 200:
+                    print(f"[relay {self.lobby.code}] NodeLink loadstream {r.status} (seek cache): {await r.text()}")
+                    cache.failed = True
                     return
-                async for chunk in r.content.iter_chunked(8192):
-                    if self._preload is not pre:
-                        return  # superseded by a newer prediction
-                    pre["chunks"].append(bytes(chunk))
+                async for chunk in r.content.iter_chunked(65536):
+                    if cache.first_byte_at is None:
+                        cache.first_byte_at = time.monotonic()
+                    cache.buf.extend(chunk)
+            cache.done = True
         except asyncio.CancelledError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError):
-            pass  # preload is best-effort — _pump_track just falls back to a live fetch
+            cache.failed = True   # best-effort: _pump_track falls back / retries
         except Exception:
             traceback.print_exc()
-        finally:
-            pre["done"] = True
+            cache.failed = True
+
+    async def _cache_wait(self, cache, need, my_generation):
+        """Wait until the cache reaches byte `need`. True = go ahead and play
+        from the cache. False = it can't get there quickly enough (or the
+        download failed) — play live from NodeLink instead, which is the
+        old, less exact behaviour but doesn't stall on a far-ahead seek."""
+        limit = float(getattr(config, "SEEK_CACHE_WAIT_SECONDS", 6))
+        t0 = time.monotonic()
+        while True:
+            have = len(cache.buf)
+            if have >= need or cache.done:
+                return True   # (done + need past the end = seeking past the end -> track just ends)
+            if self.generation != my_generation:
+                return True   # caller notices and stops
+            if cache.failed:
+                return False
+            now = time.monotonic()
+            if have == 0:
+                # Nothing yet — a live fetch would be just as slow (track
+                # lookup / stream negotiation), so just keep waiting.
+                if now - t0 > 45:
+                    return False
+            else:
+                if now - t0 > limit * 3:
+                    return False
+                flowing = now - (cache.first_byte_at or now)
+                if flowing >= 1.0:
+                    rate = have / flowing            # bytes/s NodeLink is actually delivering
+                    if (need - have) / max(rate, 1.0) > limit:
+                        return False
+            await asyncio.sleep(0.05)
 
     # ---- session control ----------------------------------------------
     async def start_track(self, track, position_ms, filters):
@@ -809,6 +938,7 @@ class LobbyRelay:
         (lobby going away for good) see shutdown() below."""
         self._cancel_task()
         self._cancel_preload()
+        self._cancel_cache()
         self._idle = False
         self._idle_event.clear()
         self._pending = None
@@ -1018,10 +1148,16 @@ class LobbyRelay:
                 else:
                     self.stats["pace_drift_ms"].append(-delay * 1000)
 
-        # Prefer an already-running preload for this exact track. Only
-        # applies at position 0 — explicit seeks/skips always take the
-        # live-fetch path below since those go through start_track (a
-        # fresh generation), never through this natural-advance loop.
+        # Where PCM comes from, best first:
+        #   1. an already-running gapless preload of this exact track (only
+        #      at position 0 — it's just a PcmCache, and it becomes THE
+        #      cache for this track so later seeks reuse it);
+        #   2. the seek cache for (track, filters): the whole track is
+        #      fetched once from position 0 and every seek is a byte offset
+        #      into it — sample-exact, unlike NodeLink's `position` param;
+        #   3. a live NodeLink fetch at `position` (below) — only for
+        #      uncacheable tracks (streams, very long tracks, timescale) or
+        #      a seek so far ahead the cache can't get there in time.
         pre = self._preload
         use_preload = (
             pre is not None and position_ms == 0
@@ -1029,6 +1165,10 @@ class LobbyRelay:
         )
         if use_preload:
             self._preload = None  # this track is live now, not "next" anymore
+            cache = pre["cache"]
+            self._set_cache(cache)
+        else:
+            cache = self._acquire_cache(track, filters)
 
         # Now that `track`'s own preload (if any) has been claimed above —
         # so a fresh prediction below can't cancel it out from under us —
@@ -1039,39 +1179,44 @@ class LobbyRelay:
         # re-predicting `track` itself. Calling this any earlier (at the
         # top of _run's loop, or right when lobby.current_track was first
         # set to `track`) raced with the claim above and kept cancelling
-        # the very preload this function was about to consume — which is
-        # why the Debug tab's preload stat read "nothing preloaded" even
-        # with Gapless on, and every transition fell through to a blocking
-        # live NodeLink fetch instead.
+        # the very preload this function was about to consume.
         self.ensure_preload()
 
-        if use_preload:
-            idx = 0
-            try:
-                while True:
-                    if self.generation != my_generation:
-                        return "interrupted"
-                    await self._gate()
-                    if self.generation != my_generation:
-                        return "interrupted"
-                    if idx < len(pre["chunks"]):
-                        await feed_chunk(pre["chunks"][idx])
-                        idx += 1
-                    elif pre["done"]:
-                        break
-                    else:
-                        await asyncio.sleep(0.02)  # preload still catching up to real time
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                traceback.print_exc()
-                return "error"
-            await flush_tail()
-            return "ended"
+        if cache is not None:
+            target = self._pos_to_offset(position_ms)
+            if await self._cache_wait(cache, target + PCM_FRAME_BYTES * 10, my_generation):
+                off = target
+                try:
+                    while True:
+                        if self.generation != my_generation:
+                            return "interrupted"
+                        await self._gate()   # server-side pause: streams silence here, resumes exactly in place
+                        if self.generation != my_generation:
+                            return "interrupted"
+                        have = len(cache.buf)
+                        if off < have:
+                            end = min(off + 8192, have)
+                            chunk = bytes(cache.buf[off:end])
+                            off = end
+                            await feed_chunk(chunk)
+                        elif cache.done:
+                            break
+                        elif cache.failed:
+                            return "error"
+                        else:
+                            await asyncio.sleep(0.02)   # download still catching up to real time
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    traceback.print_exc()
+                    return "error"
+                await flush_tail()
+                return "ended"
+            if self.generation != my_generation:
+                return "interrupted"
+            print(f"[relay {self.lobby.code}] seek to {position_ms:.0f}ms is past what the cache can reach in time — live fetch fallback")
 
-        # Normal live fetch — first track of a session, or the preload
-        # missed/failed/didn't match (still counts as gapless-attempted,
-        # just falls back to a live fetch instead of buffered bytes).
+        # Live fetch at `position` — the fallback described above.
         body = {"encodedTrack": track.get("encoded"), "position": round(position_ms)}
         if filters:
             body["filters"] = filters

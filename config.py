@@ -109,3 +109,26 @@ RECOMMEND_FALLBACK_SEARCH = True
 # normal usage (someone locks their phone for a bit) the moment the last
 # active participant's stream drops.
 DISCONNECT_GRACE_SECONDS = 120
+
+# ── Exact seeking (lobby mode) ──
+# NodeLink's /v4/loadstream `position` isn't sample-exact for every source,
+# so a seek could start the audio a bit before/after the requested time
+# while the progress bar and synced lyrics assumed it was exact. With this
+# on, the server downloads each track ONCE from position 0 into memory and
+# seeks by byte offset (48kHz stereo s16le = 192000 bytes/sec), which is
+# sample-exact and makes seeks within the downloaded part instant.
+#
+# Cost: ~11.5 MB of RAM per minute of audio, for the current track (plus
+# the gapless-preloaded next track, same as before).
+SEEK_CACHE_ENABLED = True
+
+# Tracks longer than this (seconds) — and live streams, and anything using
+# a timescale filter with speed/rate != 1 — skip the cache and use the
+# old live NodeLink `position` seek instead. 900s (15 min) ~= 170 MB.
+SEEK_CACHE_MAX_SECONDS = 900
+
+# A seek past what has been downloaded waits for the download to reach it.
+# If, at the measured download speed, that would take longer than this many
+# seconds, the server plays live from NodeLink at `position` instead (the
+# old, less exact behaviour) rather than leaving listeners in silence.
+SEEK_CACHE_WAIT_SECONDS = 6
