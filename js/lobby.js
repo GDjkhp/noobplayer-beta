@@ -42,7 +42,7 @@ const Lobby = {
           // second participant would just displace us as host (a fresh
           // join, new clientId, same as any other participant). Just hop
           // over to the Current Lobby tab instead.
-          if (item.dataset.code === myCode) { UI.switchLobbyTab('current'); return; }
+          if (S.mode === 'server' && S.lobby.active && item.dataset.code === S.lobby.code) { UI.switchLobbyTab('current'); return; }
           const displayName = localStorage.getItem('nl_display_name') || 'Guest';
           const ok = await this.join(item.dataset.code, displayName);
           if (ok) UI.switchLobbyTab('current');
@@ -66,6 +66,13 @@ const Lobby = {
   async join(code, displayName) {
     code = (code || '').toUpperCase().trim();
     if (code.length !== 6) { toast('Lobby codes are 6 letters', 'warn'); return false; }
+    // Already in this lobby — a second join would create a new participant
+    // (new clientId) and displace us, so refuse it here at the source.
+    // Checked live rather than trusting whatever the caller rendered earlier.
+    if (S.mode === 'server' && S.lobby.active && S.lobby.code === code) {
+      toast("You're already in this lobby", 'warn');
+      return false;
+    }
     try {
       const r = await LobbyAPI.join(code, displayName || 'Guest');
       this._enterLobby(r.code, r.clientId, r.token, r.isHost, displayName || 'Guest', r.state);
