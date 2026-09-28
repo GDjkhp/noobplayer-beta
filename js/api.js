@@ -179,23 +179,11 @@ const LobbyAPI = {
   // hostname from JS, but "localhost" specifically is safe to hardcode.
   // A real (CA-signed, non-pinned) deployment wouldn't hit this at all —
   // see the comment in WebTransportPlayer.connect for that path.
-  //
-  // `info.host`, when the server sets QUIC_PUBLIC_IP (config.py), is
-  // exactly that IP literal for a deployment sitting behind a real
-  // domain — Backend.serverUrl's hostname (e.g. "doopees.gdjkhp.com")
-  // can't be used directly for the same reason "localhost" can't, and
-  // unlike localhost there's no way to derive it client-side, so the
-  // server just tells us.
   quicUrl(code, info) {
-    let host;
-    if (info.host) {
-      host = info.host;
-    } else {
-      host = new URL(this.base()).hostname;
-      if (host === 'localhost') host = '127.0.0.1';
-      else if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(host) && !host.startsWith('[')) {
-        throw new Error(`can't open a pinned WebTransport session to "${host}" — set QUIC_PUBLIC_IP in config.py to this server's public IP address (or use a CA-signed cert to skip pinning entirely)`);
-      }
+    let host = new URL(this.base()).hostname;
+    if (host === 'localhost') host = '127.0.0.1';
+    else if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(host) && !host.startsWith('[')) {
+      throw new Error(`can't open a pinned WebTransport session to "${host}" — connect via its IP address instead (or use a CA-signed cert to skip pinning entirely)`);
     }
     const path = info.path.replace('{code}', code);
     return `https://${host}:${info.port}${path}`;
