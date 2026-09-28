@@ -24,7 +24,7 @@ DEBUG = True
 # the relay produces, written straight onto its own QUIC stream.
 #
 # This DOES need a TLS handshake (QUIC always does), unlike the old HLS
-# design's plain HTTP <audio> element — see QUIC_CERT_FILE/QUIC_KEY_FILE
+# design's plain HTTP <audio> element — see the cert note
 # below. The WebTransport listener runs as its own UDP server, on the
 # SAME PORT NUMBER as FLASK_PORT above (TCP and UDP are independent
 # port namespaces, so this never conflicts with the HTTP server — it's
@@ -36,7 +36,7 @@ QUIC_PORT = FLASK_PORT
 # Hostinger VPS fronted by Traefik/DNS — NODELINK_HOST above being a
 # hostname is exactly this situation).
 #
-# WebTransport's serverCertificateHashes pinning (see QUIC_CERT_FILE
+# WebTransport's serverCertificateHashes pinning (see the cert note
 # below) is ONLY accepted by browsers when the connection URL's host is
 # an IP literal, never a hostname — even one that resolves to the right
 # server. api.js's LobbyAPI.quicUrl already special-cases "localhost" to
@@ -52,24 +52,20 @@ QUIC_PORT = FLASK_PORT
 # whatever domain the page was loaded from.
 #
 # Leave this empty (the default) for local dev, or if you've swapped
-# QUIC_CERT_FILE/QUIC_KEY_FILE below for a real CA-signed certificate —
+# the in-memory cert for a real CA-signed certificate —
 # that removes the need for pinning (and this IP) entirely, and the
 # client will connect by hostname instead once serverCertificateHashes
 # is dropped there too.
 QUIC_PUBLIC_IP = "187.127.124.78"
 
-# Self-signed cert for the WebTransport listener — regenerated
-# automatically by server.py whenever it's missing or close to expiry,
-# nothing to set up by hand. The browser trusts it via WebTransport's
-# serverCertificateHashes pinning (the client fetches the current hash
-# from GET /api/quic-info) rather than a real CA chain, which is why
-# this can just be a throwaway self-signed cert instead of something
-# from Let's Encrypt or similar.
-QUIC_CERT_FILE = "quic_cert.pem"
-QUIC_KEY_FILE = "quic_key.pem"
+# The WebTransport listener's self-signed cert is generated in memory at
+# startup — nothing is written to disk, nothing to set up by hand. The
+# browser trusts it via WebTransport's serverCertificateHashes pinning
+# (the client fetches the current hash from GET /api/quic-info) rather
+# than a real CA chain. It's re-rolled in the background every few days
+# while the server runs (see _quic_cert_rotation_loop in server.py).
 
-# How long (days) each generated cert stays valid before server.py
-# rotates it. WebTransport's serverCertificateHashes pinning REQUIRES a
+# How long (days) each generated cert stays valid. WebTransport's serverCertificateHashes pinning REQUIRES a
 # validity window of 14 days or less (see the WebTransport spec) — this
 # just needs to be comfortably under that; going all the way to 14 risks
 # briefly serving an already-expired cert if the server happens to be

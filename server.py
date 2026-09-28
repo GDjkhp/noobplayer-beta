@@ -40,7 +40,7 @@ Architecture
   of an <audio> element + hls.js, and there's no AAC encode step (and no
   PyAV dependency) in the live path at all anymore. QUIC/WebTransport
   needs a TLS handshake (server certs are self-signed and pinned by hash
-  — see _ensure_quic_cert below and GET /api/quic-info) where HLS was
+  — see _make_quic_cert below and GET /api/quic-info) where HLS was
   plain HTTP, but the UDP listener runs on the SAME PORT NUMBER as the
   TCP HTTP server (TCP and UDP ports are independent namespaces, so
   reusing the number is just a convenience — one port to forward/open in
@@ -101,7 +101,7 @@ from quart import Quart, Response, jsonify, request, send_from_directory
 from quart_cors import cors
 
 # ── QUIC / WebTransport (live lobby audio relay) ──
-# See _ensure_quic_cert / QuicPcmRelay / start_quic_server below. This is
+# See _make_quic_cert / QuicPcmRelay / start_quic_server below. This is
 # the ONLY thing that talks raw QUIC in this file — REST, Socket.IO, and
 # the static frontend are all still plain HTTP/WebSocket over the normal
 # TCP server (asgi_app), untouched by any of this.
@@ -1410,67 +1410,67 @@ async def broadcast(lobby, event, data):
 # doesn't matter to Python.
 # ═══════════════════════════════════════════════════════════════════
 QUIC_PORT = getattr(config, "QUIC_PORT", config.FLASK_PORT)   # same NUMBER as the HTTP server — TCP and UDP are independent port namespaces, so this is just a convenience (one number to open/forward in a firewall), never a shared socket
-QUIC_CERT_FILE = Path(getattr(config, "QUIC_CERT_FILE", "quic_cert.pem"))
-QUIC_KEY_FILE = Path(getattr(config, "QUIC_KEY_FILE", "quic_key.pem"))
 # WebTransport's serverCertificateHashes pinning (see GET /api/quic-info
 # below) — how a browser trusts this self-signed cert with no real CA
 # involved — requires the certificate's validity window to be 14 days or
-# less. Regenerating a couple of days early leaves slack so the server
-# is never caught serving an already-expired cert after being offline a
-# while.
+# less. The cert lives purely in memory (never written to disk): it's
+# generated at startup and re-rolled in the background well before it
+# expires (see _quic_cert_rotation_loop), so nothing needs managing by
+# hand and a restart just mints a fresh one.
 QUIC_CERT_DAYS = getattr(config, "QUIC_CERT_DAYS", 12)
+QUIC_CERT_ROTATE_DAYS = 5   # re-roll well inside the validity window
 
-_quic_cert_hash_hex = None   # hex sha-256 of the DER cert; set by _ensure_quic_cert() below
+_quic_cert_hash_hex = None   # hex sha-256 of the DER cert; set by _make_quic_cert() below
 _quic_server = None          # the aioquic asyncio.Server instance once start_quic_server() has run
 
 
-def _ensure_quic_cert():
-    """Self-signed EC (P-256) cert for the WebTransport listener,
-    (re)generated whenever it's missing, unreadable, or within a day of
-    expiring. Returns the SHA-256 hash (hex) of the DER-encoded
-    certificate — what the browser pins via serverCertificateHashes
-    instead of validating a real certificate chain (see /api/quic-info
-    and the connect code in webtransport-player.js). EC P-256 + SHA-256
-    signing matches aioquic's own test fixtures — the combination it's
-    most thoroughly exercised against."""
+def _make_quic_cert():
+    """Generates a fresh self-signed EC (P-256) cert entirely in memory.
+    Returns (cert, key) as cryptography objects — exactly what aioquic's
+    QuicConfiguration.certificate / .private_key hold — and updates
+    _quic_cert_hash_hex to the SHA-256 (hex) of the DER-encoded cert,
+    which is what the browser pins via serverCertificateHashes (see
+    /api/quic-info and webtransport-player.js). EC P-256 + SHA-256
+    signing matches aioquic's own test fixtures."""
     global _quic_cert_hash_hex
-    regenerate = True
-    if QUIC_CERT_FILE.exists() and QUIC_KEY_FILE.exists():
-        try:
-            existing = x509.load_pem_x509_certificate(QUIC_CERT_FILE.read_bytes())
-            if existing.not_valid_after_utc > datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1):
-                regenerate = False
-        except Exception:
-            pass  # unreadable/corrupt on disk — fall through and regenerate
-
-    if regenerate:
-        import ipaddress
-        key = ec.generate_private_key(ec.SECP256R1())
-        subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "nodelink-lobby")])
-        now = datetime.datetime.now(datetime.timezone.utc)
-        cert = (
-            x509.CertificateBuilder()
-            .subject_name(subject)
-            .issuer_name(issuer)
-            .public_key(key.public_key())
-            .serial_number(x509.random_serial_number())
-            .not_valid_before(now - datetime.timedelta(minutes=5))
-            .not_valid_after(now + datetime.timedelta(days=QUIC_CERT_DAYS))
-            .add_extension(
-                x509.SubjectAlternativeName([x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
-                critical=False,
-            )
-            .sign(key, hashes.SHA256())
+    import ipaddress
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "nodelink-lobby")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(days=QUIC_CERT_DAYS))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]),
+            critical=False,
         )
-        QUIC_CERT_FILE.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-        QUIC_KEY_FILE.write_bytes(key.private_bytes(
-            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption(),
-        ))
-        print(f"[quic] generated a fresh self-signed cert (valid {QUIC_CERT_DAYS}d) at {QUIC_CERT_FILE}")
-
-    cert = x509.load_pem_x509_certificate(QUIC_CERT_FILE.read_bytes())
+        .sign(key, hashes.SHA256())
+    )
     _quic_cert_hash_hex = hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).digest().hex()
-    return _quic_cert_hash_hex
+    return cert, key
+
+
+async def _quic_cert_rotation_loop(configuration):
+    """Swaps in a fresh in-memory cert every QUIC_CERT_ROTATE_DAYS so a
+    long-running process never ends up serving an expired one. Mutating
+    the shared QuicConfiguration in place is enough: each NEW connection
+    reads certificate/private_key at handshake time, while sessions
+    already established are unaffected (TLS is only validated once).
+    Tiny edge: a client that fetched /api/quic-info a moment before a
+    rotation pins the old hash and fails its handshake — leaving and
+    rejoining picks up the new one."""
+    while True:
+        await asyncio.sleep(QUIC_CERT_ROTATE_DAYS * 86400)
+        try:
+            configuration.certificate, configuration.private_key = _make_quic_cert()
+            print(f"[quic] rotated in-memory cert (sha-256 {_quic_cert_hash_hex[:16]}…)")
+        except Exception:
+            traceback.print_exc()
 
 
 _LOBBY_AUDIO_PATH_RE = re.compile(r"^/api/lobby/([A-Za-z0-9]{6})/audio$")
@@ -1575,7 +1575,6 @@ async def start_quic_server():
     if _quic_server is not None:
         return
     try:
-        cert_hash = _ensure_quic_cert()
         configuration = QuicConfiguration(alpn_protocols=H3_ALPN, is_client=False)
         # WebTransport (H3Connection(enable_webtransport=True)) advertises
         # H3_DATAGRAM support in its SETTINGS regardless of whether this
@@ -1590,7 +1589,8 @@ async def start_quic_server():
         # against this file), not something you'd notice from a plain
         # syntax check.
         configuration.max_datagram_frame_size = 65536
-        configuration.load_cert_chain(str(QUIC_CERT_FILE), str(QUIC_KEY_FILE))
+        configuration.certificate, configuration.private_key = _make_quic_cert()
+        cert_hash = _quic_cert_hash_hex
         bind_host = config.FLASK_HOST
         _quic_server = await quic_serve(
             bind_host,
@@ -1598,7 +1598,8 @@ async def start_quic_server():
             configuration=configuration,
             create_protocol=LobbyQuicProtocol,
         )
-        print(f"[quic] WebTransport listener on udp://{bind_host}:{QUIC_PORT} (cert sha-256 {cert_hash[:16]}…)")
+        asyncio.ensure_future(_quic_cert_rotation_loop(configuration))
+        print(f"[quic] WebTransport listener on udp://{bind_host}:{QUIC_PORT} (in-memory cert sha-256 {cert_hash[:16]}…)")
     except Exception:
         traceback.print_exc()
         print("[quic] failed to start the WebTransport listener — lobby audio will not work until this is fixed (is the UDP port already in use? is `aioquic`/`cryptography` installed?)")
