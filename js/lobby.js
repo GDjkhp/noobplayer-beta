@@ -53,6 +53,23 @@ const Lobby = {
     }
   },
 
+  // Join by typed code — the only way into a private lobby (they're never
+  // in the public list). join() itself validates length and refuses a
+  // lobby we're already in; the server rejects unknown codes.
+  async joinByCode() {
+    const input = document.getElementById('join-code-input');
+    const btn = document.getElementById('join-code-btn');
+    const code = input.value.toUpperCase().replace(/[^A-Z]/g, '').trim();
+    input.value = code;
+    if (!code) { toast('Enter a lobby code', 'warn'); input.focus(); return; }
+    btn.disabled = true;
+    try {
+      const displayName = localStorage.getItem('nl_display_name') || 'Guest';
+      const ok = await this.join(code, displayName);
+      if (ok) { input.value = ''; UI.switchLobbyTab('current'); }
+    } finally { btn.disabled = false; }
+  },
+
   async create(name, isPublic, displayName) {
     try {
       const r = await LobbyAPI.create(name || 'Untitled Lobby', isPublic, displayName || 'Guest');

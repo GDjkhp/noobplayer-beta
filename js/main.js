@@ -227,6 +227,13 @@ document.addEventListener('DOMContentLoaded', () => {
     tab.addEventListener('click', () => UI.switchLobbyTab(tab.dataset.ltab));
   });
 
+  /* ───────── Config: join a lobby by code (works for private lobbies) ───────── */
+  document.getElementById('join-code-btn').addEventListener('click', () => Lobby.joinByCode());
+  document.getElementById('join-code-input').addEventListener('keydown', e => { if (e.key === 'Enter') Lobby.joinByCode(); });
+  document.getElementById('join-code-input').addEventListener('input', e => {
+    e.target.value = e.target.value.toUpperCase().replace(/[^A-Z]/g, '');
+  });
+
   /* ───────── Config: user settings (display name / default lobby name) ───────── */
   document.getElementById('us-save').addEventListener('click', () => UI.saveUserSettings());
 

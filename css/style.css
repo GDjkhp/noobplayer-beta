@@ -140,6 +140,9 @@ body::after {
 .lobby-pane { display: none; flex-direction: column; }
 .lobby-pane.on { display: flex; }
 
+.join-code-row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+.join-code-row .hi { flex: 1; min-width: 0; font-family: var(--fm); letter-spacing: .15em; text-transform: uppercase; }
+.join-code-hint { font-family: var(--fm); font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
 .public-list { max-height: 280px; overflow-y: auto; scrollbar-width: thin; display: flex; flex-direction: column; gap: 6px; }
 .pl-item {
   display: flex; align-items: center; gap: 10px; padding: 10px 12px;

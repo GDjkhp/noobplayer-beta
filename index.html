@@ -397,11 +397,16 @@
             <div class="cfg-block">
               <span class="cfg-label">Lobby</span>
               <div class="lobby-tabs">
-                <button class="lobby-tab on" data-ltab="public">Public Lobbies</button>
+                <button class="lobby-tab on" data-ltab="public">Join Lobby</button>
                 <button class="lobby-tab" data-ltab="current">Current Lobby</button>
               </div>
 
               <div class="lobby-pane on" id="ltab-public">
+                <div class="join-code-row">
+                  <input id="join-code-input" class="hi" type="text" maxlength="6" placeholder="Enter 6-letter lobby code" autocomplete="off" autocapitalize="characters" spellcheck="false">
+                  <button id="join-code-btn" class="overlay-btn">Join</button>
+                </div>
+                <span class="join-code-hint">Public lobbies</span>
                 <div id="public-lobby-list" class="public-list"><div class="empty small"><p>Loading…</p></div></div>
               </div>
 
