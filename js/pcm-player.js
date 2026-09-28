@@ -219,11 +219,20 @@ class PCMPlayer {
 
   get isPaused() { return !this.ctx || this._wantPaused || this.ctx.state !== 'running'; }
 
+  // Fires cb once everything scheduled has actually been played. Polls the
+  // AudioContext clock instead of arming a wall-clock timeout: ctx.currentTime
+  // freezes while suspended, so a long pause can't trigger the track end.
   scheduleEnd(cb) {
-    if (this._endTimer) clearTimeout(this._endTimer);
+    if (this._endTimer) { clearTimeout(this._endTimer); this._endTimer = null; }
     if (!this.ctx) { cb(); return; }
-    const drainMs = Math.max(0, (this.nextTime - this.ctx.currentTime) * 1000) + 300;
-    this._endTimer = setTimeout(cb, drainMs);
+    const tick = () => {
+      this._endTimer = null;
+      if (!this.ctx || this.ctx.state === 'closed') return;
+      // nextTime is read live in case more audio gets scheduled meanwhile.
+      if (this.ctx.currentTime >= this.nextTime + 0.3) { cb(); return; }
+      this._endTimer = setTimeout(tick, 100);
+    };
+    this._endTimer = setTimeout(tick, 100);
   }
 
   async destroy() {
