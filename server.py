@@ -390,26 +390,40 @@ class WtListener:
 class QuicPcmRelay:
     """Fans the real-time-paced PCM the relay produces (see
     LobbyRelay.feed_chunk / _feed_silence) out to every WtListener
-    currently connected for this lobby — but Opus-encoded ONCE here
-    (one encoder per lobby, not per listener) instead of shipping raw
-    1536 kbps s16le. ~160 kbps on the wire, and idle silence collapses
-    to a few bytes per frame.
+    currently connected for this lobby, Opus-encoded ONCE here (one
+    encoder per lobby, not per listener).
 
     Wire format on each listener's single unidirectional stream: a
-    sequence of [uint16 big-endian length][Opus packet], one packet per
-    20ms frame. The encoder is continuous for the lobby's whole life
-    (skips/seeks/filter changes just change what PCM goes in, never
-    reset anything here), so a listener joining mid-session decodes
-    from its first packet like any live stream.
+    sequence of [uint16 BE length][payload], where payload[0] is a type:
+      0x00  Opus packet (20ms) — payload[1:] is the packet
+      0x01  TIMELINE sync — [flags u8][positionMs f64 BE]
+              positionMs = track position of the NEXT audio packet that
+                           follows this message in the stream
+              flags bit0 = running (position advances in real time from
+                           there; clear = paused/idle/loading, frozen)
+              flags bit1 = cut (discard every buffered-but-unplayed
+                           sample: a skip/seek/filter change/stop)
+    The client never guesses position or pause state: it plays whatever
+    arrives and reads the timeline off the stream. Pausing is done HERE
+    — the relay keeps streaming silence with running=False — so the
+    client never suspends its AudioContext and never has stale buffers
+    to play out on resume.
 
     One instance per lobby, created once at Lobby creation and kept
     alive for the lobby's entire life — close() is only called when the
     whole lobby goes away (see LobbyRelay.shutdown)."""
 
+    SYNC_EVERY_FRAMES = 50      # re-assert the timeline every ~1s (heals dropped/late packets, clock drift)
+    STALL_SECONDS = 0.08        # gap since last push that forces a fresh sync (source stalled, then resumed)
+
     def __init__(self, code):
         self.code = code
         self.listeners = set()
         self.bytes_out = 0          # encoded bytes produced (per-listener wire cost)
+        self.pos_ms = 0.0           # track position of the next audio frame
+        self.running = False        # is that position advancing in real time?
+        self._since_sync = 0
+        self._last_push = None
         self._pts = 0
         self._enc = None
         self.ok = False
@@ -428,19 +442,45 @@ class QuicPcmRelay:
             print(f"[quic {code}] failed to open libopus encoder — lobby audio will not work (does this PyAV/ffmpeg build include libopus?)")
             traceback.print_exc()
 
+    @staticmethod
+    def _sync_packet(pos_ms, running, cut):
+        flags = (1 if running else 0) | (2 if cut else 0)
+        payload = b"\x01" + struct.pack(">Bd", flags, float(pos_ms))
+        return struct.pack(">H", len(payload)) + payload
+
+    def _broadcast(self, framed):
+        for listener in list(self.listeners):
+            listener.push(framed)
+
+    def set_timeline(self, pos_ms, running, cut=False):
+        """Declare where the NEXT audio frame sits on the track timeline.
+        Call BEFORE pushing the frame it describes."""
+        self.pos_ms = float(pos_ms)
+        self.running = bool(running)
+        self._since_sync = 0
+        self._broadcast(self._sync_packet(self.pos_ms, self.running, cut))
+
     def add_listener(self, listener):
         self.listeners.add(listener)
+        # A joiner needs the timeline before its first audio packet.
+        listener.push(self._sync_packet(self.pos_ms, self.running, False))
 
     def remove_listener(self, listener):
         self.listeners.discard(listener)
         listener.close()
 
-    def push(self, pcm_bytes):
-        """Called by the relay for every real 20ms PCM frame AND every
-        silence frame — same contract as before; the encode happens here
-        so callers never need to know."""
+    def push(self, pcm_bytes, silence=False):
+        """Called by the relay for every 20ms PCM frame. `silence=True`
+        frames (idle / paused filler) never advance the track timeline."""
         if not self.ok:
             return
+        now = time.monotonic()
+        stalled = self._last_push is not None and now - self._last_push > self.STALL_SECONDS
+        self._last_push = now
+        if self.listeners and (stalled or self._since_sync >= self.SYNC_EVERY_FRAMES):
+            self._since_sync = 0
+            self._broadcast(self._sync_packet(self.pos_ms, self.running, False))
+        self._since_sync += 1
         try:
             frame = LobbyRelay._pcm_to_frame(pcm_bytes)
             frame.pts = self._pts
@@ -449,14 +489,13 @@ class QuicPcmRelay:
         except Exception:
             traceback.print_exc()
             return
+        if self.running and not silence:
+            self.pos_ms += PCM_FRAME_SAMPLES * 1000.0 / PCM_RATE
         for pkt in packets:
             data = bytes(pkt)
             self.bytes_out += len(data)
-            if not self.listeners:
-                continue
-            framed = struct.pack(">H", len(data)) + data
-            for listener in list(self.listeners):
-                listener.push(framed)
+            if self.listeners:
+                self._broadcast(struct.pack(">HB", len(data) + 1, 0) + data)
 
     def close(self):
         for listener in list(self.listeners):
@@ -687,7 +726,16 @@ class LobbyRelay:
         self._pending = None
         self._pace_next = None
         self.generation += 1
-        self._resume_event.set()
+        # A seek/filter change while PAUSED must stay paused (previously
+        # this unconditionally un-paused the relay while lobby.paused was
+        # still True, so audio streamed under a "paused" state).
+        if self.lobby.paused:
+            self._resume_event.clear()
+        else:
+            self._resume_event.set()
+        # Hard cut: every listener discards whatever it has buffered and
+        # shows the target position frozen until real audio arrives.
+        self.audio_out.set_timeline(position_ms if track is not None else 0, False, cut=True)
         if track is None:
             return
         self._task = asyncio.create_task(self._run(track, position_ms, filters, self.generation))
@@ -707,6 +755,10 @@ class LobbyRelay:
         commonly the very first track ever played in a fresh lobby, where
         there's no pipeline running yet to resume."""
         if self._task is not None and not self._task.done() and self._idle:
+            if self.lobby.paused:
+                self._resume_event.clear()
+            else:
+                self._resume_event.set()
             self._pending = (track, position_ms, filters if filters is not None else self.lobby.filters)
             self._idle = False
             self._idle_event.set()
@@ -721,6 +773,28 @@ class LobbyRelay:
             self._resume_event.clear()
         else:
             self._resume_event.set()
+
+    async def _gate(self):
+        """Server-side pause. While paused the relay keeps the SAME
+        stream flowing — real-time silence, timeline frozen — instead of
+        going quiet. Listeners never pause anything themselves, so
+        there's no stale client-side buffer to replay on resume, and a
+        seek/skip while paused just arrives as a cut. Returns once
+        resumed, having told listeners the exact frame position that
+        playback continues from."""
+        if self._resume_event.is_set():
+            return
+        ao = self.audio_out
+        ao.set_timeline(ao.pos_ms, False)
+        while not self._resume_event.is_set():
+            try:
+                await asyncio.wait_for(self._resume_event.wait(), timeout=0.02)
+            except asyncio.TimeoutError:
+                self._feed_silence()
+        ao.set_timeline(ao.pos_ms, True)
+        # Keep the lobby's own clock exactly on the stream position.
+        self.lobby.position_anchor_ms = ao.pos_ms
+        self.lobby.anchor_time = time.time()
 
     def _cancel_task(self):
         if self._task and not self._task.done():
@@ -739,6 +813,7 @@ class LobbyRelay:
         self._idle_event.clear()
         self._pending = None
         self.generation += 1
+        self.audio_out.set_timeline(0, False, cut=True)
 
     async def shutdown(self):
         """Full teardown — called once, when the lobby's last participant
@@ -830,6 +905,7 @@ class LobbyRelay:
                 # dropout, and never builds up a backlog either).
                 # resume_or_start() is what wakes this back up — see
                 # lobby_play / queue/add.
+                self.audio_out.set_timeline(0, False)   # nothing playing: timeline frozen while silence keeps flowing
                 self._idle = True
                 self._cancel_preload()  # nothing to predict past — re-established on resume
                 self._idle_event.clear()
@@ -886,6 +962,11 @@ class LobbyRelay:
             while len(pcm_buf) >= PCM_FRAME_BYTES:
                 frame_bytes = bytes(pcm_buf[:PCM_FRAME_BYTES])
                 del pcm_buf[:PCM_FRAME_BYTES]
+                if not anchor_corrected:
+                    # Frame 0 of this track/segment sits at position_ms
+                    # and the timeline runs from here (also marks the
+                    # exact sample a gapless track boundary lands on).
+                    self.audio_out.set_timeline(position_ms, True)
                 self.audio_out.push(frame_bytes)
                 self.stats["frames_sent"] += 1
                 self.stats["pcm_bytes_in"] += len(frame_bytes)
@@ -970,7 +1051,7 @@ class LobbyRelay:
                 while True:
                     if self.generation != my_generation:
                         return "interrupted"
-                    await self._resume_event.wait()
+                    await self._gate()
                     if self.generation != my_generation:
                         return "interrupted"
                     if idx < len(pre["chunks"]):
@@ -1004,7 +1085,7 @@ class LobbyRelay:
                 async for chunk in r.content.iter_chunked(8192):
                     if self.generation != my_generation:
                         return "interrupted"
-                    await self._resume_event.wait()   # blocks here while paused, resumes exactly in place
+                    await self._gate()   # server-side pause: streams silence here, resumes exactly in place
                     if self.generation != my_generation:
                         return "interrupted"
                     await feed_chunk(chunk)
@@ -1061,7 +1142,7 @@ class LobbyRelay:
             return
         silent_bytes = bytes(PCM_FRAME_BYTES)
         for _ in range(frame_count):
-            self.audio_out.push(silent_bytes)
+            self.audio_out.push(silent_bytes, silence=True)
 
     async def _advance_for_gapless(self, my_generation):
         """A track's audio source just ended naturally. Pop the next one

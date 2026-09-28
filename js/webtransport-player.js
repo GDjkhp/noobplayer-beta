@@ -1,57 +1,55 @@
 'use strict';
 /* ═══════════════════════════════════════════
    WebTransportPlayer — lobby (server) mode's audio transport AND
-   playback engine, replacing AudioElPlayer + hls.js entirely. Composes
-   a PCMPlayer (see pcm-player.js) for the actual AudioContext
-   scheduling — the bytes arriving over the WebTransport session are
-   the exact same 48kHz/stereo/s16le format PCMPlayer already knows how
-   to feed (see server.py's QuicPcmRelay/WtListener) — and adds on top
-   of it:
-     - the WebTransport connect + read loop (see connect() below)
-     - the same wall-clock anchor-mirroring AudioElPlayer used for
-       getPositionMs()/isPaused, kept deliberately SEPARATE from
-       PCMPlayer's own AudioContext-clock-based position tracking. The
-       raw byte stream carries no per-track timestamps, so there's no
-       reliable way to know from the bytes alone when a track boundary
-       happened inside it — the server's 'state' broadcasts (see
-       Engine._lobbySync) are still the source of truth for what
-       track/position to SHOW, exactly like they were with HLS; only
-       WHERE the actual sound comes from changed.
+   playback engine. Composes a PCMPlayer (pcm-player.js) for the actual
+   AudioContext scheduling and decodes the relay's Opus stream with
+   WebCodecs (see QuicPcmRelay in server.py for the wire format).
 
-   Because this owns a real AudioContext directly (via PCMPlayer)
-   rather than routing through an <audio> element +
-   createMediaElementSource, it also sidesteps the whole "an element
-   can only ever be captured by WebAudio once, for its entire
-   lifetime" workaround AudioElPlayer needed — there's no shared DOM
-   element to fight over between lobby joins anymore. Each join here is
-   just a fresh AudioContext via a fresh PCMPlayer, same as standalone
-   mode already worked.
+   THE SERVER IS THE PLAYER. This class never pauses, never seeks and
+   never guesses a position:
+     - Pause is server-side: the relay keeps streaming silence and marks
+       the timeline "not running". Nothing here suspends the
+       AudioContext, so there's no stale client buffer to replay on
+       resume.
+     - Skip/seek/filter change arrive as a "cut": everything scheduled
+       but not yet audible is stopped instantly, then the new audio
+       plays.
+     - Position (progress bar, lyrics, media session) is read off the
+       timeline events the relay embeds in the stream — "the next audio
+       frame is at X ms, running or frozen" — anchored to the exact
+       AudioContext time that frame plays, so it tracks what you HEAR,
+       not when a REST/socket message happened to arrive.
+   Socket.IO 'state' broadcasts still drive what track/queue/pause
+   button to SHOW (setAnchor/isPaused); setAnchor's position is only a
+   fallback until the first in-band timeline event arrives.
 ═══════════════════════════════════════════ */
+const WT_MIN_LEAD  = 0.08;  // s of scheduling margin (jitter absorber)
+const WT_LEAD_HIGH = 0.60;  // s ahead of the speakers before we assume a backlog...
+const WT_LEAD_LOW  = 0.15;  // ...and drop live frames until we're back down to this
+
 class WebTransportPlayer {
   constructor() {
     this._pcm = new PCMPlayer();
+    this._pcm.minLead = WT_MIN_LEAD;
     this._pcmReady = this._pcm.init(0.8);
     this._transport = null;
     this._closed = false;
-    this._decoder = null;
-    this._rx = new Uint8Array(0);   // partial length-prefixed packet carry-over
-    this._ts = 0;                    // µs timestamp for EncodedAudioChunk
 
+    this._decoder = null;
+    this._rx = new Uint8Array(0);   // partial length-prefixed message carry-over
+    this._ts = 0;                   // µs timestamp handed to the decoder
+    this._events = [];              // timeline events waiting for their place in decoded order
+    this._inflight = 0;             // chunks submitted to the decoder, outputs not yet seen
+    this._evTimer = null;
+    this._catchup = false;
+    this._tl = [];                  // playout timeline: [{ when (ctx s), pos (ms), running }]
+
+    // Fallback only — see class comment.
     this._anchorMs = 0;
     this._anchorWall = performance.now();
     this._anchorPaused = true;
   }
 
-  // Opens the WebTransport session for one lobby's live audio and starts
-  // reading it straight into the PCMPlayer scheduler. `certHashHex` is
-  // the self-signed cert's SHA-256 hash from GET /api/quic-info (see
-  // LobbyAPI.quicInfo/quicUrl in api.js) — WebTransport's
-  // serverCertificateHashes pinning is how the browser trusts it
-  // without a real CA involved. A production deployment fronted by a
-  // real (CA-signed) certificate instead would just drop the
-  // `serverCertificateHashes` option below and connect by hostname —
-  // none of the pinning/IP-literal restrictions apply to a normal
-  // trusted cert.
   async connect(url, certHashHex) {
     await this._pcmReady;
     if (typeof AudioDecoder === 'undefined') throw new Error('this browser has no WebCodecs AudioDecoder (needed for the Opus lobby stream)');
@@ -63,6 +61,7 @@ class WebTransportPlayer {
       error: (e) => { if (!this._closed) console.warn('Opus decoder error:', e); },
     });
     this._decoder.configure(cfg);
+
     const bytes = certHashHex.match(/../g).map((h) => parseInt(h, 16));
     this._transport = new WebTransport(url, {
       serverCertificateHashes: [{ algorithm: 'sha-256', value: new Uint8Array(bytes) }],
@@ -73,10 +72,6 @@ class WebTransportPlayer {
       .then(() => { if (!this._closed) toast('Lobby audio connection closed', 'warn', 4000); })
       .catch(() => { if (!this._closed) toast('Lobby audio connection dropped — try leaving and rejoining', 'error', 6000); });
 
-    // The relay opens exactly ONE unidirectional stream toward us for
-    // the whole session (see WtListener in server.py) and just keeps
-    // writing to it — grab that one stream off the incoming-streams
-    // queue and read it until it ends or the session closes.
     const streamsReader = this._transport.incomingUnidirectionalStreams.getReader();
     const { value: stream, done } = await streamsReader.read();
     if (done || !stream) throw new Error('lobby relay never opened an audio stream');
@@ -95,9 +90,9 @@ class WebTransportPlayer {
     }
   }
 
-  // Wire format (see QuicPcmRelay in server.py): repeated
-  // [uint16 BE length][Opus packet], one packet per 20 ms. Stream reads
-  // can split/merge packets arbitrarily, so keep the tail between reads.
+  // Messages: [uint16 BE length][type u8][body]. type 0 = Opus packet,
+  // type 1 = timeline sync [flags u8][positionMs f64 BE] (bit0 running,
+  // bit1 cut). Stream reads can split/merge messages arbitrarily.
   _ingest(chunk) {
     let buf = chunk;
     if (this._rx.length) {
@@ -108,20 +103,66 @@ class WebTransportPlayer {
     while (buf.length - off >= 2) {
       const len = (buf[off] << 8) | buf[off + 1];
       if (buf.length - off - 2 < len) break;
-      const pkt = buf.subarray(off + 2, off + 2 + len);
+      const msg = buf.subarray(off + 2, off + 2 + len);
       off += 2 + len;
-      if (this._decoder && this._decoder.state === 'configured') {
-        try {
-          this._decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: this._ts, data: pkt }));
-        } catch (e) { console.warn('Opus decode failed:', e); }
+      if (!len) continue;
+      if (msg[0] === 0) {
+        if (this._decoder && this._decoder.state === 'configured') {
+          try {
+            this._decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: this._ts, data: msg.subarray(1) }));
+            this._inflight++;
+          } catch (e) { console.warn('Opus decode failed:', e); }
+        }
+        this._ts += 20000;
+      } else if (msg[0] === 1 && len >= 10) {
+        const dv = new DataView(msg.buffer, msg.byteOffset, msg.byteLength);
+        const flags = msg[1];
+        // Applies right before the audio packet that FOLLOWS it (ts of
+        // the next chunk), i.e. in decoded-audio order.
+        this._events.push({ ts: this._ts, running: !!(flags & 1), cut: !!(flags & 2), pos: dv.getFloat64(2, false) });
       }
-      this._ts += 20000;
     }
     this._rx = off < buf.length ? buf.slice(off) : new Uint8Array(0);
+
+    if (this._events.length) {
+      if (this._inflight <= 0) this._applyEvents(Infinity);   // nothing decoding: apply now (e.g. a cut while the source is still loading)
+      else if (!this._evTimer) {
+        // Safety net if the decoder ever emits fewer outputs than chunks.
+        this._evTimer = setTimeout(() => { this._evTimer = null; this._applyEvents(Infinity); }, 80);
+      }
+    }
+  }
+
+  _applyEvents(uptoTs) {
+    while (this._events.length && this._events[0].ts <= uptoTs) this._applyEvent(this._events.shift());
+  }
+
+  _applyEvent(ev) {
+    if (ev.cut) {
+      // Skip/seek/filter change/stop: kill everything already scheduled.
+      this._pcm.cutOver(0);
+      this._tl = [];
+      this._catchup = false;
+    } else if (this._catchup) {
+      return;   // describes audio we're dropping to catch up — the next sync re-anchors
+    }
+    this._tl.push({ when: this._pcm.nextStartTime(), pos: ev.pos, running: ev.running });
+    if (this._tl.length > 64) this._tl.splice(0, this._tl.length - 32);
   }
 
   _onDecoded(ad) {
+    this._inflight = Math.max(0, this._inflight - 1);
     try {
+      this._applyEvents(ad.timestamp);
+
+      // Stay live: if a stall/burst left us far ahead of the speakers,
+      // drop frames until the backlog has played down — the server is
+      // the clock, not our queue.
+      const lead = this._pcm.leadSec();
+      if (this._catchup) { if (lead <= WT_LEAD_LOW) this._catchup = false; }
+      else if (lead > WT_LEAD_HIGH) this._catchup = true;
+      if (this._catchup) return;
+
       const n = ad.numberOfFrames;
       const L = new Float32Array(n);
       const R = new Float32Array(n);
@@ -133,43 +174,52 @@ class WebTransportPlayer {
     }
   }
 
-  // ── UI-facing anchor mirroring (matches AudioElPlayer's contract
-  // exactly — see the class doc comment above for why this stays
-  // separate from PCMPlayer's own internal AudioContext clock) ──
+  // ── server state mirroring (what the buttons show) + position ──
+  // setAnchor is called on every 'state' broadcast. The paused flag is
+  // the server's, applied instantly; the position is only used until the
+  // in-band timeline has produced one.
   setAnchor(positionMs, paused) {
     this._anchorMs = positionMs;
     this._anchorWall = performance.now();
     this._anchorPaused = paused;
   }
 
-  getPositionMs() {
-    return this._anchorPaused ? this._anchorMs : this._anchorMs + (performance.now() - this._anchorWall);
-  }
-
   get isPaused() { return this._anchorPaused; }
 
+  getPositionMs() {
+    const ctx = this._pcm.ctx;
+    if (!ctx || !this._tl.length) {
+      return this._anchorPaused ? this._anchorMs : this._anchorMs + (performance.now() - this._anchorWall);
+    }
+    const t = ctx.currentTime - (ctx.outputLatency || 0);   // what's audible now
+    while (this._tl.length > 1 && this._tl[1].when <= t) this._tl.shift();
+    const ev = this._tl[0];
+    if (!ev.running || t <= ev.when) return ev.pos;
+    return ev.pos + (t - ev.when) * 1000;
+  }
+
+  // Only ever makes sure the AudioContext is allowed to run (autoplay
+  // policy). Never used for pausing.
   async resume() {
-    this._anchorPaused = false;
     await this._pcmReady;
     await this._pcm.resume();
   }
 
-  pause() {
-    this._anchorPaused = true;
-    this._pcm.pause();
-  }
+  // Deliberately does NOT touch the AudioContext: pausing is the
+  // server's job (it streams silence), so nothing stale is left here.
+  pause() { this._anchorPaused = true; }
 
   setVolume(v) { this._pcm.setVolume(v); }
   getLevels() { return this._pcm.getLevels(); }
 
-  // ── visualizer feeds — identical surface to PCMPlayer/AudioElPlayer,
-  // so visualizer.js never has to know which mode is running ──
+  // ── visualizer feeds — identical surface to PCMPlayer ──
   get binCount() { return this._pcm.binCount; }
   getSpectrum(out) { return this._pcm.getSpectrum(out); }
   getWaveform(out) { return this._pcm.getWaveform(out); }
 
   async destroy() {
     this._closed = true;
+    if (this._evTimer) { clearTimeout(this._evTimer); this._evTimer = null; }
     if (this._decoder) { try { this._decoder.close(); } catch (_) {} this._decoder = null; }
     if (this._transport) { try { this._transport.close(); } catch (_) {} this._transport = null; }
     await this._pcm.destroy();

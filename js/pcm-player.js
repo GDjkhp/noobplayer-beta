@@ -22,6 +22,9 @@ class PCMPlayer {
     // (see `cutOver` below) can stop them all instantly instead of letting
     // whatever's already scheduled keep playing out.
     this._sources = [];
+    // Minimum scheduling lead. 20ms is fine for standalone; the lobby
+    // player raises it a little so network jitter doesn't underrun.
+    this.minLead = 0.02;
   }
 
   async init(volume = 0.8) {
@@ -92,7 +95,7 @@ class PCMPlayer {
     src.buffer = buf;
     src.connect(this.gain);
 
-    const when = Math.max(this.nextTime, this.ctx.currentTime + 0.02);
+    const when = Math.max(this.nextTime, this.ctx.currentTime + this.minLead);
     src.start(when);
     this._sources.push(src);
     src.onended = () => {
@@ -102,6 +105,11 @@ class PCMPlayer {
     if (this.startCtxTime === null) this.startCtxTime = when;
     this.nextTime = when + buf.duration;
   }
+
+  // When the next fed frame will start playing / how far ahead of the
+  // speakers everything already scheduled reaches.
+  nextStartTime() { return this.ctx ? Math.max(this.nextTime, this.ctx.currentTime + this.minLead) : 0; }
+  leadSec() { return this.ctx ? Math.max(0, this.nextTime - this.ctx.currentTime) : 0; }
 
   getPositionMs() {
     if (!this.ctx) return this.seekOffsetMs;
@@ -138,7 +146,7 @@ class PCMPlayer {
     for (const src of this._sources) { try { src.stop(0); } catch (_) {} }
     this._sources = [];
     if (this._endTimer) { clearTimeout(this._endTimer); this._endTimer = null; }
-    this.nextTime = this.ctx.currentTime + 0.02;
+    this.nextTime = this.ctx.currentTime + this.minLead;
     this.startCtxTime = null;
     this.seekOffsetMs = offsetMs;
     this.remainder = new Uint8Array(0);

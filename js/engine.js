@@ -1011,9 +1011,15 @@ const Engine = {
     }
     S.current = state.currentTrack;
 
+    // Pause/seek/position are the SERVER's: it keeps streaming (silence
+    // while paused) with the track position embedded in the stream, and
+    // the player reads its clock from that (see WebTransportPlayer). The
+    // client never pauses its own audio. The anchor set here is only the
+    // fallback until that in-band timeline arrives, and drives isPaused
+    // for the buttons; resume() just makes sure the AudioContext is
+    // allowed to run.
     S.player.setAnchor(state.positionMs, state.paused);
-    if (state.paused) S.player.pause();
-    else { try { await S.player.resume(); } catch (_) {} }
+    try { await S.player.resume(); } catch (_) {}
 
     UI.updatePlayerUI();
     UI.startPosTimer();
