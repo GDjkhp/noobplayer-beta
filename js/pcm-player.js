@@ -18,6 +18,10 @@ class PCMPlayer {
     this._endTimer = null;
     this.seekOffsetMs = 0;
     this._suspendedMs = null;
+    // ctx.suspend() is async — ctx.state keeps reading 'running' for a beat
+    // after pause() is called. This flag flips synchronously so isPaused (and
+    // the Media Session playbackState derived from it) is never stale.
+    this._wantPaused = false;
     // Every AudioBufferSourceNode `feed()` has scheduled, so a hard cutover
     // (see `cutOver` below) can stop them all instantly instead of letting
     // whatever's already scheduled keep playing out.
@@ -45,7 +49,13 @@ class PCMPlayer {
     this.startCtxTime = null;
     this.remainder = new Uint8Array(0);
     this._suspendedMs = null;
+    this._wantPaused = false;
     this._sources = [];
+    // Keep the OS media controls in sync with the REAL context state, so a
+    // state change that lands after the fact still updates playbackState.
+    this.ctx.onstatechange = () => {
+      if (typeof UI !== 'undefined' && UI.updateMediaSession) UI.updateMediaSession();
+    };
     return this;
   }
 
@@ -191,11 +201,14 @@ class PCMPlayer {
   pause() {
     if (this.ctx && this.ctx.state === 'running') {
       this._suspendedMs = this.getPositionMs();
-      this.ctx.suspend();
+      this._wantPaused = true;
+      this._suspendP = this.ctx.suspend().catch(() => {});
     }
   }
 
   async resume() {
+    this._wantPaused = false;
+    if (this._suspendP) { await this._suspendP; this._suspendP = null; }   // a quick pause→resume must not be undone by the pending suspend
     if (this.ctx && this.ctx.state === 'suspended') {
       await this.ctx.resume();
       this._suspendedMs = null;
@@ -204,7 +217,7 @@ class PCMPlayer {
 
   setVolume(v) { if (this.gain) this.gain.gain.value = Math.max(0, Math.min(2, v)); }
 
-  get isPaused() { return !this.ctx || this.ctx.state !== 'running'; }
+  get isPaused() { return !this.ctx || this._wantPaused || this.ctx.state !== 'running'; }
 
   scheduleEnd(cb) {
     if (this._endTimer) clearTimeout(this._endTimer);

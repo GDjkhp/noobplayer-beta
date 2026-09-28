@@ -177,6 +177,7 @@ const UI = {
   updateMediaSession() {
     if (!('mediaSession' in navigator)) return;
     const t = S.current;
+    MediaKeepAlive.sync(!!t, !!(t && S.player && !S.player.isPaused));   // mirror play/pause onto the silent element (see utils.js)
     if (!t) {
       navigator.mediaSession.metadata = null;
       navigator.mediaSession.playbackState = 'none';

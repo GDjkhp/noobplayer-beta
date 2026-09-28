@@ -173,8 +173,19 @@ document.addEventListener('DOMContentLoaded', () => {
      Engine methods the on-page buttons use, so host-locking in lobby
      mode etc. is respected automatically. */
   if ('mediaSession' in navigator) {
-    navigator.mediaSession.setActionHandler('play', () => Engine.togglePause());
-    navigator.mediaSession.setActionHandler('pause', () => Engine.togglePause());
+    // Explicit play/pause rather than two toggles: headphone buttons can
+    // send 'play' while we already think we're playing (or vice versa),
+    // and a blind toggle would then do the opposite of what was pressed.
+    navigator.mediaSession.setActionHandler('play', async () => {
+      console.debug('[mediaSession] play', { paused: S.player?.isPaused });
+      if (!S.current || !S.player || S.player.isPaused) await Engine.togglePause();
+      else UI.updateMediaSession();
+    });
+    navigator.mediaSession.setActionHandler('pause', async () => {
+      console.debug('[mediaSession] pause', { paused: S.player?.isPaused });
+      if (S.current && S.player && !S.player.isPaused) await Engine.togglePause();
+      else UI.updateMediaSession();
+    });
     navigator.mediaSession.setActionHandler('previoustrack', () => Engine.prev());
     navigator.mediaSession.setActionHandler('nexttrack', () => Engine.skip());
     navigator.mediaSession.setActionHandler('stop', () => Engine.stop());
