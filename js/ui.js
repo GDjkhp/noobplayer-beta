@@ -468,6 +468,7 @@ const UI = {
     // button click.
     if (S.lyricsFetchedFor === S.current.encoded) return;
     S.lyricsFetchedFor = S.current.encoded;
+    this._lyrHoldUntil = 0;
     document.getElementById('lyr-src-lbl').textContent = 'Loading…';
     document.getElementById('lyr-body').innerHTML = `<div class="empty"><div class="dots"><span></span><span></span><span></span></div><p>Fetching lyrics…</p></div>`;
     try {
@@ -501,8 +502,41 @@ const UI = {
     }
   },
 
+  // Auto-scroll yields to the user. Any manual scroll gesture (wheel, touch
+  // drag, scroll keys, grabbing a scrollbar) holds auto-scroll off for
+  // LYR_HOLD_MS after the LAST gesture; the active line is still
+  // highlighted meanwhile, and following resumes at the next line change
+  // once the hold lapses. We listen for the input events themselves, NOT
+  // 'scroll' — a scroll event can't tell our own smooth scrollIntoView from
+  // the user's. Window-level because the page (not just #lyr-body) is what
+  // scrolls in the stacked layouts.
+  LYR_HOLD_MS: 5000,
+  _lyrHoldUntil: 0,
+  _lyrBound: false,
+
+  _lyrBindUserScroll() {
+    if (this._lyrBound) return;
+    this._lyrBound = true;
+    const hold = () => { this._lyrHoldUntil = performance.now() + this.LYR_HOLD_MS; };
+    const opt = { passive: true, capture: true };
+    window.addEventListener('wheel', hold, opt);
+    window.addEventListener('touchmove', hold, opt);
+    window.addEventListener('keydown', (e) => {
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable) return;
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) hold();
+    }, opt);
+    // Scrollbar drag: the press lands on the root element (page scrollbar)
+    // or on #lyr-body's own gutter, to the right of its content box.
+    window.addEventListener('pointerdown', (e) => {
+      const t = e.target;
+      if (t === document.documentElement) hold();
+      else if (t.id === 'lyr-body' && e.offsetX >= t.clientWidth) hold();
+    }, opt);
+  },
+
   syncLyrics() {
     if (S.lyricsType !== 'synced' || !S.lyrics || !S.player) return;
+    this._lyrBindUserScroll();
     const nowMs = S.player.getPositionMs();
     let idx = -1;
     for (let i = 0; i < S.lyrics.length; i++) { if (S.lyrics[i].t <= nowMs) idx = i; else break; }
@@ -511,7 +545,7 @@ const UI = {
     document.querySelectorAll('.ll').forEach((el, i) => el.classList.toggle('active', i === idx));
     if (idx >= 0) {
       const active = document.querySelector(`.ll[data-i="${idx}"]`);
-      if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      if (active && performance.now() >= this._lyrHoldUntil) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
   },
 
