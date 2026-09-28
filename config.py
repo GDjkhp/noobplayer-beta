@@ -31,6 +31,14 @@ DEBUG = True
 # just one port number to open/forward instead of two).
 QUIC_PORT = FLASK_PORT
 
+# Opus bitrate (bits/sec) for the live lobby stream. Raw PCM was ~1536 kbps
+# per listener; Opus at 160 kbps is ~10x smaller and, because the source
+# tracks are already lossy (YouTube/SoundCloud etc. are Opus/AAC at
+# roughly 128-256 kbps), is effectively transparent. Raise it (192000-
+# 256000) if you want extra headroom for high-bitrate sources; lower it
+# (96000-128000) to save more. Encoded once per lobby, not per listener.
+QUIC_OPUS_BITRATE = 160000
+
 # The IP address browsers should actually open the WebTransport session
 # to, when this deployment sits behind a real domain name (like a
 # Hostinger VPS fronted by Traefik/DNS — NODELINK_HOST above being a

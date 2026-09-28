@@ -33,6 +33,9 @@ class WebTransportPlayer {
     this._pcmReady = this._pcm.init(0.8);
     this._transport = null;
     this._closed = false;
+    this._decoder = null;
+    this._rx = new Uint8Array(0);   // partial length-prefixed packet carry-over
+    this._ts = 0;                    // µs timestamp for EncodedAudioChunk
 
     this._anchorMs = 0;
     this._anchorWall = performance.now();
@@ -51,6 +54,15 @@ class WebTransportPlayer {
   // trusted cert.
   async connect(url, certHashHex) {
     await this._pcmReady;
+    if (typeof AudioDecoder === 'undefined') throw new Error('this browser has no WebCodecs AudioDecoder (needed for the Opus lobby stream)');
+    const cfg = { codec: 'opus', sampleRate: 48000, numberOfChannels: 2 };
+    const sup = await AudioDecoder.isConfigSupported(cfg);
+    if (!sup.supported) throw new Error('this browser cannot decode Opus via WebCodecs');
+    this._decoder = new AudioDecoder({
+      output: (ad) => this._onDecoded(ad),
+      error: (e) => { if (!this._closed) console.warn('Opus decoder error:', e); },
+    });
+    this._decoder.configure(cfg);
     const bytes = certHashHex.match(/../g).map((h) => parseInt(h, 16));
     this._transport = new WebTransport(url, {
       serverCertificateHashes: [{ algorithm: 'sha-256', value: new Uint8Array(bytes) }],
@@ -76,10 +88,48 @@ class WebTransportPlayer {
       while (!this._closed) {
         const { value, done } = await reader.read();
         if (done) break;
-        if (value && value.length) this._pcm.feed(value);
+        if (value && value.length) this._ingest(value);
       }
     } catch (e) {
       if (!this._closed) console.warn('WebTransportPlayer read loop ended:', e);
+    }
+  }
+
+  // Wire format (see QuicPcmRelay in server.py): repeated
+  // [uint16 BE length][Opus packet], one packet per 20 ms. Stream reads
+  // can split/merge packets arbitrarily, so keep the tail between reads.
+  _ingest(chunk) {
+    let buf = chunk;
+    if (this._rx.length) {
+      buf = new Uint8Array(this._rx.length + chunk.length);
+      buf.set(this._rx); buf.set(chunk, this._rx.length);
+    }
+    let off = 0;
+    while (buf.length - off >= 2) {
+      const len = (buf[off] << 8) | buf[off + 1];
+      if (buf.length - off - 2 < len) break;
+      const pkt = buf.subarray(off + 2, off + 2 + len);
+      off += 2 + len;
+      if (this._decoder && this._decoder.state === 'configured') {
+        try {
+          this._decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: this._ts, data: pkt }));
+        } catch (e) { console.warn('Opus decode failed:', e); }
+      }
+      this._ts += 20000;
+    }
+    this._rx = off < buf.length ? buf.slice(off) : new Uint8Array(0);
+  }
+
+  _onDecoded(ad) {
+    try {
+      const n = ad.numberOfFrames;
+      const L = new Float32Array(n);
+      const R = new Float32Array(n);
+      ad.copyTo(L, { planeIndex: 0, format: 'f32-planar' });
+      ad.copyTo(R, { planeIndex: ad.numberOfChannels > 1 ? 1 : 0, format: 'f32-planar' });
+      this._pcm.feedPlanar(L, R);
+    } finally {
+      ad.close();
     }
   }
 
@@ -120,6 +170,7 @@ class WebTransportPlayer {
 
   async destroy() {
     this._closed = true;
+    if (this._decoder) { try { this._decoder.close(); } catch (_) {} this._decoder = null; }
     if (this._transport) { try { this._transport.close(); } catch (_) {} this._transport = null; }
     await this._pcm.destroy();
   }

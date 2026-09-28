@@ -73,6 +73,16 @@ class PCMPlayer {
       if (r > 32767) r -= 65536;
       floatR[i] = r / 32768.0;
     }
+    this.feedPlanar(floatL, floatR);
+  }
+
+  // Schedules already-decoded planar float audio (-1..1). feed() above
+  // converts s16le bytes and lands here; WebTransportPlayer's WebCodecs
+  // Opus decoder calls this directly.
+  feedPlanar(floatL, floatR) {
+    if (!this.ctx || this.ctx.state === 'closed') return;
+    const frames = floatL.length;
+    if (!frames) return;
 
     const buf = this.ctx.createBuffer(this.CH, frames, this.SR);
     buf.copyToChannel(floatL, 0);

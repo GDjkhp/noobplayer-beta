@@ -89,6 +89,7 @@ import string
 import struct
 import time
 import uuid
+from fractions import Fraction
 import traceback
 from collections import deque
 from pathlib import Path
@@ -387,23 +388,45 @@ class WtListener:
 
 
 class QuicPcmRelay:
-    """Fans the SAME real-time-paced raw PCM the relay produces (see
+    """Fans the real-time-paced PCM the relay produces (see
     LobbyRelay.feed_chunk / _feed_silence) out to every WtListener
-    currently connected for this lobby — the QUIC/WebTransport
-    replacement for the old HLSMuxer, minus the AAC encode/HLS mux
-    entirely: there's no codec and no container here, just the same
-    48kHz stereo s16le frames the relay already produces, written
-    straight onto each listener's own unidirectional QUIC stream.
+    currently connected for this lobby — but Opus-encoded ONCE here
+    (one encoder per lobby, not per listener) instead of shipping raw
+    1536 kbps s16le. ~160 kbps on the wire, and idle silence collapses
+    to a few bytes per frame.
+
+    Wire format on each listener's single unidirectional stream: a
+    sequence of [uint16 big-endian length][Opus packet], one packet per
+    20ms frame. The encoder is continuous for the lobby's whole life
+    (skips/seeks/filter changes just change what PCM goes in, never
+    reset anything here), so a listener joining mid-session decodes
+    from its first packet like any live stream.
 
     One instance per lobby, created once at Lobby creation and kept
-    alive for the lobby's entire life, same lifecycle HLSMuxer had —
-    close() is only called when the whole lobby goes away (see
-    LobbyRelay.shutdown), never on an ordinary stop/pause."""
+    alive for the lobby's entire life — close() is only called when the
+    whole lobby goes away (see LobbyRelay.shutdown)."""
 
     def __init__(self, code):
         self.code = code
-        self.ok = True   # no encoder to fail open here — always ready for a listener to join
         self.listeners = set()
+        self.bytes_out = 0          # encoded bytes produced (per-listener wire cost)
+        self._pts = 0
+        self._enc = None
+        self.ok = False
+        try:
+            ctx = av.CodecContext.create("libopus", "w")
+            ctx.sample_rate = PCM_RATE
+            ctx.layout = "stereo"
+            ctx.format = "s16"
+            ctx.bit_rate = int(getattr(config, "QUIC_OPUS_BITRATE", 160000))
+            ctx.time_base = Fraction(1, PCM_RATE)
+            ctx.options = {"application": "audio", "frame_duration": "20", "vbr": "on"}
+            ctx.open()
+            self._enc = ctx
+            self.ok = True
+        except Exception:
+            print(f"[quic {code}] failed to open libopus encoder — lobby audio will not work (does this PyAV/ffmpeg build include libopus?)")
+            traceback.print_exc()
 
     def add_listener(self, listener):
         self.listeners.add(listener)
@@ -414,10 +437,26 @@ class QuicPcmRelay:
 
     def push(self, pcm_bytes):
         """Called by the relay for every real 20ms PCM frame AND every
-        silence frame — same shape either way, this never needs to know
-        which it's getting (identical contract to the old HLSMuxer.push)."""
-        for listener in list(self.listeners):
-            listener.push(pcm_bytes)
+        silence frame — same contract as before; the encode happens here
+        so callers never need to know."""
+        if not self.ok:
+            return
+        try:
+            frame = LobbyRelay._pcm_to_frame(pcm_bytes)
+            frame.pts = self._pts
+            self._pts += PCM_FRAME_SAMPLES
+            packets = self._enc.encode(frame)
+        except Exception:
+            traceback.print_exc()
+            return
+        for pkt in packets:
+            data = bytes(pkt)
+            self.bytes_out += len(data)
+            if not self.listeners:
+                continue
+            framed = struct.pack(">H", len(data)) + data
+            for listener in list(self.listeners):
+                listener.push(framed)
 
     def close(self):
         for listener in list(self.listeners):
@@ -522,6 +561,7 @@ class LobbyRelay:
             "hasPreload": self._preload is not None,
             "framesSent": self.stats["frames_sent"],
             "pcmBytesIn": self.stats["pcm_bytes_in"],
+            "wireBytesOut": self.audio_out.bytes_out,   # Opus bytes produced (before per-listener fan-out)
             "paceDriftMsAvg": avg(drift),
             "paceDriftMsMax": round(max(drift), 3) if drift else None,
             "sessionsStarted": self.stats["sessions_started"],

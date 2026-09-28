@@ -1121,6 +1121,7 @@ const Debug = {
       ['Pace drift ms (avg/max)', `${s.paceDriftMsAvg ?? '—'} / ${s.paceDriftMsMax ?? '—'}`],
       ['Sessions started', s.sessionsStarted],
       ['PCM produced', this._fmtBytes(s.pcmBytesIn)],
+      ['Opus on wire (per listener)', this._fmtBytes(s.wireBytesOut)],
       ['Last frame age', s.lastFrameAgeMs == null ? '—' : `${Math.round(s.lastFrameAgeMs)}ms`],
       ['Participants / Queue len', `${s.participants ?? '—'} / ${s.queueLength ?? '—'}`],
     ];
