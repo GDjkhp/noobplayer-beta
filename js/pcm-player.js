@@ -125,8 +125,12 @@ class PCMPlayer {
   // This just re-anchors position reporting (progress bar, lyrics sync,
   // etc.) to that same instant so it reads 0:00 for the new track instead
   // of continuing the previous track's elapsed time.
-  markTrackBoundary(offsetMs = 0) {
-    this.startCtxTime = this.nextTime;
+  // `at` lets the caller anchor to a boundary captured earlier (engine.js
+  // feeds the next track's audio immediately but only commits the switch
+  // once that boundary is actually audible, by which time nextTime has
+  // moved on).
+  markTrackBoundary(offsetMs = 0, at = this.nextTime) {
+    this.startCtxTime = at;
     this.seekOffsetMs = offsetMs;
   }
 

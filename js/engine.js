@@ -295,6 +295,10 @@ const Engine = {
   _ensurePreload() {
     if (S.mode === 'server') return;
     if (!S.gaplessEnabled) { this._cancelPreload(); return; }
+    // The next track is already spliced into the audio timeline and just
+    // waiting for the current one to finish being HEARD — queue state
+    // hasn't advanced yet, so predicting again would re-preload it.
+    if (this._pendingGen === S.playGen) return;
     const next = this._computeNextTrack();
     const wantKey = next ? next.encoded : null;
     const haveKey = S.preload ? S.preload.track.encoded : null;
@@ -342,6 +346,10 @@ const Engine = {
   // actually finish, then hard-cut to the next track.
   _handleStreamExhausted(gen) {
     if (gen !== S.playGen) return;
+    // This stream finished downloading while it is still only queued
+    // behind another track's audible tail (see _spliceTrackIn). Its
+    // "what's next" decision has to wait until it's actually playing.
+    if (this._pendingGen === gen) { this._exhaustedWhilePending = true; return; }
     if (!S.gaplessEnabled) { S.player.scheduleEnd(() => { if (gen === S.playGen) this._onTrackEnd(); }); return; }
     const next = this._computeNextTrack();
     const pre = S.preload;
@@ -353,56 +361,88 @@ const Engine = {
   },
 
   _spliceGapless(pre) {
-    const finished = S.current;
-    const next = this._advanceQueueState(finished);
-
-    // Safety net: if bookkeeping disagrees with what we preloaded
-    // (shouldn't normally happen — _ensurePreload uses the same rule as
-    // _advanceQueueState), don't play the wrong audio: fall back to a
-    // fresh hard-cut instead.
+    // Pure prediction — queue/history are NOT mutated here. That happens
+    // in _spliceTrackIn's commit, once the current track has actually
+    // finished playing (the network stream ends long before the audio
+    // does, since PCM downloads much faster than realtime).
+    const next = this._computeNextTrack();
     if (!next || next.encoded !== pre.track.encoded) {
       this._cancelPreload();
-      if (next) this._localPlay(next, 0);
-      else {
-        if (S.posTimer) { clearInterval(S.posTimer); S.posTimer = null; }
-        S.current = null;
-        UI.updatePlayerUI(); UI.renderQueue();
-        toast('Queue finished', 'info', 2000);
-      }
+      const gen = S.playGen;
+      S.player.scheduleEnd(() => { if (gen === S.playGen) this._onTrackEnd(); });
       return;
     }
-
-    // hardCut: false — the current track's stream has genuinely run out
-    // and its buffered tail is right about to finish anyway, so just
-    // continue the timeline exactly where that tail ends (see
-    // PCMPlayer.markTrackBoundary). Nothing audible is being cut short.
     this._spliceTrackIn(pre, next, { hardCut: false });
   },
 
   // Splices a preloaded track directly onto the current PCMPlayer — same
   // AudioContext, no re-init, no network refetch for whatever already
-  // arrived — either picking up exactly where the old track's scheduled
-  // audio ends (hardCut: false, the natural-end case above) or stopping
-  // the old track immediately (hardCut: true, an interrupt like
-  // Next/Previous/explicit play — see _playNowGapless below). Shared by
-  // both so they can never disagree about how a splice is wired up.
+  // arrived.
+  //   hardCut: true  — interrupt (Next/Previous/explicit play): stop the
+  //                    old audio now and switch the UI immediately.
+  //   hardCut: false — natural end: the audio is fed right away so it
+  //                    lands gaplessly behind the old track's scheduled
+  //                    tail, but the track/queue/UI state only flips when
+  //                    that boundary is actually reached. (Flipping at
+  //                    network-exhaustion made the player jump to the
+  //                    next song while the current one was still playing.)
   _spliceTrackIn(pre, next, { hardCut }) {
     const gen = ++S.playGen;
     if (S.fetchCtrl) { S.fetchCtrl.abort(); S.fetchCtrl = null; }
     if (S.trackEndTimer) { clearTimeout(S.trackEndTimer); S.trackEndTimer = null; }
-
-    S.current = next;
-    S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
     S.preload = null; // this track is live now, not "the preload" anymore
+    this._pendingGen = null;
+    this._exhaustedWhilePending = false;
 
-    if (hardCut) S.player.cutOver(0); else S.player.markTrackBoundary(0);
+    const showNext = (boundary) => {
+      S.current = next;
+      S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
+      if (hardCut) S.player.cutOver(0); else S.player.markTrackBoundary(0, boundary);
+      UI.updatePlayerUI();
+      UI.renderQueue();
+      UI.setBuffering(false);
+      UI.startPosTimer();
+      UI.updatePlayPauseIcons();
+      UI.updateEQ();
+    };
 
-    UI.updatePlayerUI();
-    UI.renderQueue();
-    UI.setBuffering(false);
-    UI.startPosTimer();
-    UI.updatePlayPauseIcons();
-    UI.updateEQ();
+    const afterShown = () => {
+      this._ensurePreload(); // start prefetching whatever comes after THIS track
+      this._populateRecommendations(next);
+    };
+
+    if (hardCut) showNext();
+    else {
+      // Where the finished track's scheduled audio ends = where the next begins.
+      const boundary = S.player.nextTime;
+      this._pendingGen = gen;
+      const tick = () => {
+        S.trackEndTimer = null;
+        if (gen !== S.playGen || !S.player || !S.player.ctx) return;
+        // ctx.currentTime freezes while paused, so pausing holds the switch.
+        if (S.player.ctx.currentTime < boundary) { S.trackEndTimer = setTimeout(tick, 50); return; }
+        this._pendingGen = null;
+        const adv = this._advanceQueueState(S.current);
+        if (!adv || adv.encoded !== next.encoded) {
+          // Queue was edited while the boundary was pending — the audio
+          // we spliced in is no longer what should play. Restart properly.
+          S.playGen++;
+          if (S.fetchCtrl) { S.fetchCtrl.abort(); S.fetchCtrl = null; }
+          if (adv) this._localPlay(adv, 0);
+          else {
+            if (S.posTimer) { clearInterval(S.posTimer); S.posTimer = null; }
+            S.current = null;
+            UI.updatePlayerUI(); UI.renderQueue();
+            toast('Queue finished', 'info', 2000);
+          }
+          return;
+        }
+        showNext(boundary);
+        afterShown();
+        if (this._exhaustedWhilePending) { this._exhaustedWhilePending = false; this._handleStreamExhausted(gen); }
+      };
+      S.trackEndTimer = setTimeout(tick, 50);
+    }
 
     // Feed whatever already arrived while it was preloading, in order —
     // this is what makes the transition instant instead of waiting on a
@@ -418,10 +458,7 @@ const Engine = {
       (async () => {
         try {
           // _startPreload's own connection may not have finished setting up
-          // pre.reader yet — this can now be reached moments after a
-          // preload kicked off (fast repeated skips), whereas the old
-          // natural-end-only path always had minutes to connect. Wait
-          // rather than assume it's ready.
+          // pre.reader yet (fast repeated skips) — wait rather than assume.
           while (!pre.reader) {
             if (gen !== S.playGen) return;
             if (pre.error || pre.done) return;
@@ -442,8 +479,7 @@ const Engine = {
       })();
     }
 
-    this._ensurePreload(); // start prefetching whatever comes after THIS track
-    this._populateRecommendations(next);
+    if (hardCut) afterShown();
   },
 
   // Entry point for interrupt-driven track changes (skip/prev/explicit
