@@ -16,6 +16,7 @@ const Main = {
     UI.updatePlayerUI();
     UI.renderQueue();
     UI.updateGaplessButton();
+    UI.updateFairButton();
   },
 
   async autoStart() {
@@ -93,7 +94,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-qshuf').addEventListener('click', () => Engine.shuffleQueue());
   document.getElementById('btn-qsmart').addEventListener('click', () => Engine.smartShuffle());
-  document.getElementById('btn-qfair').addEventListener('click', () => Engine.fairQueue());
+  document.getElementById('btn-qfair').addEventListener('click', () => Engine.toggleFair());
   document.getElementById('btn-autoplay').addEventListener('click', () => Engine.cycleAutoplay());
   document.getElementById('btn-qclr').addEventListener('click', () => {
     if (!S.queue.length) { toast('Queue is already empty', 'warn'); return; }

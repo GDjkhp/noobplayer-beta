@@ -29,6 +29,13 @@ const S = {
   // UI.updateGaplessButton / Engine.toggleGapless).
   gaplessEnabled: true,
 
+  // Fair Queue is an ON/OFF state, default ON. While on, the lobby server
+  // re-balances the queue between whoever added each track after every
+  // queue operation (add, remove, move, shuffle…). Lobby mode only — this
+  // MIRRORS Lobby.fair (see Engine._lobbySync); standalone has a single
+  // requester, so there's nothing to alternate and it does nothing there.
+  fairEnabled: true,
+
   // PCM engine
   player: null,
   fetchCtrl: null,

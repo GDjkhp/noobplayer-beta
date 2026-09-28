@@ -18,8 +18,9 @@ const UI = {
     // now (see Lobby.peek_next_track / advance_track in server.py), so they
     // follow the same host rule as every other playback control rather than
     // being switched off for everyone including the host.
-    ['btn-shuf','loop-btn','gapless-btn','btn-qshuf','btn-qclr','btn-qsmart','btn-qfair','btn-autoplay']
+    ['btn-shuf','loop-btn','gapless-btn','btn-qshuf','btn-qclr','btn-qsmart','btn-autoplay']
       .forEach(id => { const el = document.getElementById(id); if (el) el.disabled = locked; });
+    this.updateFairButton();   // also disabled outside lobby mode, so it owns its own state
 
     document.querySelectorAll('.add-btn.pnow').forEach(b => b.disabled = locked);
     document.getElementById('lock-badge').classList.toggle('show', locked);
@@ -53,6 +54,20 @@ const UI = {
     btn.title = S.mode === 'server'
       ? 'Gapless playback (host-controlled, shared by the whole lobby)'
       : 'Gapless playback (standalone mode)';
+  },
+
+  // Fair Queue is an ON/OFF state mirrored from the lobby (see
+  // Engine._lobbySync). It only means something with more than one
+  // person, so it's disabled in standalone as well as for non-hosts.
+  updateFairButton() {
+    const btn = document.getElementById('btn-qfair');
+    if (!btn) return;
+    btn.textContent = S.fairEnabled ? 'Fair: On' : 'Fair: Off';
+    btn.classList.toggle('on', S.fairEnabled);
+    btn.disabled = S.mode !== 'server' || this.isLocked();
+    btn.title = S.mode === 'server'
+      ? 'Fair Queue — keeps the queue alternating between whoever added each track, automatically (host-controlled, shared by the whole lobby)'
+      : 'Fair Queue — only applies in a lobby (needs tracks from more than one person)';
   },
 
   updateQueueHeader() {

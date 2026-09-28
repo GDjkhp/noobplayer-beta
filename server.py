@@ -1373,6 +1373,35 @@ def requester_key(track):
     return req.get("id") or "__unknown__"
 
 
+def fair_order(queue, current_track):
+    """Round-robin `queue` between whoever added each track, keeping every
+    person's own tracks in their existing relative order. The rotation
+    deliberately starts on someone OTHER than whoever's track is playing
+    (their turn comes round last). Pure function: returns a new list, and
+    applying it to an already-fair queue returns the same order, which is
+    what lets Lobby.apply_fair run after every queue operation."""
+    order, by_requester = [], {}
+    for t in queue:
+        key = requester_key(t)
+        if key not in by_requester:
+            order.append(key)
+            by_requester[key] = []
+        by_requester[key].append(t)
+    if len(order) <= 1:
+        return list(queue)
+    current_key = requester_key(current_track)
+    if current_key in order:
+        order.remove(current_key)
+        order.append(current_key)
+    out = []
+    for rnd in range(max(len(v) for v in by_requester.values())):
+        for key in order:
+            tracks = by_requester[key]
+            if rnd < len(tracks):
+                out.append(tracks[rnd])
+    return out
+
+
 def recommendation_query(track):
     """The identifier to hand /v4/loadtracks to get tracks like this one,
     or None if the source doesn't support recommendations."""
@@ -1503,7 +1532,25 @@ class Lobby:
         # On by default, same as standalone. See LobbyRelay.ensure_preload.
         self.gapless = True
 
+        # Fair Queue — a lobby-wide, host-controlled ON/OFF state (see the
+        # /fair route), ON by default. While on, apply_fair() re-balances
+        # the queue after every queue operation (add, remove, move,
+        # shuffle, smart shuffle) instead of waiting for a manual button.
+        self.fair = True
+
         self.relay = LobbyRelay(self)
+
+    def apply_fair(self):
+        """Re-balance the queue if Fair Queue is on. Returns True if the
+        order actually changed. Call it BEFORE relay.ensure_preload() so
+        the gapless prefetch targets the real next track."""
+        if not self.fair or len(self.queue) < 2:
+            return False
+        new = fair_order(self.queue, self.current_track)
+        if all(a is b for a, b in zip(new, self.queue)):
+            return False
+        self.queue[:] = new
+        return True
 
     def current_position_ms(self):
         if self.paused or not self.current_track:
@@ -1610,6 +1657,7 @@ class Lobby:
             "autoQueueCount": len(self.auto_queue),
             "historyCount": len(self.history),
             "gapless": self.gapless,
+            "fair": self.fair,
         }
 
     def participant_list(self):
@@ -2609,6 +2657,7 @@ async def lobby_queue_add(code):
         await populate_recommendations(lobby)
     else:
         lobby.queue.append(track)
+        lobby.apply_fair()
         lobby.relay.ensure_preload()  # queue may have just gone from empty -> non-empty
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
@@ -2646,6 +2695,7 @@ async def lobby_queue_add_bulk(code):
     else:
         lobby.queue.extend(tracks)
 
+    lobby.apply_fair()
     if started_playback:
         await lobby.relay.resume_or_start(lobby.current_track, 0)
         await populate_recommendations(lobby, broadcast_state=False)
@@ -2676,6 +2726,7 @@ async def lobby_queue_remove(code):
     if not _require_host(lobby, client_id) and requester_key(entry) != client_id:
         return jsonify({"error": "you can only remove tracks you added"}), 403
     lobby.queue.pop(idx)
+    lobby.apply_fair()
     lobby.relay.ensure_preload()  # the queue head may have changed
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
@@ -2693,6 +2744,7 @@ async def lobby_queue_shuffle(code):
     if not _require_host(lobby, data.get("clientId")):
         return jsonify({"error": "host only"}), 403
     random.shuffle(lobby.queue)
+    lobby.apply_fair()   # with Fair on this only shuffles within each person's own tracks
     lobby.relay.ensure_preload()
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
@@ -2763,6 +2815,7 @@ async def lobby_queue_smart(code):
     lobby.auto_queue = leftover
     lobby.queue.extend(added)
     random.shuffle(lobby.queue)
+    lobby.apply_fair()
     lobby.relay.ensure_preload()
 
     if added:
@@ -2776,58 +2829,27 @@ async def lobby_queue_smart(code):
     return jsonify({"ok": True, "added": len(added), "state": state})
 
 
-@app.route("/api/lobby/<code>/queue/fair", methods=["POST"])
-async def lobby_queue_fair(code):
-    """Host-only Fair Queue — round-robins the queue between whoever added
-    the tracks, so one person dumping a 40-track playlist doesn't bury
-    everyone else. Mirrors the bot's `fair` command, including starting the
-    rotation on someone OTHER than whoever's track is currently playing."""
+@app.route("/api/lobby/<code>/fair", methods=["POST"])
+async def lobby_fair(code):
+    """Host-only: turn Fair Queue ON or OFF for the whole lobby — same shape
+    as /gapless. While ON, every queue operation re-balances the queue
+    between whoever added the tracks (see Lobby.apply_fair), so one
+    person's 40-track playlist doesn't bury everyone else. Turning it ON
+    re-balances the current queue right away; turning it OFF just stops
+    the automatic re-balancing and leaves the queue as it is."""
     lobby = get_lobby_or_404(code)
     if not lobby:
         return jsonify({"error": "not found"}), 404
     data = await request.get_json(force=True, silent=True) or {}
     if not _require_host(lobby, data.get("clientId")):
         return jsonify({"error": "host only"}), 403
-    if not lobby.queue:
-        return jsonify({"error": "queue is empty"}), 400
-
-    order, by_requester = [], {}
-    for t in lobby.queue:
-        key = requester_key(t)
-        if key not in by_requester:
-            order.append(key)
-            by_requester[key] = []
-        by_requester[key].append(t)
-
-    if len(order) <= 1:
-        return jsonify({"ok": True, "changed": False, "state": lobby.public_state()})
-
-    current_key = requester_key(lobby.current_track)
-    if current_key in order:
-        order.remove(current_key)
-        order.append(current_key)  # their turn comes round last
-
-    new_queue = []
-    for rnd in range(max(len(v) for v in by_requester.values())):
-        for key in order:
-            tracks = by_requester[key]
-            if rnd < len(tracks):
-                new_queue.append(tracks[rnd])
-    lobby.queue = new_queue
-    lobby.relay.ensure_preload()
-
-    names = []
-    for key in order:
-        name = (by_requester[key][0].get("requester") or {}).get("name") or "Unknown"
-        names.append(f"{name} ({len(by_requester[key])})")
-    await broadcast(lobby, "chat", {
-        "system": True,
-        "text": "⚖️ Queue rebalanced · " + " · ".join(names),
-        "ts": time.time() * 1000,
-    })
+    lobby.fair = bool(data.get("enabled"))
+    changed = lobby.apply_fair()
+    if changed:
+        lobby.relay.ensure_preload()
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
-    return jsonify({"ok": True, "changed": True, "state": state})
+    return jsonify({"ok": True, "changed": changed, "state": state})
 
 
 @app.route("/api/lobby/<code>/queue/move", methods=["POST"])
@@ -2844,15 +2866,21 @@ async def lobby_queue_move(code):
         return jsonify({"error": "host only"}), 403
     from_idx = data.get("fromIndex")
     to_idx = data.get("toIndex")
+    fair_snapped = False
     if (isinstance(from_idx, int) and isinstance(to_idx, int)
             and 0 <= from_idx < len(lobby.queue) and 0 <= to_idx < len(lobby.queue)
             and from_idx != to_idx):
         item = lobby.queue.pop(from_idx)
         lobby.queue.insert(to_idx, item)
+        # With Fair on, a move that crosses between people snaps back to
+        # the alternating order; moves among one person's own tracks stick.
+        # fairSnapped lets the client say so instead of the row silently
+        # jumping back.
+        fair_snapped = lobby.apply_fair()
         lobby.relay.ensure_preload()  # the queue head may have changed
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
-    return jsonify({"ok": True, "state": state})
+    return jsonify({"ok": True, "state": state, "fairSnapped": fair_snapped})
 
 
 # ═══════════════════════════════════════════════════════════════════

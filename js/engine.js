@@ -645,6 +645,7 @@ const Engine = {
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/move', { clientId: S.lobby.clientId, fromIndex: from, toIndex: to });
         Lobby.applyControlResult(r);
+        if (r.fairSnapped) toast('Fair Queue is on — tracks keep alternating between people', 'info', 3000);
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
@@ -717,50 +718,19 @@ const Engine = {
           added.length ? 'success' : 'warn', 2500);
   },
 
-  // Fair Queue — round-robin the queue between whoever added each track so
-  // one person's 40-track playlist doesn't bury everyone else. The rotation
-  // deliberately starts on someone OTHER than whoever's track is playing.
-  async fairQueue() {
-    if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can rebalance the queue', 'warn'); return; }
-      if (!S.queue.length) { toast('Queue is empty', 'warn'); return; }
-      try {
-        const r = await LobbyAPI.control(S.lobby.code, 'queue/fair', { clientId: S.lobby.clientId });
-        Lobby.applyControlResult(r);
-        toast(r.changed ? 'Queue rebalanced' : 'Queue is already fair — only one person has tracks in it',
-              r.changed ? 'success' : 'info', 2500);
-      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
-      return;
-    }
-
-    // Standalone has a single requester by definition, so there's nothing to
-    // alternate between. Say so plainly rather than pretending it did work.
-    if (!S.queue.length) { toast('Queue is empty', 'warn'); return; }
-    const keys = [...new Set(S.queue.map(t => t.requester?.id || '__unknown__'))];
-    if (keys.length <= 1) { toast('Fair Queue needs tracks from more than one person — join a lobby to use it', 'info', 4000); return; }
-
-    const byRequester = new Map();
-    const order = [];
-    for (const t of S.queue) {
-      const k = t.requester?.id || '__unknown__';
-      if (!byRequester.has(k)) { byRequester.set(k, []); order.push(k); }
-      byRequester.get(k).push(t);
-    }
-    const currentKey = S.current?.requester?.id || '__unknown__';
-    if (order.includes(currentKey)) { order.splice(order.indexOf(currentKey), 1); order.push(currentKey); }
-
-    const out = [];
-    const rounds = Math.max(...[...byRequester.values()].map(v => v.length));
-    for (let r = 0; r < rounds; r++) {
-      for (const k of order) {
-        const list = byRequester.get(k);
-        if (r < list.length) out.push(list[r]);
-      }
-    }
-    S.queue = out;
-    UI.renderQueue();
-    this._ensurePreload();
-    toast('Queue rebalanced', 'success', 2000);
+  // Fair Queue is an ON/OFF state (default ON), host-controlled and shared
+  // by the whole lobby. While on, the server re-balances the queue between
+  // whoever added each track after every queue operation, so there's
+  // nothing to click per-rebalance any more. Standalone has a single
+  // requester, so the button is disabled there (see UI.updateFairButton).
+  async toggleFair() {
+    if (S.mode !== 'server') return;
+    if (!S.lobby.isHost) { toast('Only the host can change Fair Queue', 'warn'); return; }
+    try {
+      const r = await LobbyAPI.control(S.lobby.code, 'fair', { clientId: S.lobby.clientId, enabled: !S.fairEnabled });
+      Lobby.applyControlResult(r);
+      toast(`Fair Queue: ${r.state.fair ? 'ON' : 'OFF'}`, 'info', 1500);
+    } catch (e) { toast(`Error: ${e.message}`, 'error'); }
   },
 
   async clearQueue() {
@@ -894,8 +864,11 @@ const Engine = {
     // client's Gapless button just mirrors whatever comes back, same
     // reasoning as the two lines above.
     S.gaplessEnabled = !!state.gapless;
+    // Fair Queue: same story — the server's ON/OFF state, mirrored.
+    S.fairEnabled = state.fair !== false;
     UI.updateLoopButton();
     UI.updateGaplessButton();
+    UI.updateFairButton();
     UI.updateQueueHeader();
     UI.renderQueue();
 
