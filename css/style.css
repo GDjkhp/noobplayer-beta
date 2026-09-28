@@ -498,7 +498,7 @@ body::after {
 .cfg-mode-btn:hover { border-color: var(--accent); color: var(--text); background: var(--st-hover); }
 .cfg-mode-btn.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .cfg-section { display: none; flex-direction: column; gap: 20px; }
-.cfg-section.on { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+.cfg-section.on { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: stretch; }   /* stretch: cards in the same row share a height instead of leaving ragged gaps */
 @container (min-width: 820px) {
   .cfg-section.on { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
