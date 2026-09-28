@@ -14,19 +14,17 @@
      - Server requests + latency   → window.fetch is wrapped once; every
        call the app already makes (lobby control, chat, skins gallery,
        NodeLink proxy, stream open TTFB…) is logged automatically.
-     - Buffer dropouts (both modes) → PCMPlayer.prototype.feed is
-       wrapped. The original already decides "am I behind schedule"
-       every call (that's the whole point of `nextTime` vs
-       `ctx.currentTime`); this just reads that same math before/after
-       calling through. Lobby mode's WebTransportPlayer composes a real
+     - "Audible now" signal → PCMPlayer.prototype.feed/feedPlanar are
+       wrapped. Lobby mode's WebTransportPlayer composes a real
        PCMPlayer internally for its own AudioContext scheduling (see
-       webtransport-player.js), so this one wrap now covers both modes
-       identically — nothing lobby-specific needed here at all anymore.
+       webtransport-player.js), so these wraps cover both modes
+       identically — nothing lobby-specific needed here. (No dropout
+       detection: the lobby relay is a live, lossy-by-design stream, so
+       "a gap arrived" isn't a meaningful signal to report.)
      - Stream waveform → a rolling window sampled from
        S.player.getWaveform(), the analyser feed both PCMPlayer and
        WebTransportPlayer expose identically, so it works unmodified in
-       both modes. A detected dropout (either side) injects a few red
-       glitch columns instead of a real reading — see _injectWaveGlitch.
+       both modes.
        An optional segment grid (seconds, toggled in the UI) draws over
        this strip, with a scrolling time label per line — see
        _drawSegments.
@@ -90,10 +88,9 @@ const Debug = {
   // ── ring buffers ──
   net: [],            // server requests (from the fetch wrapper)
   playerEvents: [],   // Engine action → latency
-  dropouts: [],       // detected gaps/stalls, either side
   audioElEvents: [],  // #lobby-audio DOM events
   nodelinkRequests: [], // backend → NodeLink calls, pushed live (lobby mode)
-  _waveHistory: [],   // rolling waveform columns: {amp:0..1, dropout:bool, ts}, oldest first (index 0 = left edge = oldest, last index = right edge = "now")
+  _waveHistory: [],   // rolling waveform columns: {amp:0..1, ts}, oldest first (index 0 = left edge = oldest, last index = right edge = "now")
 
   // segment overlay toggle for the STREAM strip only — 'off' | 'seconds'
   // (the buffered strip never draws its own grid)
@@ -168,9 +165,6 @@ const Debug = {
 
   // Wraps PCMPlayer.prototype.feed — the single point every incoming PCM
   // chunk (standalone mode) passes through on its way to the speaker.
-  // Reads the exact same "am I ahead of or behind ctx.currentTime"
-  // comparison the original uses to schedule playback, so the dropout
-  // detection below can't drift out of sync with what's actually audible.
   patchPCMPlayer() {
     if (typeof PCMPlayer === 'undefined' || PCMPlayer.prototype._dbgPatched) return;
     PCMPlayer.prototype._dbgPatched = true;
@@ -178,17 +172,7 @@ const Debug = {
 
     const origFeed = PCMPlayer.prototype.feed;
     PCMPlayer.prototype.feed = function (bytes) {
-      let starvedMs = 0;
-      if (this.ctx && this.startCtxTime !== null) {
-        const need = this.ctx.currentTime + 0.02;
-        if (need > this.nextTime + 0.005) starvedMs = (need - this.nextTime) * 1000;
-      }
-
       const result = origFeed.call(this, bytes);
-
-      if (starvedMs > 2) {
-        self.dropout(starvedMs, (S.current && S.current.info && S.current.info.title) || '');
-      }
       self.actionReady(); // first bytes of a new stream = "audible now"
       return result;
     };
@@ -255,8 +239,7 @@ const Debug = {
   // WebTransportPlayer's connect()/destroy() are the lobby-mode analogue
   // of the old #lobby-audio DOM listeners: the only lifecycle events left
   // to watch now that there's no <audio> element (see webtransport-player.js)
-  // — actual dropout detection and "audible now" signaling both already
-  // come for free from patchPCMPlayer above, since WebTransportPlayer
+  // — "audible now" signaling already comes for free from patchPCMPlayer above, since WebTransportPlayer
   // composes a real PCMPlayer internally for its own scheduling.
   patchWebTransportPlayer() {
     if (typeof WebTransportPlayer === 'undefined' || WebTransportPlayer.prototype._dbgPatched) return;
@@ -337,10 +320,6 @@ const Debug = {
     if (rec) rec.latencyMs = Math.round(performance.now() - pa.ts);
     this._pendingAction = null;
   },
-  dropout(gapMs, context) {
-    dbgPushCap(this.dropouts, { ts: Date.now(), gapMs: Math.round(gapMs), context: context || '' }, EVT_CAP);
-    this._injectWaveGlitch(gapMs);
-  },
   audioElEvent(type, meta) { dbgPushCap(this.audioElEvents, { ts: Date.now(), type, meta }, EVT_CAP); },
 
   /* ───────── server-pushed stats (Socket.IO, lobby mode only) ─────────
@@ -402,7 +381,7 @@ const Debug = {
     // of what the player holds, recorded whether or not this tab is open)
   },
   clear() {
-    this.net = []; this.playerEvents = []; this.dropouts = [];
+    this.net = []; this.playerEvents = [];
     this.audioElEvents = [];
     this.nodelinkRequests = [];
     this._waveHistory = [];
@@ -460,23 +439,8 @@ const Debug = {
         }
       } catch (_) {}
     }
-    this._waveHistory.push({ amp, dropout: false, ts: performance.now() });
+    this._waveHistory.push({ amp, ts: performance.now() });
     if (this._waveHistory.length > WAVE_MAX_COLS) this._waveHistory.shift();
-  },
-
-  // Called from dropout() — there's no real signal during a dropout (the
-  // whole point is nothing arrived), so this doesn't invent one: it's
-  // silence, drawn as a flat red line (amp 0 — _drawStrip's Math.max(1, …)
-  // floor still gives it a hairline so it's visible), not a fake glitchy
-  // reading. Column count is roughly proportional to how long the gap
-  // was (capped so one huge stall doesn't swallow the whole visible
-  // window).
-  _injectWaveGlitch(gapMs) {
-    const cols = Math.max(3, Math.min(28, Math.round(gapMs / WAVE_TICK_MS)));
-    for (let i = 0; i < cols; i++) {
-      this._waveHistory.push({ amp: 0, dropout: true, ts: performance.now() });
-    }
-    while (this._waveHistory.length > WAVE_MAX_COLS) this._waveHistory.shift();
   },
 
   /* ───────── buffered waveform ─────────
@@ -648,7 +612,7 @@ const Debug = {
       const x = startX + i * colW;
       if (x < -colW || x > cssW) continue;
       const h = Math.max(1, col.amp * (cssH / 2 - 4));
-      ctx.fillStyle = col.dropout ? 'rgba(248,81,73,.92)' : opts.color;
+      ctx.fillStyle = opts.color;
       ctx.fillRect(x, midY - h, Math.max(1, colW - 0.4), h * 2);
     }
   },
@@ -847,7 +811,7 @@ const Debug = {
 
         <div class="dbg-section">
           <div class="dbg-section-title">
-            Stream waveform <span class="dbg-lane-hint">scrolling · red = dropout/glitch</span>
+            Stream waveform <span class="dbg-lane-hint">scrolling</span>
             <div class="dbg-seg-toggle" id="dbg-seg-toggle">
               <button class="dbg-seg-btn on" data-seg="off">Off</button>
               <button class="dbg-seg-btn" data-seg="seconds">Seconds</button>
@@ -878,18 +842,12 @@ const Debug = {
           </div>
         </div>
 
-        <div class="dbg-cols">
-          <div class="dbg-section">
-            <div class="dbg-section-title">Player events <span class="dbg-count" id="dbg-evt-count"></span></div>
-            <div class="dbg-scroll"><table class="dbg-table">
-              <thead><tr><th>time</th><th>action</th><th>mode</th><th>latency</th></tr></thead>
-              <tbody id="dbg-evt-body"></tbody>
-            </table></div>
-          </div>
-          <div class="dbg-section">
-            <div class="dbg-section-title">Dropouts / gaps <span class="dbg-count" id="dbg-drop-count"></span></div>
-            <div class="dbg-scroll"><div id="dbg-drop-list" class="dbg-list"></div></div>
-          </div>
+        <div class="dbg-section">
+          <div class="dbg-section-title">Player events <span class="dbg-count" id="dbg-evt-count"></span></div>
+          <div class="dbg-scroll"><table class="dbg-table">
+            <thead><tr><th>time</th><th>action</th><th>mode</th><th>latency</th></tr></thead>
+            <tbody id="dbg-evt-body"></tbody>
+          </table></div>
         </div>
 
         <div class="dbg-cols">
@@ -930,7 +888,6 @@ const Debug = {
     this._renderNetTable();
     this._renderNodelinkTable();
     this._renderEvtTable();
-    this._renderDrops();
     this._renderAel();
     this._renderSmartQueue();
     this._renderHistoryQueue();
@@ -965,7 +922,6 @@ const Debug = {
       ['Base/Output latency', ctx ? `${((ctx.baseLatency || 0) * 1000).toFixed(1)} / ${((ctx.outputLatency || 0) * 1000).toFixed(1)} ms` : '—'],
       ['Buffered ahead', this._fmtMaybeMs(this._bufferedAheadMs())],
       ['Avg request latency', this._fmtMaybeMs(netMs)],
-      ['Dropouts logged', String(this.dropouts.length)],
       ['Preload / queue chunks', this._queueChunksLabel()],
     ];
     el.innerHTML = cards.map(([k, v]) => `<div class="dbg-card"><div class="dbg-card-k">${esc(k)}</div><div class="dbg-card-v">${esc(String(v))}</div></div>`).join('');
@@ -1044,19 +1000,6 @@ const Debug = {
         <td>${esc(e.mode || '—')}</td>
         <td>${e.latencyMs == null ? (this._pendingAction && this._pendingAction.id === e.id ? 'pending…' : '—') : e.latencyMs + 'ms'}</td>
       </tr>`).join('') || `<tr><td colspan="4" class="dbg-empty-row">no actions yet</td></tr>`;
-  },
-
-  _renderDrops() {
-    const list = document.getElementById('dbg-drop-list');
-    const count = document.getElementById('dbg-drop-count');
-    if (!list) return;
-    count.textContent = `(${this.dropouts.length})`;
-    list.innerHTML = this.dropouts.slice(0, 20).map(d => `
-      <div class="dbg-list-row dbg-row-err">
-        <span class="dbg-mono">${this._fmtTime(d.ts)}</span>
-        <span>gap ${d.gapMs}ms</span>
-        <span class="dbg-muted">${esc(d.context || '')}</span>
-      </div>`).join('') || `<div class="dbg-empty-row">no dropouts detected</div>`;
   },
 
   _renderAel() {
