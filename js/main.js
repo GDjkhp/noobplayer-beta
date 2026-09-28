@@ -15,7 +15,6 @@ const Main = {
   enterApp() {
     UI.updatePlayerUI();
     UI.renderQueue();
-    UI.updateFilterStatus();
     UI.updateGaplessButton();
   },
 
@@ -189,19 +188,6 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     } catch (_) { /* not all browsers support the 'seekto' action */ }
   }
-
-  /* ───────── Filters ───────── */
-  document.querySelectorAll('.preset-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      UI.applyPreset(btn.dataset.preset);
-      await Engine.applyFilters(PRESETS[btn.dataset.preset]);
-      toast(`Filter: ${btn.dataset.preset}`, 'success', 1500);
-    });
-  });
-  [['f-speed','f-speed-v'],['f-pitch','f-pitch-v'],['f-rate','f-rate-v'],
-   ['f-edel','f-edel-v'],['f-efb','f-efb-v'],['f-emix','f-emix-v'],['f-rot','f-rot-v']]
-    .forEach(([sid,lid]) => document.getElementById(sid).addEventListener('input', () => UI.syncSliderLabel(sid, lid)));
-  document.getElementById('btn-apply-flt').addEventListener('click', () => Engine.applyFilters(UI.buildFiltersFromUI()));
 
   /* ───────── Meaning ───────── */
   document.getElementById('btn-meaning').addEventListener('click', () => UI.fetchMeaning());

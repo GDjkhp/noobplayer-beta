@@ -244,7 +244,7 @@ const Skins = {
       const r = Number(o.radius) + 'px';
       out.push(`.cfg-block,.hi,.overlay-btn,.cb,.qa,.add-btn,.preset-btn,.toast,
         .pl-item,#meaning-box,#si,#btn-srch,#chat-input,#chat-send,#src-sel,
-        .si-th,.qi-th,.si-nth,.qi-nth,#flt-status{border-radius:${r}}`);
+        .si-th,.qi-th,.si-nth,.qi-nth{border-radius:${r}}`);
       out.push(`.cb.sm,.cb.lg{border-radius:${Math.min(Number(o.radius) * 2, 50)}%}`);
     }
     if (Number(o.artRadius) > 0) {

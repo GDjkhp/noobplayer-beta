@@ -43,14 +43,14 @@
 const Engine = {
 
   /* ───────── low-level: actually fetch + play PCM locally ───────── */
-  async _localPlay(track, positionMs = 0, filters = {}) {
+  async _localPlay(track, positionMs = 0) {
     S.current = track;
     S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
 
     UI.updatePlayerUI();
     UI.setBuffering(true);
 
-    await this._startPCMStream(track.encoded, positionMs, filters);
+    await this._startPCMStream(track.encoded, positionMs);
     UI.renderQueue();
     this._ensurePreload();
     // Fire-and-forget: keeps the recommendation pool topped up off whatever
@@ -58,7 +58,7 @@ const Engine = {
     this._populateRecommendations(track);
   },
 
-  async _startPCMStream(encodedTrack, positionMs, filters) {
+  async _startPCMStream(encodedTrack, positionMs) {
     const gen = ++S.playGen;
     if (S.fetchCtrl) { S.fetchCtrl.abort(); S.fetchCtrl = null; }
     if (S.trackEndTimer) { clearTimeout(S.trackEndTimer); S.trackEndTimer = null; }
@@ -74,7 +74,7 @@ const Engine = {
 
     let resp;
     try {
-      resp = await Backend.openStream(encodedTrack, positionMs, filters, ctrl.signal);
+      resp = await Backend.openStream(encodedTrack, positionMs, ctrl.signal);
     } catch (e) {
       if (e.name === 'AbortError') return;
       UI.setBuffering(false);
@@ -296,8 +296,8 @@ const Engine = {
     if (S.mode === 'server') return;
     if (!S.gaplessEnabled) { this._cancelPreload(); return; }
     const next = this._computeNextTrack();
-    const wantKey = next ? next.encoded + '|' + JSON.stringify(S.filters) : null;
-    const haveKey = S.preload ? S.preload.track.encoded + '|' + JSON.stringify(S.preload.filters) : null;
+    const wantKey = next ? next.encoded : null;
+    const haveKey = S.preload ? S.preload.track.encoded : null;
     if (wantKey === haveKey) return;
     this._cancelPreload();
     if (!next) return;
@@ -310,11 +310,11 @@ const Engine = {
 
   _startPreload(track) {
     const ctrl = new AbortController();
-    const pre = { track, filters: { ...S.filters }, chunks: [], reader: null, done: false, error: null, ctrl };
+    const pre = { track, chunks: [], reader: null, done: false, error: null, ctrl };
     S.preload = pre;
     (async () => {
       try {
-        const resp = await Backend.openStream(track.encoded, 0, pre.filters, ctrl.signal);
+        const resp = await Backend.openStream(track.encoded, 0, ctrl.signal);
         if (S.preload !== pre) return; // superseded while we were connecting
         if (!resp.ok) { pre.error = `HTTP ${resp.status}`; pre.done = true; return; }
         pre.reader = resp.body.getReader();
@@ -345,8 +345,7 @@ const Engine = {
     if (!S.gaplessEnabled) { S.player.scheduleEnd(() => { if (gen === S.playGen) this._onTrackEnd(); }); return; }
     const next = this._computeNextTrack();
     const pre = S.preload;
-    if (next && pre && pre.track.encoded === next.encoded && !pre.error
-        && JSON.stringify(pre.filters) === JSON.stringify(S.filters)) {
+    if (next && pre && pre.track.encoded === next.encoded && !pre.error) {
       this._spliceGapless(pre);
     } else {
       S.player.scheduleEnd(() => { if (gen === S.playGen) this._onTrackEnd(); });
@@ -363,7 +362,7 @@ const Engine = {
     // fresh hard-cut instead.
     if (!next || next.encoded !== pre.track.encoded) {
       this._cancelPreload();
-      if (next) this._localPlay(next, 0, S.filters);
+      if (next) this._localPlay(next, 0);
       else {
         if (S.posTimer) { clearInterval(S.posTimer); S.posTimer = null; }
         S.current = null;
@@ -385,9 +384,8 @@ const Engine = {
   // arrived — either picking up exactly where the old track's scheduled
   // audio ends (hardCut: false, the natural-end case above) or stopping
   // the old track immediately (hardCut: true, an interrupt like
-  // Next/Previous/explicit play or a filter change — see
-  // _playNowGapless / _restreamWithFilters below). Shared by both so they
-  // can never disagree about how a splice is wired up.
+  // Next/Previous/explicit play — see _playNowGapless below). Shared by
+  // both so they can never disagree about how a splice is wired up.
   _spliceTrackIn(pre, next, { hardCut }) {
     const gen = ++S.playGen;
     if (S.fetchCtrl) { S.fetchCtrl.abort(); S.fetchCtrl = null; }
@@ -456,80 +454,13 @@ const Engine = {
   // audibly-gappy path (_localPlay → full network fetch) only when there's
   // nothing usable preloaded — e.g. the very first track of a session, or
   // skipping again before the preload for THIS jump had a chance to start.
-  async _playNowGapless(track, filters) {
-    if (!S.gaplessEnabled) { await this._localPlay(track, 0, filters); return; }
+  async _playNowGapless(track) {
+    if (!S.gaplessEnabled) { await this._localPlay(track, 0); return; }
     const pre = S.preload;
     const usable = pre && S.player && S.player.ctx && !pre.error && (pre.reader || pre.done)
-      && pre.track.encoded === track.encoded
-      && JSON.stringify(pre.filters) === JSON.stringify(filters);
-    if (!usable) { await this._localPlay(track, 0, filters); return; }
+      && pre.track.encoded === track.encoded;
+    if (!usable) { await this._localPlay(track, 0); return; }
     this._spliceTrackIn(pre, track, { hardCut: true });
-  },
-
-  // Re-streams the current track with new filters WITHOUT stopping
-  // playback while the new (filtered) stream is in flight — whatever's
-  // already scheduled on the current PCMPlayer keeps playing right up
-  // until the first bytes of the re-filtered stream actually arrive, at
-  // which point it's a hard cutover (same AudioContext, no re-init). That
-  // gap used to be the old filters' audio going dead silent the instant
-  // you hit Apply, then staying silent through a full init()+network
-  // round trip before the new filters' audio started — this keeps sound
-  // going the whole time instead.
-  async _restreamWithFilters(filters) {
-    if (!S.current) return;
-    if (!S.player || !S.player.ctx) { await this._startPCMStream(S.current.encoded, 0, filters); UI.startPosTimer(); this._ensurePreload(); return; }
-
-    const track = S.current;
-    const posMs = Math.round(S.player.getPositionMs());
-    const gen = ++S.playGen;
-
-    if (S.fetchCtrl) { S.fetchCtrl.abort(); S.fetchCtrl = null; }
-    if (S.trackEndTimer) { clearTimeout(S.trackEndTimer); S.trackEndTimer = null; }
-    this._cancelPreload(); // fetched with the old filters — stale the moment these change
-
-    const ctrl = new AbortController();
-    S.fetchCtrl = ctrl;
-
-    let resp;
-    try {
-      resp = await Backend.openStream(track.encoded, posMs, filters, ctrl.signal);
-    } catch (e) {
-      if (e.name === 'AbortError') return;
-      toast(`Filter stream error: ${e.message}`, 'error', 6000);
-      return;
-    }
-    if (gen !== S.playGen) return; // superseded by something else while we were connecting
-    if (!resp.ok) {
-      const errText = await resp.text().catch(() => '');
-      toast(`Filter stream error ${resp.status}: ${errText}`, 'error', 6000);
-      return;
-    }
-
-    const reader = resp.body.getReader();
-    let cut = false;
-    try {
-      while (true) {
-        if (gen !== S.playGen) return;
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (gen !== S.playGen) return;
-        if (!cut) {
-          // First real bytes of the re-filtered stream — cut over NOW.
-          // Everything up to this instant played gap-free on the old
-          // filters; only from here does the new filter actually apply.
-          cut = true;
-          S.player.cutOver(posMs);
-          UI.setBuffering(false);
-          UI.startPosTimer();
-        }
-        S.player.feed(value);
-      }
-    } catch (e) {
-      if (e.name !== 'AbortError') console.warn('filter restream error:', e.message);
-      return;
-    }
-    if (gen === S.playGen) this._handleStreamExhausted(gen);
-    this._ensurePreload(); // stale (old filters) — restart so the next gapless splice sounds right
   },
 
   _onTrackEnd() {
@@ -542,7 +473,7 @@ const Engine = {
     // first track of a session, or a queue change too close to the end.
     const next = this._advanceQueueState(S.current);
     if (next) {
-      this._localPlay(next, 0, S.filters);
+      this._localPlay(next, 0);
     } else {
       if (S.posTimer) { clearInterval(S.posTimer); S.posTimer = null; }
       S.current = null;
@@ -572,7 +503,7 @@ const Engine = {
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
-    await this._playNowGapless(track, S.filters);
+    await this._playNowGapless(track);
     toast(track.info.title, 'success', 2000);
   },
 
@@ -612,7 +543,7 @@ const Engine = {
     // one" should move on rather than replay forever.
     const next = this._advanceQueueState(S.current, { skipTrackLoop: true });
     if (!next) { if (S.current) this.stop(); else toast('Queue is empty', 'warn'); return; }
-    await this._playNowGapless(next, S.filters);
+    await this._playNowGapless(next);
   },
 
   async prev() {
@@ -627,7 +558,7 @@ const Engine = {
     if (S.history.length === 0) { toast('No previous track', 'warn'); return; }
     if (S.current) S.queue.unshift(S.current);
     const prevTrack = S.history.pop();
-    await this._playNowGapless(prevTrack, S.filters);
+    await this._playNowGapless(prevTrack);
   },
 
   async stop() {
@@ -656,7 +587,7 @@ const Engine = {
       return;
     }
     if (!S.current) return;
-    await this._startPCMStream(S.current.encoded, posMs, S.filters);
+    await this._startPCMStream(S.current.encoded, posMs);
     UI.startPosTimer();
     this._ensurePreload();
   },
@@ -917,26 +848,6 @@ const Engine = {
     toast(`Gapless playback: ${S.gaplessEnabled ? 'ON' : 'OFF'}`, 'info', 1500);
   },
 
-  async applyFilters(filters) {
-    S.filters = filters;
-    UI.updateFilterStatus();
-    if (S.mode === 'server') {
-      if (!S.lobby.isHost) { toast('Only the host can change filters', 'warn'); return; }
-      try {
-        const r = await LobbyAPI.control(S.lobby.code, 'filters', { clientId: S.lobby.clientId, filters });
-        Lobby.applyControlResult(r);
-      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
-      return;
-    }
-    if (!S.current) {
-      toast('Filters saved — will apply on next track', 'info');
-      this._ensurePreload();
-      return;
-    }
-    toast('Applying filters…', 'info', 1500);
-    await this._restreamWithFilters(filters);
-  },
-
   /* ───────── called by Lobby.onState() to drive WebTransportPlayer off server-authoritative state ─────────
      Lobby mode no longer runs a local NodeLink PCM fetch at all — the
      server produces the track's PCM once and fans it out raw over QUIC
@@ -951,7 +862,7 @@ const Engine = {
      naturally and LobbyRelay stitches the next one into the SAME PCM
      relay — see server.py) changes `currentTrack` without any reconnect
      on this end at all — WebTransportPlayer just keeps reading more PCM
-     off the same session. Nor does a hard cut (skip/seek/filter change,
+     off the same session. Nor does a hard cut (skip/seek,
      `relayGen` bumping) — it's just more audio arriving in that same
      continuous stream.
 
@@ -969,9 +880,6 @@ const Engine = {
      server.py. */
   async _lobbySync(state) {
     if (!S.player) S.player = new WebTransportPlayer();
-
-    S.filters = state.filters || {};
-    UI.updateFilterStatus();
 
     // Loop mode, autoplay and the recommendation pool are the SERVER's in
     // lobby mode — the host mutates them through the control endpoints and

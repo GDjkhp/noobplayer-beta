@@ -18,7 +18,7 @@ Architecture
 ------------
 - Music playback: the server holds *authoritative* playback state per lobby
   (current track, paused/playing, a position anchor + server timestamp,
-  active filters, queue) AND owns the actual audio pipeline too. For each
+  queue) AND owns the actual audio pipeline too. For each
   lobby, ONE background task (LobbyRelay, below) pulls raw PCM from
   NodeLink, real-time-paces it, and hands it to a per-lobby QuicPcmRelay,
   which fans the SAME raw s16le/48kHz/stereo frames out to every
@@ -58,7 +58,7 @@ Architecture
   which drives the same disconnect-grace-period logic that used to key
   off the old SSE connection (see _schedule_disconnect_check below).
   `public_state()` still includes `relayGen` (bumps on a hard cut —
-  skip/seek/filter change) for the Debug tab's benefit; playback clients
+  skip/seek) for the Debug tab's benefit; playback clients
   don't need to watch it for anything — the QUIC relay just keeps
   flowing across a generation bump, no reconnect needed, same as before.
 
@@ -402,7 +402,7 @@ class QuicPcmRelay:
               flags bit0 = running (position advances in real time from
                            there; clear = paused/idle/loading, frozen)
               flags bit1 = cut (discard every buffered-but-unplayed
-                           sample: a skip/seek/filter change/stop)
+                           sample: a skip/seek/stop)
     The client never guesses position or pause state: it plays whatever
     arrives and reads the timeline off the stream. Pausing is done HERE
     — the relay keeps streaming silence with running=False — so the
@@ -516,8 +516,7 @@ class PcmCache:
     such offset, and s16le/48kHz/stereo is a fixed 192000 bytes/s, so
     sample-exact seeking is just arithmetic (see LobbyRelay._pos_to_offset).
 
-    `key` = (encoded track, filters) — NodeLink bakes filters into the
-    PCM, so a different filter set is a different cache."""
+    `key` = the track's encoded id."""
     __slots__ = ("key", "encoded", "buf", "done", "failed", "task",
                  "started", "first_byte_at")
 
@@ -537,7 +536,7 @@ class LobbyRelay:
 
     def __init__(self, lobby):
         self.lobby = lobby
-        self.generation = 0          # bumped on every fresh session (skip/seek/filter change)
+        self.generation = 0          # bumped on every fresh session (skip/seek)
         # The single shared PCM fan-out every listener's WebTransport
         # session reads from (see QuicPcmRelay) — replaces the old
         # per-listener HTTP `_Listener` queue dict, then the WebRTC
@@ -581,7 +580,7 @@ class LobbyRelay:
         # playback buffer from ever running dry.
         self._idle = False               # True while parked in the idle wait below
         self._idle_event = asyncio.Event()
-        self._pending = None             # (track, position_ms, filters) waiting to resume with
+        self._pending = None             # (track, position_ms) waiting to resume with
 
         # ---- real-time pacing anchor ---------------------------------
         # See feed_chunk() in _pump_track: a naive `sleep(0.02)` per 1s
@@ -709,9 +708,9 @@ class LobbyRelay:
         self._cancel_preload()
         if next_track is None:
             return
-        cache = PcmCache(self._cache_key(next_track, None), next_track.get("encoded"))
+        cache = PcmCache(self._cache_key(next_track), next_track.get("encoded"))
         pre = {"track": next_track, "cache": cache, "task": None}
-        cache.task = pre["task"] = asyncio.create_task(self._fill_cache(cache, None))
+        cache.task = pre["task"] = asyncio.create_task(self._fill_cache(cache))
         self._preload = pre
 
     def _cancel_preload(self):
@@ -721,8 +720,8 @@ class LobbyRelay:
 
     # ---- seek cache -----------------------------------------------------
     @staticmethod
-    def _cache_key(track, filters):
-        return (track.get("encoded"), json.dumps(filters or {}, sort_keys=True, default=str))
+    def _cache_key(track):
+        return track.get("encoded")
 
     @staticmethod
     def _pos_to_offset(position_ms):
@@ -730,14 +729,7 @@ class LobbyRelay:
         (4 bytes: 2ch x s16), so the L/R samples can never swap."""
         return int(round(max(0.0, position_ms) * PCM_RATE / 1000.0)) * (PCM_CHANNELS * 2)
 
-    @staticmethod
-    def _changes_duration(filters):
-        # timescale speed/rate make the output shorter/longer than the
-        # source, so output bytes no longer map 1:1 to source position.
-        ts = (filters or {}).get("timescale") or {}
-        return any(float(ts.get(k, 1.0) or 1.0) != 1.0 for k in ("speed", "rate"))
-
-    def _cacheable(self, track, filters):
+    def _cacheable(self, track):
         if not getattr(config, "SEEK_CACHE_ENABLED", True):
             return False
         info = track.get("info") or {}
@@ -745,9 +737,7 @@ class LobbyRelay:
             return False
         length = info.get("length")
         max_s = getattr(config, "SEEK_CACHE_MAX_SECONDS", 900)
-        if not isinstance(length, (int, float)) or length <= 0 or length > max_s * 1000:
-            return False
-        return not self._changes_duration(filters)
+        return isinstance(length, (int, float)) and 0 < length <= max_s * 1000
 
     def _cancel_cache(self):
         c = self._cache
@@ -760,30 +750,28 @@ class LobbyRelay:
             self._cancel_cache()
         self._cache = cache
 
-    def _acquire_cache(self, track, filters):
-        """The cache for (track, filters), starting its download if needed.
-        None if this track can't/shouldn't be cached (live stream, longer
-        than SEEK_CACHE_MAX_SECONDS, or timescale in use) — the caller then
-        falls back to a live NodeLink fetch at `position`."""
-        if not self._cacheable(track, filters):
+    def _acquire_cache(self, track):
+        """The cache for `track`, starting its download if needed. None if
+        this track can't/shouldn't be cached (live stream, or longer than
+        SEEK_CACHE_MAX_SECONDS) — the caller then falls back to a live
+        NodeLink fetch at `position`."""
+        if not self._cacheable(track):
             self._cancel_cache()
             return None
-        key = self._cache_key(track, filters)
+        key = self._cache_key(track)
         c = self._cache
         if c is not None and c.key == key and not (c.failed and not c.done):
             return c
         self._cancel_cache()
         c = PcmCache(key, track.get("encoded"))
-        c.task = asyncio.create_task(self._fill_cache(c, filters))
+        c.task = asyncio.create_task(self._fill_cache(c))
         self._cache = c
         return c
 
-    async def _fill_cache(self, cache, filters):
+    async def _fill_cache(self, cache):
         """Background task: pull the whole track from NodeLink at position
         0 (NOT the seek target) into cache.buf as fast as NodeLink sends it."""
         body = {"encodedTrack": cache.encoded, "position": 0}
-        if filters:
-            body["filters"] = filters
         try:
             async with http_session.post(f"{NL_HOST}/v4/loadstream", json=body,
                                           headers={"Authorization": NL_PASS},
@@ -837,13 +825,12 @@ class LobbyRelay:
             await asyncio.sleep(0.05)
 
     # ---- session control ----------------------------------------------
-    async def start_track(self, track, position_ms, filters):
-        """(Re)start the pipeline for `track` at `position_ms` with
-        `filters`. Bumps `generation` — the hard cut just becomes part of
+    async def start_track(self, track, position_ms):
+        """(Re)start the pipeline for `track` at `position_ms`. Bumps `generation` — the hard cut just becomes part of
         the continuous relay's next couple of frames; listeners hear
         it whenever their player reaches that point in the stream, no
         reconnect involved. This is for explicit, deliberate track
-        changes (play/skip/seek/filters) — a NATURAL end-of-track advance
+        changes (play/skip/seek) — a NATURAL end-of-track advance
         does NOT go through here; see _run's internal loop, which
         stitches the next track into the same session instead (gapless),
         and resume_or_start below, which does the same across an idle
@@ -855,7 +842,7 @@ class LobbyRelay:
         self._pending = None
         self._pace_next = None
         self.generation += 1
-        # A seek/filter change while PAUSED must stay paused (previously
+        # A seek while PAUSED must stay paused (previously
         # this unconditionally un-paused the relay while lobby.paused was
         # still True, so audio streamed under a "paused" state).
         if self.lobby.paused:
@@ -867,15 +854,15 @@ class LobbyRelay:
         self.audio_out.set_timeline(position_ms if track is not None else 0, False, cut=True)
         if track is None:
             return
-        self._task = asyncio.create_task(self._run(track, position_ms, filters, self.generation))
+        self._task = asyncio.create_task(self._run(track, position_ms, self.generation))
 
-    async def reseek(self, position_ms, filters=None):
+    async def reseek(self, position_ms):
         track = self.lobby.current_track
         if track is None:
             return
-        await self.start_track(track, position_ms, filters if filters is not None else self.lobby.filters)
+        await self.start_track(track, position_ms)
 
-    async def resume_or_start(self, track, position_ms=0, filters=None):
+    async def resume_or_start(self, track, position_ms=0):
         """Cheap path back from silence. If the pipeline is still alive and
         sitting in the idle wait (queue ran dry but nothing tore the
         session down — see _run), hand it this track and wake it up: same
@@ -888,11 +875,11 @@ class LobbyRelay:
                 self._resume_event.clear()
             else:
                 self._resume_event.set()
-            self._pending = (track, position_ms, filters if filters is not None else self.lobby.filters)
+            self._pending = (track, position_ms)
             self._idle = False
             self._idle_event.set()
             return
-        await self.start_track(track, position_ms, filters)
+        await self.start_track(track, position_ms)
 
     def set_paused(self, paused):
         # Freezes the relay's own real-time pacing loop in place (no
@@ -960,12 +947,12 @@ class LobbyRelay:
     # bump, no listener reconnect). It only returns (ending the
     # generation) when the queue truly runs dry or something external
     # bumps `generation` out from under it (explicit play/skip/seek/
-    # filters, which go through start_track instead).
-    async def _run(self, track, position_ms, filters, my_generation):
+    # seeks, which go through start_track instead).
+    async def _run(self, track, position_ms, my_generation):
         try:
             self.stats["sessions_started"] += 1
 
-            cur_track, cur_pos, cur_filters = track, position_ms, filters
+            cur_track, cur_pos = track, position_ms
             retry_count = 0
             while True:
                 if self.generation != my_generation:
@@ -976,9 +963,7 @@ class LobbyRelay:
                 # (or rules out) any preload matching cur_track — see the
                 # comment there for why it can't happen here.
 
-                result = await self._pump_track(
-                    cur_track, cur_pos, cur_filters, my_generation
-                )
+                result = await self._pump_track(cur_track, cur_pos, my_generation)
                 if self.generation != my_generation:
                     return
                 if result == "interrupted":
@@ -1015,7 +1000,7 @@ class LobbyRelay:
                 if self.generation != my_generation:
                     return
                 if nxt is not None:
-                    cur_track, cur_pos, cur_filters = nxt, 0, self.lobby.filters
+                    cur_track, cur_pos = nxt, 0
                     continue
 
                 # Queue (and autoplay) are genuinely empty. The OLD behaviour
@@ -1051,14 +1036,14 @@ class LobbyRelay:
                         self._feed_silence()
                 if self.generation != my_generation:
                     return
-                cur_track, cur_pos, cur_filters = self._pending
+                cur_track, cur_pos = self._pending
                 self._pending = None
         except asyncio.CancelledError:
             pass
         except Exception:
             traceback.print_exc()
 
-    async def _pump_track(self, track, position_ms, filters, my_generation):
+    async def _pump_track(self, track, position_ms, my_generation):
         """Streams ONE track's PCM into the relay (and onward to every
         listener over plain HTTP). Returns "ended" if the track's
         audio source ended naturally (caller should advance to whatever's
@@ -1152,11 +1137,11 @@ class LobbyRelay:
         #   1. an already-running gapless preload of this exact track (only
         #      at position 0 — it's just a PcmCache, and it becomes THE
         #      cache for this track so later seeks reuse it);
-        #   2. the seek cache for (track, filters): the whole track is
+        #   2. the seek cache for `track`: the whole track is
         #      fetched once from position 0 and every seek is a byte offset
         #      into it — sample-exact, unlike NodeLink's `position` param;
         #   3. a live NodeLink fetch at `position` (below) — only for
-        #      uncacheable tracks (streams, very long tracks, timescale) or
+        #      uncacheable tracks (live streams, very long tracks) or
         #      a seek so far ahead the cache can't get there in time.
         pre = self._preload
         use_preload = (
@@ -1168,7 +1153,7 @@ class LobbyRelay:
             cache = pre["cache"]
             self._set_cache(cache)
         else:
-            cache = self._acquire_cache(track, filters)
+            cache = self._acquire_cache(track)
 
         # Now that `track`'s own preload (if any) has been claimed above —
         # so a fresh prediction below can't cancel it out from under us —
@@ -1218,8 +1203,6 @@ class LobbyRelay:
 
         # Live fetch at `position` — the fallback described above.
         body = {"encodedTrack": track.get("encoded"), "position": round(position_ms)}
-        if filters:
-            body["filters"] = filters
         try:
             async with http_session.post(f"{NL_HOST}/v4/loadstream", json=body,
                                           headers={"Authorization": NL_PASS},
@@ -1503,7 +1486,6 @@ class Lobby:
         self.paused = True
         self.position_anchor_ms = 0
         self.anchor_time = time.time()
-        self.filters = {}
         self.chat = []
         self.created_at = time.time()
 
@@ -1622,7 +1604,6 @@ class Lobby:
             "paused": self.paused,
             "positionMs": self.current_position_ms(),
             "queue": self.queue,
-            "filters": self.filters,
             "relayGen": self.relay.generation,
             "loopMode": self.loop_mode,
             "autoplay": self.autoplay,
@@ -2351,9 +2332,9 @@ async def lobby_play(code):
     lobby.position_anchor_ms = 0
     lobby.anchor_time = time.time()
     if was_idle:
-        await lobby.relay.resume_or_start(lobby.current_track, 0, lobby.filters)
+        await lobby.relay.resume_or_start(lobby.current_track, 0)
     else:
-        await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
+        await lobby.relay.start_track(lobby.current_track, 0)
     await populate_recommendations(lobby)
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
@@ -2427,7 +2408,7 @@ async def lobby_skip(code):
         lobby.position_anchor_ms = 0
         lobby.anchor_time = time.time()
         lobby.paused = False
-        await lobby.relay.start_track(lobby.current_track, 0, lobby.filters)
+        await lobby.relay.start_track(lobby.current_track, 0)
         await populate_recommendations(lobby)
     else:
         lobby.current_track = None
@@ -2483,9 +2464,9 @@ async def lobby_prev(code):
     lobby.anchor_time = time.time()
     lobby.paused = False
     if was_idle:
-        await lobby.relay.resume_or_start(prev, 0, lobby.filters)
+        await lobby.relay.resume_or_start(prev, 0)
     else:
-        await lobby.relay.start_track(prev, 0, lobby.filters)
+        await lobby.relay.start_track(prev, 0)
     await populate_recommendations(lobby)
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
@@ -2563,23 +2544,6 @@ async def lobby_gapless(code):
     return jsonify({"ok": True, "state": state})
 
 
-@app.route("/api/lobby/<code>/filters", methods=["POST"])
-async def lobby_filters(code):
-    lobby = get_lobby_or_404(code)
-    if not lobby:
-        return jsonify({"error": "not found"}), 404
-    data = await request.get_json(force=True, silent=True) or {}
-    if not _require_host(lobby, data.get("clientId")):
-        return jsonify({"error": "host only"}), 403
-    lobby.position_anchor_ms = lobby.current_position_ms()
-    lobby.anchor_time = time.time()
-    lobby.filters = data.get("filters", {})
-    await lobby.relay.reseek(lobby.position_anchor_ms, filters=lobby.filters)
-    state = lobby.public_state()
-    await broadcast(lobby, "state", state)
-    return jsonify({"ok": True, "state": state})
-
-
 @app.route("/api/lobby/<code>/settings", methods=["POST"])
 async def lobby_settings(code):
     """Host-only: rename the lobby and/or flip its public/private
@@ -2641,7 +2605,7 @@ async def lobby_queue_add(code):
         lobby.paused = False
         lobby.position_anchor_ms = 0
         lobby.anchor_time = time.time()
-        await lobby.relay.resume_or_start(lobby.current_track, 0, lobby.filters)
+        await lobby.relay.resume_or_start(lobby.current_track, 0)
         await populate_recommendations(lobby)
     else:
         lobby.queue.append(track)
@@ -2683,7 +2647,7 @@ async def lobby_queue_add_bulk(code):
         lobby.queue.extend(tracks)
 
     if started_playback:
-        await lobby.relay.resume_or_start(lobby.current_track, 0, lobby.filters)
+        await lobby.relay.resume_or_start(lobby.current_track, 0)
         await populate_recommendations(lobby, broadcast_state=False)
     else:
         lobby.relay.ensure_preload()  # queue may have just gone from empty -> non-empty

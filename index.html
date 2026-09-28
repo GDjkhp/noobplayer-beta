@@ -54,7 +54,6 @@
       <div id="info">
         <div id="info-src">
           <span id="info-src-txt">— IDLE —</span>
-          <span id="active-filter-badge">FILTER</span>
           <span id="lock-badge">HOST ONLY</span>
         </div>
         <div id="info-title" style="color:var(--muted)">Nothing playing</div>
@@ -118,7 +117,6 @@
         <button class="tab" data-tab="search"><span class="material-symbols-outlined">search</span>Search</button>
         <button class="tab" data-tab="queue"><span class="material-symbols-outlined">queue_music</span>Queue <span id="q-badge"></span></button>
         <button class="tab" data-tab="lyrics"><span class="material-symbols-outlined">lyrics</span>Lyrics</button>
-        <button class="tab" data-tab="filters"><span class="material-symbols-outlined">tune</span>Filters</button>
         <button class="tab" data-tab="skins"><span class="material-symbols-outlined">palette</span>Skins</button>
         <button class="tab" data-tab="viz"><span class="material-symbols-outlined">graphic_eq</span>Visualizer</button>
         <button class="tab" data-tab="chat" id="tab-chat-btn" style="display:none"><span class="material-symbols-outlined">chat</span>Chat <span id="chat-badge"></span></button>
@@ -172,46 +170,6 @@
             <span class="material-symbols-outlined">lyrics</span>
             <p>Play a track to see lyrics</p>
           </div>
-        </div>
-      </div>
-
-      <div class="pane" id="pane-filters">
-        <div id="flt-body">
-          <div id="flt-lock-note">Only the lobby host can change filters. Your player will follow their choice automatically.</div>
-          <div class="flt-section">
-            <span class="flt-label">Active Filter JSON</span>
-            <div id="flt-status">none</div>
-          </div>
-          <div class="flt-section">
-            <span class="flt-label">Presets</span>
-            <div class="preset-grid">
-              <button class="preset-btn active" data-preset="normal">Normal<span class="preset-sub">no filters</span></button>
-              <button class="preset-btn" data-preset="bassBoost">Bass Boost<span class="preset-sub">equalizer</span></button>
-              <button class="preset-btn" data-preset="nightcore">Nightcore<span class="preset-sub">timescale <span class="material-symbols-outlined">arrow_upward</span></span></button>
-              <button class="preset-btn" data-preset="vaporwave">Vaporwave<span class="preset-sub">timescale <span class="material-symbols-outlined">arrow_downward</span></span></button>
-              <button class="preset-btn" data-preset="8d">8D Audio<span class="preset-sub">rotation</span></button>
-              <button class="preset-btn" data-preset="echo">Echo<span class="preset-sub">delay+feedback</span></button>
-              <button class="preset-btn" data-preset="karaoke">Karaoke<span class="preset-sub">vocal cut</span></button>
-              <button class="preset-btn" data-preset="chipmunk">Chipmunk<span class="preset-sub">pitch <span class="material-symbols-outlined">keyboard_double_arrow_up</span></span></button>
-            </div>
-          </div>
-          <div class="flt-section">
-            <span class="flt-label">Manual — Timescale</span>
-            <div class="flt-row"><label>Speed</label><input class="flt-slider" type="range" id="f-speed" min="0.5" max="2.0" step="0.05" value="1.0"><span class="flt-val" id="f-speed-v">1.0</span></div>
-            <div class="flt-row"><label>Pitch</label><input class="flt-slider" type="range" id="f-pitch" min="0.5" max="2.0" step="0.05" value="1.0"><span class="flt-val" id="f-pitch-v">1.0</span></div>
-            <div class="flt-row"><label>Rate</label><input class="flt-slider" type="range" id="f-rate" min="0.5" max="2.0" step="0.05" value="1.0"><span class="flt-val" id="f-rate-v">1.0</span></div>
-          </div>
-          <div class="flt-section">
-            <span class="flt-label">Manual — Echo (NodeLink <span class="material-symbols-outlined">auto_awesome</span>)</span>
-            <div class="flt-row"><label>Delay (ms)</label><input class="flt-slider" type="range" id="f-edel" min="0" max="2000" step="50" value="0"><span class="flt-val" id="f-edel-v">0</span></div>
-            <div class="flt-row"><label>Feedback</label><input class="flt-slider" type="range" id="f-efb" min="0" max="0.9" step="0.05" value="0"><span class="flt-val" id="f-efb-v">0</span></div>
-            <div class="flt-row"><label>Mix</label><input class="flt-slider" type="range" id="f-emix" min="0" max="1.0" step="0.05" value="0"><span class="flt-val" id="f-emix-v">0</span></div>
-          </div>
-          <div class="flt-section">
-            <span class="flt-label">Manual — Rotation (8D)</span>
-            <div class="flt-row"><label>Hz</label><input class="flt-slider" type="range" id="f-rot" min="0" max="2.0" step="0.05" value="0"><span class="flt-val" id="f-rot-v">0</span></div>
-          </div>
-          <button id="btn-apply-flt"><span class="material-symbols-outlined">tune</span>Apply Filters</button>
         </div>
       </div>
 

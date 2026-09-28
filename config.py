@@ -122,9 +122,8 @@ DISCONNECT_GRACE_SECONDS = 120
 # the gapless-preloaded next track, same as before).
 SEEK_CACHE_ENABLED = True
 
-# Tracks longer than this (seconds) — and live streams, and anything using
-# a timescale filter with speed/rate != 1 — skip the cache and use the
-# old live NodeLink `position` seek instead. 900s (15 min) ~= 170 MB.
+# Tracks longer than this (seconds), and live streams, skip the cache and
+# use the old live NodeLink `position` seek instead. 900s (15 min) ~= 170 MB.
 SEEK_CACHE_MAX_SECONDS = 900
 
 # A seek past what has been downloaded waits for the download to reach it.

@@ -65,10 +65,9 @@ const Backend = {
   // `signal` is optional — pass an AbortController's signal so a
   // background gapless preload can be cancelled if it's no longer needed
   // (queue reordered, track removed, etc.) without waiting it out.
-  async openStream(encodedTrack, positionMs, filters, signal) {
+  async openStream(encodedTrack, positionMs, signal) {
     const path = this.mode === 'standalone' ? '/v4/loadstream' : '/api/nodelink/loadstream';
     const body = { encodedTrack, position: Math.round(positionMs) };
-    if (filters && Object.keys(filters).length) body.filters = filters;
     return fetch(this._base() + path, {
       method: 'POST',
       headers: this._headers(),

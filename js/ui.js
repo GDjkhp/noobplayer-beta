@@ -9,10 +9,8 @@ const UI = {
 
   applyLockState() {
     const locked = this.isLocked();
-    const ids = ['btn-prev','btn-b10','btn-play','btn-f10','btn-next','btn-stop','btn-apply-flt'];
+    const ids = ['btn-prev','btn-b10','btn-play','btn-f10','btn-next','btn-stop'];
     ids.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = locked; });
-    document.querySelectorAll('.preset-btn').forEach(b => b.disabled = locked);
-    document.querySelectorAll('.flt-slider').forEach(s => s.disabled = locked);
     document.getElementById('prog-bar').classList.toggle('locked', locked);
 
     // These used to be disabled for the whole of server mode because the
@@ -25,7 +23,6 @@ const UI = {
 
     document.querySelectorAll('.add-btn.pnow').forEach(b => b.disabled = locked);
     document.getElementById('lock-badge').classList.toggle('show', locked);
-    document.getElementById('flt-lock-note').classList.toggle('show', locked);
   },
 
   // Loop and autoplay are mirrored from the server in lobby mode and owned
@@ -540,71 +537,6 @@ const UI = {
     }
   },
 
-  syncSliderLabel(sliderId, labelId) {
-    const v = parseFloat(document.getElementById(sliderId).value);
-    document.getElementById(labelId).textContent = Number.isInteger(v) ? v : v.toFixed(2);
-  },
-
-  updateFilterStatus() {
-    const el = document.getElementById('flt-status');
-    const badge = document.getElementById('active-filter-badge');
-    const keys = Object.keys(S.filters);
-    if (keys.length === 0) {
-      el.textContent = 'none'; badge.textContent = ''; badge.classList.remove('show');
-    } else {
-      el.textContent = JSON.stringify(S.filters, null, 2);
-      badge.textContent = keys.join('+').toUpperCase(); badge.classList.add('show');
-    }
-  },
-
-  buildFiltersFromUI() {
-    const filters = {};
-    const speed = parseFloat(document.getElementById('f-speed').value);
-    const pitch = parseFloat(document.getElementById('f-pitch').value);
-    const rate  = parseFloat(document.getElementById('f-rate').value);
-    if (speed !== 1.0 || pitch !== 1.0 || rate !== 1.0) {
-      filters.timescale = {};
-      if (speed !== 1.0) filters.timescale.speed = speed;
-      if (pitch !== 1.0) filters.timescale.pitch = pitch;
-      if (rate  !== 1.0) filters.timescale.rate = rate;
-    }
-    const edel = parseFloat(document.getElementById('f-edel').value);
-    const efb  = parseFloat(document.getElementById('f-efb').value);
-    const emix = parseFloat(document.getElementById('f-emix').value);
-    if (edel > 0 || efb > 0 || emix > 0) filters.echo = { delay: edel, feedback: efb, mix: emix };
-    const rot = parseFloat(document.getElementById('f-rot').value);
-    if (rot > 0) filters.rotation = { rotationHz: rot };
-    return filters;
-  },
-
-  applyPreset(name) {
-    const preset = PRESETS[name];
-    if (!preset) return;
-    S.activePreset = name;
-
-    const ts = preset.timescale || {};
-    document.getElementById('f-speed').value = ts.speed || 1.0;
-    document.getElementById('f-pitch').value = ts.pitch || 1.0;
-    document.getElementById('f-rate').value  = ts.rate  || 1.0;
-    this.syncSliderLabel('f-speed', 'f-speed-v');
-    this.syncSliderLabel('f-pitch', 'f-pitch-v');
-    this.syncSliderLabel('f-rate',  'f-rate-v');
-
-    const echo = preset.echo || {};
-    document.getElementById('f-edel').value = echo.delay    || 0;
-    document.getElementById('f-efb').value  = echo.feedback || 0;
-    document.getElementById('f-emix').value = echo.mix      || 0;
-    this.syncSliderLabel('f-edel', 'f-edel-v');
-    this.syncSliderLabel('f-efb',  'f-efb-v');
-    this.syncSliderLabel('f-emix', 'f-emix-v');
-
-    const rot = preset.rotation?.rotationHz || 0;
-    document.getElementById('f-rot').value = rot;
-    this.syncSliderLabel('f-rot', 'f-rot-v');
-
-    document.querySelectorAll('.preset-btn').forEach(b => b.classList.toggle('active', b.dataset.preset === name));
-  },
-
   switchTab(name) {
     S.activeTab = name;
     document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
@@ -796,15 +728,4 @@ const UI = {
       Engine.seekTo(msFromEvent(e));
     });
   },
-};
-
-const PRESETS = {
-  normal: {},
-  bassBoost: { equalizer: [{band:0,gain:0.6},{band:1,gain:0.67},{band:2,gain:0.67},{band:3,gain:0.4},{band:4,gain:0.2},{band:5,gain:0.1}] },
-  nightcore: { timescale: { speed: 1.3, pitch: 1.3, rate: 1.0 } },
-  vaporwave:  { timescale: { speed: 0.8, pitch: 0.8, rate: 1.0 } },
-  '8d':       { rotation:  { rotationHz: 0.2 } },
-  echo:       { echo: { delay: 500, feedback: 0.35, mix: 0.5 } },
-  karaoke:    { karaoke: { level: 1.0, monoLevel: 1.0, filterBand: 220.0, filterWidth: 100.0 } },
-  chipmunk:   { timescale: { speed: 1.05, pitch: 1.35, rate: 1.25 } },
 };

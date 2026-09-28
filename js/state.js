@@ -40,12 +40,8 @@ const S = {
   // server-side, see server.py's LobbyRelay). Holds whatever track is
   // predicted to play next based on the current queue/loop state, plus
   // however much of its PCM has already been fetched ahead of time.
-  // Shape: { track, filters, chunks:[Uint8Array], reader, done, error, ctrl }
+  // Shape: { track, chunks:[Uint8Array], reader, done, error, ctrl }
   preload: null,
-
-  // Filters
-  filters: {},
-  activePreset: 'normal',
 
   // Lyrics
   // lyricsFetchedFor holds the encoded track lyrics were last fetched (or
@@ -97,6 +93,6 @@ const S = {
     // Lobby._connectMedia), destroyed the same way for every mode via
     // S.player.destroy().
     lastServerState: null,
-    relayGen: 0,        // last-seen LobbyRelay generation — bumps on a hard cut (skip/seek/filter change); the relay's PCM stream itself keeps flowing across this, nothing client-side needs to react to it anymore
+    relayGen: 0,        // last-seen LobbyRelay generation — bumps on a hard cut (skip/seek); the relay's PCM stream itself keeps flowing across this, nothing client-side needs to react to it anymore
   },
 };
