@@ -184,11 +184,6 @@ const Debug = {
         if (need > this.nextTime + 0.005) starvedMs = (need - this.nextTime) * 1000;
       }
 
-      // Record BEFORE origFeed schedules it: player.nextTime is still
-      // where this chunk is about to land on the AudioContext timeline,
-      // which is what lets the buffered strip tell played from ready.
-      self._bufRecord(this, bytes);
-
       const result = origFeed.call(this, bytes);
 
       if (starvedMs > 2) {
@@ -196,6 +191,19 @@ const Debug = {
       }
       self.actionReady(); // first bytes of a new stream = "audible now"
       return result;
+    };
+
+    // feedPlanar is the ONE place every mode's audio gets scheduled:
+    // standalone's feed() converts s16le and calls it, and lobby's
+    // WebTransportPlayer calls it directly with WebCodecs-decoded floats
+    // (it never touches feed()). Record BEFORE origPlanar schedules it:
+    // player.nextTime is still where this chunk is about to land on the
+    // AudioContext timeline, which is what lets the buffered strip tell
+    // played from ready.
+    const origPlanar = PCMPlayer.prototype.feedPlanar;
+    PCMPlayer.prototype.feedPlanar = function (floatL, floatR) {
+      self._bufRecord(this, floatL);
+      return origPlanar.call(this, floatL, floatR);
     };
 
     const origResume = PCMPlayer.prototype.resume;
@@ -517,8 +525,8 @@ const Debug = {
   },
 
   // Called from the patched PCMPlayer.feed() BEFORE it schedules `bytes`.
-  _bufRecord(player, bytes) {
-    if (!player.ctx || player.ctx.state === 'closed' || !bytes || !bytes.length) return;
+  _bufRecord(player, floatL) {
+    if (!player.ctx || player.ctx.state === 'closed' || !floatL || !floatL.length) return;
     let seg = player._dbgSeg;
     if (!seg) {
       seg = player._dbgSeg = this._bufNewSeg(S.current);
@@ -526,9 +534,31 @@ const Debug = {
       this._bufSegs.push(seg);
     }
     const bps = player.SR * player.BPF;
-    const when = Math.max(player.nextTime, player.ctx.currentTime + 0.02);   // the same expression feed() itself uses
-    this._bufBin(seg, bytes, when, bps);
-    seg.endCtx = Math.max(seg.endCtx, when + bytes.length / bps);
+    const when = Math.max(player.nextTime, player.ctx.currentTime + player.minLead);   // the same expression feedPlanar() itself uses
+    this._bufBinF(seg, floatL, when, bps);
+    seg.endCtx = Math.max(seg.endCtx, when + floatL.length * player.BPF / bps);
+  },
+
+  // Same binning as _bufBin, but for decoded planar floats (left channel).
+  // seg.bytes still counts s16-stereo-equivalent bytes (4 per frame) so bin
+  // indices/timing stay identical to the byte path.
+  _bufBinF(seg, floatL, when, bps) {
+    const binBytes = Math.round(bps * BUF_BIN_MS / 1000);
+    const binFrames = binBytes / 4;
+    const base = Math.round(seg.startMs / BUF_BIN_MS);
+    const f0 = seg.bytes / 4, f1 = f0 + floatL.length;
+    for (let b = Math.floor(f0 / binFrames); b * binFrames < f1; b++) {
+      const s = Math.max(f0, b * binFrames), e = Math.min(f1, (b + 1) * binFrames);
+      let peak = 0;
+      for (let f = s; f < e; f += 2) {
+        const v = Math.abs(floatL[f - f0]);
+        if (v > peak) peak = v;
+      }
+      const idx = base + b, prev = seg.amps[idx];
+      seg.amps[idx] = prev === undefined ? peak : Math.max(prev, peak);
+      if (seg.ctxT[idx] === undefined) seg.ctxT[idx] = when + (s - f0) * 4 / bps;
+    }
+    seg.bytes = f1 * 4;
   },
 
   // Folds a chunk of s16le stereo PCM into seg's bins. `when` is the
@@ -731,7 +761,10 @@ const Debug = {
 
     let drawn = false, lastReadyT = -Infinity;
     const amps = seg.amps, ctxT = seg.ctxT;
-    for (let b = 0; b < amps.length; b++) {
+    const tMin = now - playX / pxPerSec - 1;   // left edge of the window, with a little slack
+    let lo = 0, hi = amps.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (ctxT[m] === undefined || ctxT[m] < tMin) lo = m + 1; else hi = m; }
+    for (let b = lo; b < amps.length; b++) {
       const t = ctxT[b];
       if (t === undefined) continue;
       const x = xOf(t);
