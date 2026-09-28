@@ -182,6 +182,7 @@ const LobbyAPI = {
   quicUrl(code, info) {
     let host = new URL(this.base()).hostname;
     if (host === 'localhost') host = '127.0.0.1';
+    else if (info.host) host = info.host;
     else if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(host) && !host.startsWith('[')) {
       throw new Error(`can't open a pinned WebTransport session to "${host}" — connect via its IP address instead (or use a CA-signed cert to skip pinning entirely)`);
     }
