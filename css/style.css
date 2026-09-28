@@ -925,3 +925,17 @@ body::after {
 .dbg-key-sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
 .dbg-key-sw.played { background: rgba(148,163,184,.55); }
 .dbg-key-sw.ready { background: color-mix(in srgb, var(--accent2) 90%, transparent); }
+
+/* ═══════════════ GAME CONTROLLER BADGE ═══════════════ */
+.pad-badge {
+  display: none; align-items: center; gap: 6px; flex-shrink: 0; cursor: help;
+  font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--green); padding: 4px 9px; border-radius: var(--sh-full);
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+  transition: background .12s;
+}
+.pad-badge svg { width: 14px; height: 14px; flex-shrink: 0; }
+.pad-badge .material-symbols-outlined { font-size: 15px; }
+.pad-badge.hit { background: color-mix(in srgb, var(--green) 32%, transparent); }
+@media (max-width: 700px) { .pad-badge .pad-lbl { display: none; } .pad-badge { padding: 4px 7px; } }

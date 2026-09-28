@@ -279,6 +279,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  Pad.init();
   Main.autoStart();
 
   /* ───────── Leave-on-close ─────────
