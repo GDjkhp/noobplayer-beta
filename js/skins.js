@@ -243,7 +243,7 @@ const Skins = {
     // Unlike the other sliders, 0 here is a real value (square corners),
     // not "leave the stock Material rounding alone" — so this always
     // emits a rule, all the way from 0 (square) up through --sh-full's
-    // 999px (a full pill on anything shorter than ~2000px tall).
+    // 32px (a full pill on anything shorter than ~2000px tall).
     
     const r = Number(o.radius) + 'px';
     out.push(`.cfg-block,.hi,.overlay-btn,.cb,.qa,.add-btn,.preset-btn,.toast,
