@@ -24,8 +24,15 @@
 ═══════════════════════════════════════════ */
 const Pad = {
   RAMP_DELAY: 400,     // ms a held repeatable button waits before repeating
-  VK_REPEAT: 250,       // ms a held d-pad direction repeats while the on-screen keyboard is open
-  STICK_TH: 0.6,       // left-stick deflection that counts as a d-pad press
+  VK_REPEAT: 250,       // ms a held direction repeats while the on-screen keyboard is open
+  STICK_TH: 0.6,       // stick deflection that counts as a directional press
+
+  // Pseudo-button indices for the two analog sticks, kept well past any
+  // real button index (standard mapping tops out at 15, plus an
+  // occasional vendor Home button at 16) so they're distinct "buttons"
+  // in Bindings and never collide with a physical one.
+  LS_UP: 100, LS_DOWN: 101, LS_LEFT: 102, LS_RIGHT: 103,
+  RS_UP: 104, RS_DOWN: 105, RS_LEFT: 106, RS_RIGHT: 107,
 
   pads: {},            // index -> { prev:[bool], next:[ms], type, label, id, mapping }
   activeIdx: null,     // pad that last had input — the one the badge describes
@@ -62,7 +69,9 @@ const Pad = {
   _btnName(type, idx) {
     const n = this._names(type);
     const table = { 0: n.a, 1: n.b, 2: n.x, 3: n.y, 4: n.lb, 5: n.rb, 6: n.lt, 7: n.rt, 8: n.back, 9: n.start,
-      10: 'L3', 11: 'R3', 12: 'D-pad/Stick ↑', 13: 'D-pad/Stick ↓', 14: 'D-pad/Stick ←', 15: 'D-pad/Stick →' };
+      10: 'L3', 11: 'R3', 12: 'D-pad ↑', 13: 'D-pad ↓', 14: 'D-pad ←', 15: 'D-pad →',
+      [this.LS_UP]: 'L-Stick ↑', [this.LS_DOWN]: 'L-Stick ↓', [this.LS_LEFT]: 'L-Stick ←', [this.LS_RIGHT]: 'L-Stick →',
+      [this.RS_UP]: 'R-Stick ↑', [this.RS_DOWN]: 'R-Stick ↓', [this.RS_LEFT]: 'R-Stick ←', [this.RS_RIGHT]: 'R-Stick →' };
     return table[idx] || `Btn ${idx}`;
   },
 
@@ -158,13 +167,22 @@ const Pad = {
       const b = gp.buttons[i];
       down[i] = !!(b && (b.pressed || b.value > 0.5));
     }
-    // Left stick doubles as a d-pad.
+    // Real d-pad buttons already came through the loop above (standard
+    // mapping puts them at 12-15). Left and right stick are separate,
+    // independently bindable "buttons" of their own — 100-103 and
+    // 104-107 — well clear of any real button index, so they never
+    // collide with the d-pad, each other, or a vendor's extra Home
+    // button (some controllers report one at 16).
     const ax = gp.axes || [];
     const th = this.STICK_TH;
-    if ((ax[1] || 0) < -th) down[12] = true;
-    if ((ax[1] || 0) >  th) down[13] = true;
-    if ((ax[0] || 0) < -th) down[14] = true;
-    if ((ax[0] || 0) >  th) down[15] = true;
+    if ((ax[1] || 0) < -th) down[this.LS_UP]    = true;
+    if ((ax[1] || 0) >  th) down[this.LS_DOWN]  = true;
+    if ((ax[0] || 0) < -th) down[this.LS_LEFT]  = true;
+    if ((ax[0] || 0) >  th) down[this.LS_RIGHT] = true;
+    if ((ax[3] || 0) < -th) down[this.RS_UP]    = true;
+    if ((ax[3] || 0) >  th) down[this.RS_DOWN]  = true;
+    if ((ax[2] || 0) < -th) down[this.RS_LEFT]  = true;
+    if ((ax[2] || 0) >  th) down[this.RS_RIGHT] = true;
 
     // The Bindings tab is waiting for the next press to assign a new
     // binding — feed it everything currently held and don't dispatch any
@@ -184,7 +202,8 @@ const Pad = {
       if (!down[i]) continue;
       any = true;
       const fresh = !p.prev[i];
-      const repeatMs = vk ? (i >= 12 && i <= 15 ? this.VK_REPEAT : 0) : this._repeatFor(i);
+      const isDirectional = (i >= 12 && i <= 15) || (i >= this.LS_UP && i <= this.RS_RIGHT);
+      const repeatMs = vk ? (isDirectional ? this.VK_REPEAT : 0) : this._repeatFor(i);
       if (fresh) {
         p.next[i] = ts + this.RAMP_DELAY;
         this._dispatch(i, vk);

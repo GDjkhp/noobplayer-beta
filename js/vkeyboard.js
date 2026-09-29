@@ -209,14 +209,21 @@ const VKeyboard = {
 
   // ── gamepad navigation — gamepad.js calls this with a fresh button
   // index instead of the normal Bindings lookup whenever `active` is
-  // true. It already handles hold-to-repeat for 12-15. ──
+  // true. It already handles hold-to-repeat for every direction below,
+  // including both sticks (see Pad.LS_*/RS_* in gamepad.js) — whichever
+  // one the controller actually has works here. ──
   padPress(buttonIndex) {
     const rows = this._rows();
+    const P = typeof Pad !== 'undefined' ? Pad : {};
+    const up    = [12, P.LS_UP, P.RS_UP];
+    const down_ = [13, P.LS_DOWN, P.RS_DOWN];
+    const left  = [14, P.LS_LEFT, P.RS_LEFT];
+    const right = [15, P.LS_RIGHT, P.RS_RIGHT];
+    if (up.includes(buttonIndex))    { this.row = Math.max(0, this.row - 1); this.col = Math.min(this.col, rows[this.row].length - 1); this._renderKeys(); return; }
+    if (down_.includes(buttonIndex)) { this.row = Math.min(rows.length - 1, this.row + 1); this.col = Math.min(this.col, rows[this.row].length - 1); this._renderKeys(); return; }
+    if (left.includes(buttonIndex))  { this.col = this.col > 0 ? this.col - 1 : rows[this.row].length - 1; this._renderKeys(); return; }
+    if (right.includes(buttonIndex)) { this.col = this.col < rows[this.row].length - 1 ? this.col + 1 : 0; this._renderKeys(); return; }
     switch (buttonIndex) {
-      case 12: this.row = Math.max(0, this.row - 1); this.col = Math.min(this.col, rows[this.row].length - 1); this._renderKeys(); break;
-      case 13: this.row = Math.min(rows.length - 1, this.row + 1); this.col = Math.min(this.col, rows[this.row].length - 1); this._renderKeys(); break;
-      case 14: this.col = this.col > 0 ? this.col - 1 : rows[this.row].length - 1; this._renderKeys(); break;
-      case 15: this.col = this.col < rows[this.row].length - 1 ? this.col + 1 : 0; this._renderKeys(); break;
       case 0: this._pressSelected(); break;
       case 1: this._backspace(); break;
       case 2: this._clear(); break;

@@ -182,8 +182,21 @@ const Bindings = {
     parts.push(b.code.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Arrow/, ''));
     return parts.join('+');
   },
-  PAD_BTN_NAMES: ['A', 'B', 'X', 'Y', 'LB', 'RB', 'LT', 'RT', 'Back', 'Start', 'L3', 'R3', 'D-Up', 'D-Down', 'D-Left', 'D-Right'],
-  _padLabel(i) { return (i === null || i === undefined) ? '—' : (this.PAD_BTN_NAMES[i] || `Btn ${i}`); },
+  PAD_BTN_NAMES: { 0: 'A', 1: 'B', 2: 'X', 3: 'Y', 4: 'LB', 5: 'RB', 6: 'LT', 7: 'RT', 8: 'Back', 9: 'Start',
+    10: 'L3', 11: 'R3', 12: 'D-Up', 13: 'D-Down', 14: 'D-Left', 15: 'D-Right' },
+  // Pad's stick pseudo-indices (see gamepad.js) — read off Pad rather than
+  // re-declaring them here, so the two files can't drift out of sync.
+  _stickNames() {
+    if (typeof Pad === 'undefined') return {};
+    return {
+      [Pad.LS_UP]: 'L-Stick Up', [Pad.LS_DOWN]: 'L-Stick Down', [Pad.LS_LEFT]: 'L-Stick Left', [Pad.LS_RIGHT]: 'L-Stick Right',
+      [Pad.RS_UP]: 'R-Stick Up', [Pad.RS_DOWN]: 'R-Stick Down', [Pad.RS_LEFT]: 'R-Stick Left', [Pad.RS_RIGHT]: 'R-Stick Right',
+    };
+  },
+  _padLabel(i) {
+    if (i === null || i === undefined) return '—';
+    return this.PAD_BTN_NAMES[i] || this._stickNames()[i] || `Btn ${i}`;
+  },
 
   _row(a) {
     const capKey = this._capturing && this._capturing.actionId === a.id && this._capturing.kind === 'key';
