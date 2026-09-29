@@ -1,15 +1,15 @@
 'use strict';
 /* ═══════════════════════════════════════════
    VKeyboard — on-screen keyboard for typing without a physical
-   keyboard: click/touch, or a gamepad via the "Open on-screen keyboard"
-   binding (see the Bindings tab) or the small keyboard icon that floats
-   next to whatever text input/textarea currently has focus.
+   keyboard: click/touch, or a gamepad via the rebindable "On-Screen
+   Keyboard" actions in the Bindings tab (vkUp/vkSelect/etc. — see
+   bindings.js) or the small keyboard icon that floats next to whatever
+   text input/textarea currently has focus.
 
-   While open, gamepad.js routes button presses straight to padPress()
-   below instead of the normal Bindings lookup — D-pad/stick moves the
-   highlighted key, A types it, B backspaces, X clears, Y toggles shift,
-   LB toggles the letters/symbols layout, RB types a space, Start/Back
-   closes.
+   Navigation/typing is exposed as plain methods (moveUp, select,
+   backspace, ...) rather than hardcoded to specific buttons — gamepad.js
+   dispatches to them the same way it dispatches any other action, via
+   Bindings, which is what makes them independently rebindable.
 ═══════════════════════════════════════════ */
 const VKeyboard = {
   target: null,
@@ -52,8 +52,6 @@ const VKeyboard = {
     this._positionTrigger(e.target);
   },
   _onFocusOut() {
-    // A click on the trigger (or a virtual key) blurs the field first —
-    // give that click a beat to land before hiding the trigger.
     setTimeout(() => {
       if (this.active) return;
       const a = document.activeElement;
@@ -69,7 +67,7 @@ const VKeyboard = {
     btn.title = 'Open on-screen keyboard';
     btn.innerHTML = '<span class="material-symbols-outlined">keyboard</span>';
     btn.style.display = 'none';
-    btn.addEventListener('mousedown', (e) => e.preventDefault());   // don't steal focus from the field
+    btn.addEventListener('mousedown', (e) => e.preventDefault());
     btn.addEventListener('click', () => this.open(this._lastFocused));
     document.body.appendChild(btn);
     this._trigger = btn;
@@ -83,9 +81,6 @@ const VKeyboard = {
     this._trigger.style.left = `${Math.round(r.right - 32)}px`;
   },
 
-  // Bound to the "Open on-screen keyboard" action — opens for whatever's
-  // focused, or falls back to the search box (the field this was mainly
-  // built for) if nothing text-like has focus yet.
   openForFocused() {
     const a = document.activeElement;
     this.open(this._isTextField(a) ? a : (this._lastFocused || document.getElementById('si')));
@@ -99,12 +94,14 @@ const VKeyboard = {
     this._overlay.classList.add('show');
     this._renderKeys();
     this._renderPreview();
+    if (typeof Pad !== 'undefined') Pad._renderPrompts();
   },
 
   close() {
     this.active = false;
     this._overlay.classList.remove('show');
     if (this.target) this.target.focus();
+    if (typeof Pad !== 'undefined') Pad._renderPrompts();
   },
 
   _buildOverlay() {
@@ -113,6 +110,7 @@ const VKeyboard = {
     ov.innerHTML = `
       <div id="vk-panel">
         <div id="vk-preview"></div>
+        <div id="vk-prompts"></div>
         <div id="vk-rows"></div>
         <div id="vk-bottom">
           <button data-vk="shift" class="vk-k vk-wide">⇧ Shift</button>
@@ -155,11 +153,11 @@ const VKeyboard = {
 
   _wireBottom() {
     const map = {
-      shift: () => { this.shift = !this.shift; this._renderKeys(); },
-      layout: () => { this.layout = this.layout === 'letters' ? 'symbols' : 'letters'; this.row = 0; this.col = 0; this._renderKeys(); },
-      space: () => this._insert(' '),
-      back: () => this._backspace(),
-      clear: () => this._clear(),
+      shift: () => this.toggleShift(),
+      layout: () => this.toggleLayout(),
+      space: () => this.space(),
+      back: () => this.backspace(),
+      clear: () => this.clearField(),
       close: () => this.close(),
     };
     this._overlay.querySelectorAll('[data-vk]').forEach(btn => { btn.onclick = map[btn.dataset.vk] || null; });
@@ -207,30 +205,15 @@ const VKeyboard = {
     this._renderKeys();
   },
 
-  // ── gamepad navigation — gamepad.js calls this with a fresh button
-  // index instead of the normal Bindings lookup whenever `active` is
-  // true. It already handles hold-to-repeat for every direction below,
-  // including both sticks (see Pad.LS_*/RS_* in gamepad.js) — whichever
-  // one the controller actually has works here. ──
-  padPress(buttonIndex) {
-    const rows = this._rows();
-    const P = typeof Pad !== 'undefined' ? Pad : {};
-    const up    = [12, P.LS_UP, P.RS_UP];
-    const down_ = [13, P.LS_DOWN, P.RS_DOWN];
-    const left  = [14, P.LS_LEFT, P.RS_LEFT];
-    const right = [15, P.LS_RIGHT, P.RS_RIGHT];
-    if (up.includes(buttonIndex))    { this.row = Math.max(0, this.row - 1); this.col = Math.min(this.col, rows[this.row].length - 1); this._renderKeys(); return; }
-    if (down_.includes(buttonIndex)) { this.row = Math.min(rows.length - 1, this.row + 1); this.col = Math.min(this.col, rows[this.row].length - 1); this._renderKeys(); return; }
-    if (left.includes(buttonIndex))  { this.col = this.col > 0 ? this.col - 1 : rows[this.row].length - 1; this._renderKeys(); return; }
-    if (right.includes(buttonIndex)) { this.col = this.col < rows[this.row].length - 1 ? this.col + 1 : 0; this._renderKeys(); return; }
-    switch (buttonIndex) {
-      case 0: this._pressSelected(); break;
-      case 1: this._backspace(); break;
-      case 2: this._clear(); break;
-      case 3: this.shift = !this.shift; this._renderKeys(); break;
-      case 4: this.layout = this.layout === 'letters' ? 'symbols' : 'letters'; this.row = 0; this.col = 0; this._renderKeys(); break;
-      case 5: this._insert(' '); break;
-      case 8: case 9: this.close(); break;
-    }
-  },
+  // ── public control surface — what Bindings' "vk*" actions call ──
+  moveUp()    { const rows = this._rows(); this.row = Math.max(0, this.row - 1); this.col = Math.min(this.col, rows[this.row].length - 1); this._renderKeys(); },
+  moveDown()  { const rows = this._rows(); this.row = Math.min(rows.length - 1, this.row + 1); this.col = Math.min(this.col, rows[this.row].length - 1); this._renderKeys(); },
+  moveLeft()  { const rows = this._rows(); this.col = this.col > 0 ? this.col - 1 : rows[this.row].length - 1; this._renderKeys(); },
+  moveRight() { const rows = this._rows(); this.col = this.col < rows[this.row].length - 1 ? this.col + 1 : 0; this._renderKeys(); },
+  select()      { this._pressSelected(); },
+  backspace()   { this._backspace(); },
+  clearField()  { this._clear(); },
+  toggleShift() { this.shift = !this.shift; this._renderKeys(); },
+  toggleLayout(){ this.layout = this.layout === 'letters' ? 'symbols' : 'letters'; this.row = 0; this.col = 0; this._renderKeys(); },
+  space()       { this._insert(' '); },
 };

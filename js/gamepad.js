@@ -7,12 +7,19 @@
    generic XInput pads, etc. The header badge shows what kind of
    controller is connected (see detect() — vendor id first, then name).
 
-   Every button press is looked up in Bindings (see bindings.js) rather
-   than hardcoded here, so remapping a button in the Bindings tab takes
-   effect immediately — including the badge's own tooltip, which lists
-   whatever's currently bound instead of a fixed legend. While the
-   on-screen keyboard (vkeyboard.js) is open, presses go to it instead
-   for grid navigation/typing.
+   Every button/chord is looked up in Bindings (see bindings.js) rather
+   than hardcoded here, so remapping a binding in the Bindings tab takes
+   effect immediately — including the badge's tooltip and the floating
+   button-prompt bar, both generated from whatever's actually bound.
+   While the on-screen keyboard (vkeyboard.js) is open, its own
+   "On-Screen Keyboard" bindings are dispatched instead of the regular
+   ones — see the "vk" namespace note in bindings.js.
+
+   Dispatch matches the exact set of buttons/stick-directions currently
+   held against Bindings' pad map (single button or chord) and fires the
+   action the instant that combo is complete — same press-triggered
+   model as the keyboard. Only the Bindings tab's own capture flow is
+   release-triggered (see bindings.js), so chords can be recorded.
 
    Everything a bound action does goes through the same Engine calls as
    the on-screen buttons and keyboard shortcuts, so lobby permissions
@@ -21,11 +28,17 @@
    Browsers only expose a pad after its first button press on the page,
    and only poll it while the tab is focused — that's why "connected"
    may not show until you press something.
+
+   The floating button-prompt bar (and the equivalent row inside the
+   on-screen keyboard) is shown only while the controller is the most
+   recently used input — any mouse/touch/keyboard activity hides it
+   again, so it doesn't clutter the screen for people who aren't using
+   a controller.
 ═══════════════════════════════════════════ */
 const Pad = {
-  RAMP_DELAY: 400,     // ms a held repeatable button waits before repeating
+  RAMP_DELAY: 400,      // ms a held repeatable combo waits before repeating
   VK_REPEAT: 250,       // ms a held direction repeats while the on-screen keyboard is open
-  STICK_TH: 0.6,       // stick deflection that counts as a directional press
+  STICK_TH: 0.6,        // stick deflection that counts as a directional press
 
   // Pseudo-button indices for the two analog sticks, kept well past any
   // real button index (standard mapping tops out at 15, plus an
@@ -34,9 +47,10 @@ const Pad = {
   LS_UP: 100, LS_DOWN: 101, LS_LEFT: 102, LS_RIGHT: 103,
   RS_UP: 104, RS_DOWN: 105, RS_LEFT: 106, RS_RIGHT: 107,
 
-  pads: {},            // index -> { prev:[bool], next:[ms], type, label, id, mapping }
-  activeIdx: null,     // pad that last had input — the one the badge describes
+  pads: {},            // index -> { prevComboKey, comboNext, type, label, id, mapping }
+  activeIdx: null,     // pad that last had input — the one the badge/prompts describe
   _raf: null,
+  _padActive: false,   // true while the controller is the most-recently-used input
 
   /* ───────── controller identification ───────── */
   detect(id) {
@@ -65,13 +79,14 @@ const Pad = {
     return { a: 'A', b: 'B', x: 'X', y: 'Y', lb: 'LB', rb: 'RB', lt: 'LT', rt: 'RT', start: 'Menu', back: 'View' };
   },
 
-  // Every standard-mapping index -> this controller family's name for it.
+  // Every button/stick index -> this controller family's short name for
+  // it — used for the badge tooltip and the button-prompt chips.
   _btnName(type, idx) {
     const n = this._names(type);
     const table = { 0: n.a, 1: n.b, 2: n.x, 3: n.y, 4: n.lb, 5: n.rb, 6: n.lt, 7: n.rt, 8: n.back, 9: n.start,
-      10: 'L3', 11: 'R3', 12: 'D-pad ↑', 13: 'D-pad ↓', 14: 'D-pad ←', 15: 'D-pad →',
-      [this.LS_UP]: 'L-Stick ↑', [this.LS_DOWN]: 'L-Stick ↓', [this.LS_LEFT]: 'L-Stick ←', [this.LS_RIGHT]: 'L-Stick →',
-      [this.RS_UP]: 'R-Stick ↑', [this.RS_DOWN]: 'R-Stick ↓', [this.RS_LEFT]: 'R-Stick ←', [this.RS_RIGHT]: 'R-Stick →' };
+      10: 'L3', 11: 'R3', 12: '↑', 13: '↓', 14: '←', 15: '→',
+      [this.LS_UP]: 'LS↑', [this.LS_DOWN]: 'LS↓', [this.LS_LEFT]: 'LS←', [this.LS_RIGHT]: 'LS→',
+      [this.RS_UP]: 'RS↑', [this.RS_DOWN]: 'RS↓', [this.RS_LEFT]: 'RS←', [this.RS_RIGHT]: 'RS→' };
     return table[idx] || `Btn ${idx}`;
   },
 
@@ -83,7 +98,8 @@ const Pad = {
         const btn = Bindings.pad[id];
         if (btn === undefined || btn === null) return null;
         const a = Bindings._byId(id);
-        return `${this._btnName(p.type, btn)} ${a.label}`;
+        const arr = Array.isArray(btn) ? btn : [btn];
+        return `${arr.map(i => this._btnName(p.type, i)).join('+')} ${a.label}`;
       })
       .filter(Boolean);
     const lines = [`${p.label} controller connected`, bits.join(' · '), 'Open the Bindings tab to remap'];
@@ -123,13 +139,58 @@ const Pad = {
     });
   },
 
+  /* ───────── button-prompt bar ("game controller only") ───────── */
+  // A floating strip of "[button] Action" chips, visible only while a
+  // controller is connected AND is the most-recently-used input device.
+  // When the on-screen keyboard is open, its own controls are shown
+  // instead, inside the keyboard overlay rather than as a separate bar.
+  _buildPrompts() {
+    const el = document.createElement('div');
+    el.id = 'pad-prompts';
+    document.body.appendChild(el);
+    this._promptsEl = el;
+  },
+  _promptChips(p, vk) {
+    return Bindings.ACTIONS
+      .filter(a => Bindings._isVk(a.id) === vk)
+      .map((a) => {
+        const b = Bindings.pad[a.id];
+        if (b === null || b === undefined) return null;
+        const arr = Array.isArray(b) ? b : [b];
+        const glyph = arr.map(i => this._btnName(p.type, i)).join('+');
+        return `<span class="pp-chip"><span class="pp-btn">${esc(glyph)}</span>${esc(a.label.replace(/^On-screen keyboard:\s*/i, ''))}</span>`;
+      })
+      .filter(Boolean).join('');
+  },
+  _renderPrompts() {
+    if (!this._promptsEl) return;
+    const p = this.pads[this.activeIdx];
+    const vk = typeof VKeyboard !== 'undefined' && VKeyboard.active;
+    const vkHost = document.getElementById('vk-prompts');
+    if (vk) {
+      this._promptsEl.classList.remove('show');
+      if (vkHost) vkHost.innerHTML = (this._padActive && p) ? this._promptChips(p, true) : '';
+      return;
+    }
+    if (vkHost) vkHost.innerHTML = '';
+    const chips = (this._padActive && p) ? this._promptChips(p, false) : '';
+    this._promptsEl.innerHTML = chips;
+    this._promptsEl.classList.toggle('show', !!chips);
+  },
+  _setPadActive(v) {
+    if (this._padActive === v) return;
+    this._padActive = v;
+    this._renderPrompts();
+  },
+
   /* ───────── connect / disconnect ───────── */
   _add(gp) {
     if (!gp || this.pads[gp.index]) return;
     const d = this.detect(gp.id);
-    this.pads[gp.index] = { prev: [], next: [], type: d.type, label: d.label, id: gp.id, mapping: gp.mapping };
+    this.pads[gp.index] = { prevComboKey: '', comboNext: 0, type: d.type, label: d.label, id: gp.id, mapping: gp.mapping };
     this.activeIdx = gp.index;
     this._renderBadge();
+    this._renderPrompts();
     toast(`${d.label} controller connected`, 'success', 2200);
     this._start();
   },
@@ -141,6 +202,7 @@ const Pad = {
     const rest = Object.keys(this.pads);
     if (this.activeIdx === index) this.activeIdx = rest.length ? Number(rest[0]) : null;
     this._renderBadge();
+    this._renderPrompts();
     toast(`${p.label} controller disconnected`, 'warn', 2200);
     if (!rest.length) this._stop();
   },
@@ -167,12 +229,8 @@ const Pad = {
       const b = gp.buttons[i];
       down[i] = !!(b && (b.pressed || b.value > 0.5));
     }
-    // Real d-pad buttons already came through the loop above (standard
-    // mapping puts them at 12-15). Left and right stick are separate,
-    // independently bindable "buttons" of their own — 100-103 and
-    // 104-107 — well clear of any real button index, so they never
-    // collide with the d-pad, each other, or a vendor's extra Home
-    // button (some controllers report one at 16).
+    // Left/right stick are separate, independently bindable "buttons" —
+    // see LS_*/RS_* above — distinct from the real d-pad (12-15).
     const ax = gp.axes || [];
     const th = this.STICK_TH;
     if ((ax[1] || 0) < -th) down[this.LS_UP]    = true;
@@ -184,55 +242,46 @@ const Pad = {
     if ((ax[2] || 0) < -th) down[this.RS_LEFT]  = true;
     if ((ax[2] || 0) >  th) down[this.RS_RIGHT] = true;
 
-    // The Bindings tab is waiting for the next press to assign a new
-    // binding — feed it everything currently held and don't dispatch any
-    // bound action while that's happening.
+    const downIdx = [];
+    for (let i = 0; i < down.length; i++) if (down[i]) downIdx.push(i);
+
+    if (downIdx.length) {
+      this._setPadActive(true);
+      if (this.activeIdx !== gp.index) { this.activeIdx = gp.index; this._renderBadge(); this._renderPrompts(); }
+      this._flash();
+    }
+
+    // The Bindings tab is waiting for a release to finalize a new
+    // binding — feed it every currently-held index and don't dispatch
+    // any bound action while that's happening.
     if (Bindings._capturing && Bindings._capturing.kind === 'pad') {
-      const downIdx = [];
-      for (let i = 0; i < down.length; i++) if (down[i]) downIdx.push(i);
       Bindings._capturePadTick(downIdx);
-      p.prev = down;
-      if (downIdx.length) { this.activeIdx = gp.index; this._renderBadge(); this._flash(); }
       return;
     }
 
-    const vk = VKeyboard.active;
-    let any = false;
-    for (let i = 0; i < down.length; i++) {
-      if (!down[i]) continue;
-      any = true;
-      const fresh = !p.prev[i];
-      const isDirectional = (i >= 12 && i <= 15) || (i >= this.LS_UP && i <= this.RS_RIGHT);
-      const repeatMs = vk ? (isDirectional ? this.VK_REPEAT : 0) : this._repeatFor(i);
-      if (fresh) {
-        p.next[i] = ts + this.RAMP_DELAY;
-        this._dispatch(i, vk);
-      } else if (repeatMs && ts >= (p.next[i] || 0)) {
-        p.next[i] = ts + repeatMs;
-        this._dispatch(i, vk);
-      }
+    const vk = typeof VKeyboard !== 'undefined' && VKeyboard.active;
+    const comboKey = downIdx.slice().sort((a, b) => a - b).join('+');
+    const id = downIdx.length ? Bindings.actionForPadCombo(downIdx, vk) : null;
+
+    if (comboKey !== p.prevComboKey) {
+      p.prevComboKey = comboKey;
+      p.comboNext = ts + this.RAMP_DELAY;
+      if (id) Bindings.run(id);
+    } else if (id) {
+      const a = Bindings._byId(id);
+      const repeatMs = a && a.repeat ? (vk ? this.VK_REPEAT : 110) : 0;
+      if (repeatMs && ts >= (p.comboNext || 0)) { p.comboNext = ts + repeatMs; Bindings.run(id); }
     }
-    p.prev = down;
-
-    if (any) {
-      if (this.activeIdx !== gp.index) { this.activeIdx = gp.index; this._renderBadge(); }
-      this._flash();
-    }
-  },
-
-  _repeatFor(i) {
-    const id = Bindings.actionForPadButton(i);
-    const a = id && Bindings._byId(id);
-    return a && a.repeat ? 110 : 0;
-  },
-
-  _dispatch(i, vk) {
-    if (vk) { try { VKeyboard.padPress(i); } catch (_) {} return; }
-    const id = Bindings.actionForPadButton(i);
-    if (id) Bindings.run(id);
   },
 
   init() {
+    this._buildPrompts();
+    // Any non-controller input hides the "game controller only" prompts.
+    window.addEventListener('mousemove', () => this._setPadActive(false), { passive: true });
+    window.addEventListener('mousedown', () => this._setPadActive(false));
+    window.addEventListener('touchstart', () => this._setPadActive(false), { passive: true });
+    document.addEventListener('keydown', () => this._setPadActive(false));
+
     if (typeof navigator === 'undefined' || !navigator.getGamepads) return;   // no Gamepad API
     window.addEventListener('gamepadconnected', (e) => this._add(e.gamepad));
     window.addEventListener('gamepaddisconnected', (e) => this._remove(e.gamepad.index));

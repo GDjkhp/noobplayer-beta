@@ -1005,3 +1005,25 @@ body::after {
 @media (max-width: 700px) {
   .vk-k { max-width: none; height: 34px; font-size: 12px; }
 }
+
+/* ═══════════════ CONTROLLER BUTTON PROMPTS ("game controller only") ═══════════════ */
+#pad-prompts {
+  position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+  z-index: 9980; display: none; flex-wrap: wrap; gap: 6px; justify-content: center; align-items: center;
+  max-width: min(92vw, 640px); padding: 8px 10px;
+  background: rgba(10,10,18,.82); border: 1px solid var(--brd2); border-radius: var(--sh-md);
+  backdrop-filter: blur(6px); pointer-events: none;
+}
+#pad-prompts.show { display: flex; }
+.pp-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-family: var(--fm); color: var(--text); white-space: nowrap; }
+.pp-btn {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 20px; padding: 0 5px;
+  border-radius: var(--sh-xs); background: var(--surf2); border: 1px solid var(--brd2); color: var(--accent);
+  font-weight: 700; font-size: 10px; letter-spacing: 0;
+}
+#vk-prompts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+#vk-prompts:empty { display: none; margin: 0; }
+@media (max-width: 700px) {
+  #pad-prompts { bottom: calc(10px + env(safe-area-inset-bottom, 0px)); padding: 6px 8px; gap: 5px; }
+  .pp-chip { font-size: 9px; }
+}

@@ -257,14 +257,14 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('cfg-srv-switch').addEventListener('click', () => UI.switchFlaskServer());
 
-  /* ───────── Keyboard shortcuts (remappable — see Bindings tab) ───────── */
-  document.addEventListener('keydown', e => Bindings.handleKeydown(e));
-
   /* ───────── Bindings tab ───────── */
   document.getElementById('btn-bnd-reset-key').addEventListener('click', () => Bindings.resetKeys());
   document.getElementById('btn-bnd-reset-pad').addEventListener('click', () => Bindings.resetPad());
 
+  // Keyboard shortcuts are remappable (see the Bindings tab) — Bindings
+  // owns its own keydown/keyup listeners, so nothing to wire up here.
   Bindings.load();
+  Bindings.init();
   VKeyboard.init();
   Pad.init();
   Main.autoStart();
