@@ -1,0 +1,229 @@
+'use strict';
+/* ═══════════════════════════════════════════
+   VKeyboard — on-screen keyboard for typing without a physical
+   keyboard: click/touch, or a gamepad via the "Open on-screen keyboard"
+   binding (see the Bindings tab) or the small keyboard icon that floats
+   next to whatever text input/textarea currently has focus.
+
+   While open, gamepad.js routes button presses straight to padPress()
+   below instead of the normal Bindings lookup — D-pad/stick moves the
+   highlighted key, A types it, B backspaces, X clears, Y toggles shift,
+   LB toggles the letters/symbols layout, RB types a space, Start/Back
+   closes.
+═══════════════════════════════════════════ */
+const VKeyboard = {
+  target: null,
+  active: false,
+  layout: 'letters',   // 'letters' | 'symbols'
+  shift: false,
+  row: 0, col: 0,
+
+  ROWS_LETTERS: [
+    ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
+    ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'],
+    ['z', 'x', 'c', 'v', 'b', 'n', 'm'],
+  ],
+  ROWS_SYMBOLS: [
+    ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+    ['-', '_', '.', ',', "'", '&', '!', '?'],
+    ['@', '#', '$', '%', '(', ')', '/', ':'],
+  ],
+
+  init() {
+    this._buildTrigger();
+    this._buildOverlay();
+    document.addEventListener('focusin', (e) => this._onFocusIn(e));
+    document.addEventListener('focusout', (e) => this._onFocusOut(e));
+    window.addEventListener('resize', () => this._positionTrigger());
+    window.addEventListener('scroll', () => this._positionTrigger(), true);
+  },
+
+  _isTextField(el) {
+    if (!el) return false;
+    if (el.tagName === 'TEXTAREA') return true;
+    if (el.tagName === 'INPUT') return ['text', 'search', ''].includes((el.type || '').toLowerCase());
+    return false;
+  },
+
+  _onFocusIn(e) {
+    if (!this._isTextField(e.target)) return;
+    this._lastFocused = e.target;
+    this._trigger.style.display = 'flex';
+    this._positionTrigger(e.target);
+  },
+  _onFocusOut() {
+    // A click on the trigger (or a virtual key) blurs the field first —
+    // give that click a beat to land before hiding the trigger.
+    setTimeout(() => {
+      if (this.active) return;
+      const a = document.activeElement;
+      if (this._isTextField(a) || a === this._trigger) return;
+      this._trigger.style.display = 'none';
+    }, 120);
+  },
+
+  _buildTrigger() {
+    const btn = document.createElement('button');
+    btn.id = 'vk-trigger';
+    btn.type = 'button';
+    btn.title = 'Open on-screen keyboard';
+    btn.innerHTML = '<span class="material-symbols-outlined">keyboard</span>';
+    btn.style.display = 'none';
+    btn.addEventListener('mousedown', (e) => e.preventDefault());   // don't steal focus from the field
+    btn.addEventListener('click', () => this.open(this._lastFocused));
+    document.body.appendChild(btn);
+    this._trigger = btn;
+  },
+
+  _positionTrigger(field) {
+    field = field || this._lastFocused;
+    if (!field || !this._trigger || this._trigger.style.display === 'none') return;
+    const r = field.getBoundingClientRect();
+    this._trigger.style.top = `${Math.round(r.top + (r.height - 28) / 2)}px`;
+    this._trigger.style.left = `${Math.round(r.right - 32)}px`;
+  },
+
+  // Bound to the "Open on-screen keyboard" action — opens for whatever's
+  // focused, or falls back to the search box (the field this was mainly
+  // built for) if nothing text-like has focus yet.
+  openForFocused() {
+    const a = document.activeElement;
+    this.open(this._isTextField(a) ? a : (this._lastFocused || document.getElementById('si')));
+  },
+
+  open(field) {
+    if (!field) return;
+    this.target = field;
+    this.active = true;
+    this.row = 0; this.col = 0; this.shift = false; this.layout = 'letters';
+    this._overlay.classList.add('show');
+    this._renderKeys();
+    this._renderPreview();
+  },
+
+  close() {
+    this.active = false;
+    this._overlay.classList.remove('show');
+    if (this.target) this.target.focus();
+  },
+
+  _buildOverlay() {
+    const ov = document.createElement('div');
+    ov.id = 'vk-overlay';
+    ov.innerHTML = `
+      <div id="vk-panel">
+        <div id="vk-preview"></div>
+        <div id="vk-rows"></div>
+        <div id="vk-bottom">
+          <button data-vk="shift" class="vk-k vk-wide">⇧ Shift</button>
+          <button data-vk="layout" class="vk-k vk-wide">123</button>
+          <button data-vk="space" class="vk-k vk-space">Space</button>
+          <button data-vk="back" class="vk-k vk-wide">⌫ Back</button>
+          <button data-vk="clear" class="vk-k vk-wide">Clear</button>
+          <button data-vk="close" class="vk-k vk-wide vk-go">Done</button>
+        </div>
+      </div>`;
+    ov.addEventListener('click', (e) => { if (e.target === ov) this.close(); });
+    document.body.appendChild(ov);
+    this._overlay = ov;
+    this._wireBottom();
+  },
+
+  _rows() { return this.layout === 'letters' ? this.ROWS_LETTERS : this.ROWS_SYMBOLS; },
+
+  _renderKeys() {
+    const wrap = this._overlay.querySelector('#vk-rows');
+    const rows = this._rows();
+    this.row = Math.min(this.row, rows.length - 1);
+    this.col = Math.min(this.col, rows[this.row].length - 1);
+    wrap.innerHTML = rows.map((r, ri) => `<div class="vk-row">${r.map((ch, ci) => {
+      const label = this.layout === 'letters' && this.shift ? ch.toUpperCase() : ch;
+      const sel = ri === this.row && ci === this.col ? ' sel' : '';
+      return `<button class="vk-k${sel}" data-vk-r="${ri}" data-vk-c="${ci}">${esc(label)}</button>`;
+    }).join('')}</div>`).join('');
+
+    wrap.querySelectorAll('[data-vk-r]').forEach(btn => btn.addEventListener('click', () => {
+      this.row = parseInt(btn.dataset.vkR, 10); this.col = parseInt(btn.dataset.vkC, 10);
+      this._pressSelected();
+    }));
+
+    const layoutBtn = this._overlay.querySelector('[data-vk="layout"]');
+    if (layoutBtn) layoutBtn.textContent = this.layout === 'letters' ? '123' : 'ABC';
+    const shiftBtn = this._overlay.querySelector('[data-vk="shift"]');
+    if (shiftBtn) shiftBtn.classList.toggle('on', this.shift);
+  },
+
+  _wireBottom() {
+    const map = {
+      shift: () => { this.shift = !this.shift; this._renderKeys(); },
+      layout: () => { this.layout = this.layout === 'letters' ? 'symbols' : 'letters'; this.row = 0; this.col = 0; this._renderKeys(); },
+      space: () => this._insert(' '),
+      back: () => this._backspace(),
+      clear: () => this._clear(),
+      close: () => this.close(),
+    };
+    this._overlay.querySelectorAll('[data-vk]').forEach(btn => { btn.onclick = map[btn.dataset.vk] || null; });
+  },
+
+  _renderPreview() {
+    const pv = this._overlay.querySelector('#vk-preview');
+    pv.textContent = this.target ? (this.target.value || '') : '';
+    pv.classList.toggle('empty', !this.target || !this.target.value);
+  },
+
+  _insert(ch) {
+    const el = this.target;
+    if (!el) return;
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    el.value = el.value.slice(0, start) + ch + el.value.slice(end);
+    const pos = start + ch.length;
+    el.setSelectionRange(pos, pos);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    this._renderPreview();
+  },
+  _backspace() {
+    const el = this.target;
+    if (!el) return;
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    if (start === end && start > 0) el.value = el.value.slice(0, start - 1) + el.value.slice(start);
+    else el.value = el.value.slice(0, start) + el.value.slice(end);
+    const pos = Math.max(0, start - (start === end ? 1 : 0));
+    el.setSelectionRange(pos, pos);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    this._renderPreview();
+  },
+  _clear() {
+    if (!this.target) return;
+    this.target.value = '';
+    this.target.dispatchEvent(new Event('input', { bubbles: true }));
+    this._renderPreview();
+  },
+  _pressSelected() {
+    const rows = this._rows();
+    const ch = rows[this.row][this.col];
+    this._insert(this.layout === 'letters' && this.shift ? ch.toUpperCase() : ch);
+    this._renderKeys();
+  },
+
+  // ── gamepad navigation — gamepad.js calls this with a fresh button
+  // index instead of the normal Bindings lookup whenever `active` is
+  // true. It already handles hold-to-repeat for 12-15. ──
+  padPress(buttonIndex) {
+    const rows = this._rows();
+    switch (buttonIndex) {
+      case 12: this.row = Math.max(0, this.row - 1); this.col = Math.min(this.col, rows[this.row].length - 1); this._renderKeys(); break;
+      case 13: this.row = Math.min(rows.length - 1, this.row + 1); this.col = Math.min(this.col, rows[this.row].length - 1); this._renderKeys(); break;
+      case 14: this.col = this.col > 0 ? this.col - 1 : rows[this.row].length - 1; this._renderKeys(); break;
+      case 15: this.col = this.col < rows[this.row].length - 1 ? this.col + 1 : 0; this._renderKeys(); break;
+      case 0: this._pressSelected(); break;
+      case 1: this._backspace(); break;
+      case 2: this._clear(); break;
+      case 3: this.shift = !this.shift; this._renderKeys(); break;
+      case 4: this.layout = this.layout === 'letters' ? 'symbols' : 'letters'; this.row = 0; this.col = 0; this._renderKeys(); break;
+      case 5: this._insert(' '); break;
+      case 8: case 9: this.close(); break;
+    }
+  },
+};

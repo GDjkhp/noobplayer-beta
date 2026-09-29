@@ -121,6 +121,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (b.dataset.tab === 'chat') document.getElementById('chat-badge').textContent = '';
     if (b.dataset.tab === 'config') UI.renderConfigTab();
     if (b.dataset.tab === 'skins') Skins.renderTab();
+    if (b.dataset.tab === 'bindings') Bindings.renderTab();
     // The visualizer burns a rAF loop, so it's started on entering the tab
     // and stopped on leaving rather than running behind hidden panes.
     if (b.dataset.tab === 'viz') Viz.renderTab(); else Viz.stop();
@@ -256,29 +257,15 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('cfg-srv-switch').addEventListener('click', () => UI.switchFlaskServer());
 
-  /* ───────── Keyboard shortcuts ───────── */
-  document.addEventListener('keydown', e => {
-    const tag = document.activeElement?.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  /* ───────── Keyboard shortcuts (remappable — see Bindings tab) ───────── */
+  document.addEventListener('keydown', e => Bindings.handleKeydown(e));
 
-    const posMs = () => S.player ? S.player.getPositionMs() : 0;
-    switch (e.code) {
-      case 'Space':      e.preventDefault(); Engine.togglePause(); break;
-      case 'ArrowRight': e.shiftKey ? Engine.skip() : Engine.seekTo(posMs() + 5000); break;
-      case 'ArrowLeft':  e.shiftKey ? Engine.prev() : Engine.seekTo(posMs() - 5000); break;
-      case 'ArrowUp':    e.preventDefault(); { const sl=document.getElementById('vol-sl'); sl.value=Math.min(100,parseInt(sl.value)+5); sl.dispatchEvent(new Event('input')); } break;
-      case 'ArrowDown':  e.preventDefault(); { const sl=document.getElementById('vol-sl'); sl.value=Math.max(0,parseInt(sl.value)-5); sl.dispatchEvent(new Event('input')); } break;
-      case 'KeyL': Engine.cycleLoop(); break;
-      case 'KeyS': e.shiftKey ? Engine.smartShuffle() : Engine.shuffleQueue(); break;
-      case 'KeyA': Engine.cycleAutoplay(); break;
-      case 'KeyF': UI.switchTab('search'); document.getElementById('si').focus(); break;
-      case 'KeyQ': UI.switchTab('queue'); break;
-      case 'KeyY': UI.switchTab('lyrics'); break;
-      case 'KeyK': UI.switchTab('skins'); Skins.renderTab(); Viz.stop(); break;
-      case 'KeyV': UI.switchTab('viz'); Viz.renderTab(); break;
-    }
-  });
+  /* ───────── Bindings tab ───────── */
+  document.getElementById('btn-bnd-reset-key').addEventListener('click', () => Bindings.resetKeys());
+  document.getElementById('btn-bnd-reset-pad').addEventListener('click', () => Bindings.resetPad());
 
+  Bindings.load();
+  VKeyboard.init();
   Pad.init();
   Main.autoStart();
 

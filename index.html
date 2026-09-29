@@ -122,6 +122,7 @@
         <button class="tab" data-tab="skins"><span class="material-symbols-outlined">palette</span>Skins</button>
         <button class="tab" data-tab="viz"><span class="material-symbols-outlined">graphic_eq</span>Visualizer</button>
         <button class="tab" data-tab="chat" id="tab-chat-btn" style="display:none"><span class="material-symbols-outlined">chat</span>Chat <span id="chat-badge"></span></button>
+        <button class="tab" data-tab="bindings"><span class="material-symbols-outlined">sports_esports</span>Bindings</button>
         <button class="tab on" data-tab="config"><span class="material-symbols-outlined">settings</span>Config</button>
         <button class="tab" data-tab="debug"><span class="material-symbols-outlined">bug_report</span>Debug</button>
       </div>
@@ -471,6 +472,21 @@
            live by js/debug.js (instrumentation lives there too, via
            fetch/prototype patching, so no other file needs to import
            or know about Debug). -->
+      <div class="pane" id="pane-bindings">
+        <div id="bindings-head">
+          <div class="bnd-head-txt">
+            <h3>Bindings</h3>
+            <p>Click a binding, then press the key or controller button you want. Click it again, or press Esc, to cancel.</p>
+          </div>
+          <div class="bnd-head-acts">
+            <button id="btn-bnd-reset-key" class="add-btn">Reset keyboard</button>
+            <button id="btn-bnd-reset-pad" class="add-btn">Reset controller</button>
+          </div>
+        </div>
+        <div class="bnd-col-h"><span>Action</span><span>Keyboard</span><span>Controller</span></div>
+        <div id="bindings-list"></div>
+      </div>
+
       <div class="pane" id="pane-debug">
         <div id="dbg-root">
           <div class="empty"><p>Loading debug tools…</p></div>
@@ -505,6 +521,8 @@
 <script src="js/standalone.js"></script>
 <script src="js/lobby.js"></script>
 <script src="js/debug.js"></script>
+<script src="js/bindings.js"></script>
+<script src="js/vkeyboard.js"></script>
 <script src="js/gamepad.js"></script>
 <script src="js/main.js"></script>
 </body>

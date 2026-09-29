@@ -7,21 +7,16 @@
    generic XInput pads, etc. The header badge shows what kind of
    controller is connected (see detect() — vendor id first, then name).
 
-   Default layout (standard mapping; face buttons named Xbox / PlayStation):
-     A / ✕            Play / Pause
-     B / ○            Cycle loop
-     X / □            Shuffle queue
-     Y / △            Cycle autoplay
-     LB / L1, RB / R1 Previous / Next
-     D-pad or L-stick ←→  Seek -/+5s (hold to repeat)
-     D-pad or L-stick ↑↓  Volume +/-5 (hold to repeat)
-     LT / L2, RT / R2 Previous / next tab
-     Menu / Options   Queue tab
-     View / Share     Lyrics tab
+   Every button press is looked up in Bindings (see bindings.js) rather
+   than hardcoded here, so remapping a button in the Bindings tab takes
+   effect immediately — including the badge's own tooltip, which lists
+   whatever's currently bound instead of a fixed legend. While the
+   on-screen keyboard (vkeyboard.js) is open, presses go to it instead
+   for grid navigation/typing.
 
-   Everything goes through the same Engine calls as the on-screen
-   buttons and keyboard shortcuts, so lobby permissions (host / DJ only)
-   are enforced exactly as they are for a click.
+   Everything a bound action does goes through the same Engine calls as
+   the on-screen buttons and keyboard shortcuts, so lobby permissions
+   (host / DJ only) are enforced exactly as they are for a click.
 
    Browsers only expose a pad after its first button press on the page,
    and only poll it while the tab is focused — that's why "connected"
@@ -29,12 +24,12 @@
 ═══════════════════════════════════════════ */
 const Pad = {
   RAMP_DELAY: 400,     // ms a held repeatable button waits before repeating
+  VK_REPEAT: 250,       // ms a held d-pad direction repeats while the on-screen keyboard is open
   STICK_TH: 0.6,       // left-stick deflection that counts as a d-pad press
 
   pads: {},            // index -> { prev:[bool], next:[ms], type, label, id, mapping }
   activeIdx: null,     // pad that last had input — the one the badge describes
   _raf: null,
-  _seekAcc: null,      // { t, pos } — accumulates held-seek so repeats don't re-read a stale position
 
   /* ───────── controller identification ───────── */
   detect(id) {
@@ -63,14 +58,26 @@ const Pad = {
     return { a: 'A', b: 'B', x: 'X', y: 'Y', lb: 'LB', rb: 'RB', lt: 'LT', rt: 'RT', start: 'Menu', back: 'View' };
   },
 
+  // Every standard-mapping index -> this controller family's name for it.
+  _btnName(type, idx) {
+    const n = this._names(type);
+    const table = { 0: n.a, 1: n.b, 2: n.x, 3: n.y, 4: n.lb, 5: n.rb, 6: n.lt, 7: n.rt, 8: n.back, 9: n.start,
+      10: 'L3', 11: 'R3', 12: 'D-pad/Stick ↑', 13: 'D-pad/Stick ↓', 14: 'D-pad/Stick ←', 15: 'D-pad/Stick →' };
+    return table[idx] || `Btn ${idx}`;
+  },
+
+  // Built from whatever's actually bound right now (see bindings.js), so
+  // rebinding a button updates the tooltip immediately.
   _tooltip(p) {
-    const n = this._names(p.type);
-    const lines = [
-      `${p.label} controller connected`,
-      `${n.a} Play/Pause · ${n.b} Loop · ${n.x} Shuffle · ${n.y} Autoplay`,
-      `${n.lb}/${n.rb} Prev/Next · D-pad ←→ Seek, ↑↓ Volume`,
-      `${n.lt}/${n.rt} Switch tab · ${n.start} Queue · ${n.back} Lyrics`,
-    ];
+    const bits = ['playPause', 'loop', 'shuffle', 'autoplay', 'prev', 'next', 'tabPrev', 'tabNext', 'tabQueue', 'tabLyrics', 'seekFwd', 'volUp']
+      .map((id) => {
+        const btn = Bindings.pad[id];
+        if (btn === undefined || btn === null) return null;
+        const a = Bindings._byId(id);
+        return `${this._btnName(p.type, btn)} ${a.label}`;
+      })
+      .filter(Boolean);
+    const lines = [`${p.label} controller connected`, bits.join(' · '), 'Open the Bindings tab to remap'];
     if (p.mapping !== 'standard') lines.push('⚠ Non-standard layout — buttons may not match the above');
     lines.push(p.id);
     return lines.join('\n');
@@ -144,24 +151,6 @@ const Pad = {
     if (Object.keys(this.pads).length) this._start();
   },
 
-  // Buttons that fire an action, and whether holding them repeats (ms).
-  BINDINGS: {
-    0:  { run: () => Engine.togglePause() },
-    1:  { run: () => Engine.cycleLoop() },
-    2:  { run: () => Engine.shuffleQueue() },
-    3:  { run: () => Engine.cycleAutoplay() },
-    4:  { run: () => Engine.prev() },
-    5:  { run: () => Engine.skip() },
-    6:  { run: () => Pad._tab(-1) },
-    7:  { run: () => Pad._tab(+1) },
-    8:  { run: () => Pad._openTab('lyrics') },
-    9:  { run: () => Pad._openTab('queue') },
-    12: { run: () => Pad._volume(+5), repeat: 110 },
-    13: { run: () => Pad._volume(-5), repeat: 110 },
-    14: { run: (ts) => Pad._seek(-5000, ts), repeat: 300 },
-    15: { run: (ts) => Pad._seek(+5000, ts), repeat: 300 },
-  },
-
   _process(gp, ts) {
     const p = this.pads[gp.index];
     const down = [];
@@ -177,22 +166,33 @@ const Pad = {
     if ((ax[0] || 0) < -th) down[14] = true;
     if ((ax[0] || 0) >  th) down[15] = true;
 
+    // The Bindings tab is waiting for the next press to assign a new
+    // binding — feed it everything currently held and don't dispatch any
+    // bound action while that's happening.
+    if (Bindings._capturing && Bindings._capturing.kind === 'pad') {
+      const downIdx = [];
+      for (let i = 0; i < down.length; i++) if (down[i]) downIdx.push(i);
+      Bindings._capturePadTick(downIdx);
+      p.prev = down;
+      if (downIdx.length) { this.activeIdx = gp.index; this._renderBadge(); this._flash(); }
+      return;
+    }
+
+    const vk = VKeyboard.active;
     let any = false;
-    for (const key of Object.keys(this.BINDINGS)) {
-      const i = Number(key);
-      const bind = this.BINDINGS[i];
-      if (down[i]) {
-        any = true;
-        if (!p.prev[i]) {                       // fresh press
-          p.next[i] = ts + this.RAMP_DELAY;
-          this._fire(bind, ts);
-        } else if (bind.repeat && ts >= p.next[i]) {   // held
-          p.next[i] = ts + bind.repeat;
-          this._fire(bind, ts);
-        }
+    for (let i = 0; i < down.length; i++) {
+      if (!down[i]) continue;
+      any = true;
+      const fresh = !p.prev[i];
+      const repeatMs = vk ? (i >= 12 && i <= 15 ? this.VK_REPEAT : 0) : this._repeatFor(i);
+      if (fresh) {
+        p.next[i] = ts + this.RAMP_DELAY;
+        this._dispatch(i, vk);
+      } else if (repeatMs && ts >= (p.next[i] || 0)) {
+        p.next[i] = ts + repeatMs;
+        this._dispatch(i, vk);
       }
     }
-    for (let i = 0; i < down.length; i++) if (down[i]) any = true;
     p.prev = down;
 
     if (any) {
@@ -201,44 +201,16 @@ const Pad = {
     }
   },
 
-  _fire(bind, ts) {
-    try { Promise.resolve(bind.run(ts)).catch(() => {}); } catch (_) {}
+  _repeatFor(i) {
+    const id = Bindings.actionForPadButton(i);
+    const a = id && Bindings._byId(id);
+    return a && a.repeat ? 110 : 0;
   },
 
-  /* ───────── actions ───────── */
-  _volume(delta) {
-    const sl = document.getElementById('vol-sl');
-    if (!sl) return;
-    sl.value = Math.max(0, Math.min(100, parseInt(sl.value, 10) + delta));
-    sl.dispatchEvent(new Event('input'));
-  },
-
-  _seek(delta, ts) {
-    const cur = S.player ? S.player.getPositionMs() : 0;
-    // While a direction is held, build on the last target rather than the
-    // player's position (a seek in flight hasn't landed yet).
-    const acc = this._seekAcc;
-    const base = (acc && ts - acc.t < 700) ? acc.pos : cur;
-    const pos = Math.max(0, base + delta);
-    this._seekAcc = { t: ts, pos };
-    return Engine.seekTo(pos);
-  },
-
-  // Clicks the real tab button so all the per-tab setup in main.js
-  // (skins render, visualizer start/stop, chat badge…) runs as usual.
-  _tabs() {
-    return [...document.querySelectorAll('.tab')].filter((b) => b.offsetParent !== null);
-  },
-  _tab(dir) {
-    const tabs = this._tabs();
-    if (!tabs.length) return;
-    let i = tabs.findIndex((b) => b.classList.contains('on'));
-    i = (i + dir + tabs.length) % tabs.length;
-    tabs[i].click();
-  },
-  _openTab(name) {
-    const b = document.querySelector(`.tab[data-tab="${name}"]`);
-    if (b && b.offsetParent !== null) b.click();
+  _dispatch(i, vk) {
+    if (vk) { try { VKeyboard.padPress(i); } catch (_) {} return; }
+    const id = Bindings.actionForPadButton(i);
+    if (id) Bindings.run(id);
   },
 
   init() {
