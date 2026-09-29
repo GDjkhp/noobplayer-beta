@@ -94,14 +94,14 @@ const VKeyboard = {
     this._overlay.classList.add('show');
     this._renderKeys();
     this._renderPreview();
-    if (typeof Pad !== 'undefined') Pad._renderPrompts();
+    if (typeof Pad !== 'undefined') Pad._renderElementHints();
   },
 
   close() {
     this.active = false;
     this._overlay.classList.remove('show');
     if (this.target) this.target.focus();
-    if (typeof Pad !== 'undefined') Pad._renderPrompts();
+    if (typeof Pad !== 'undefined') Pad._renderElementHints();
   },
 
   _buildOverlay() {
@@ -110,7 +110,6 @@ const VKeyboard = {
     ov.innerHTML = `
       <div id="vk-panel">
         <div id="vk-preview"></div>
-        <div id="vk-prompts"></div>
         <div id="vk-rows"></div>
         <div id="vk-bottom">
           <button data-vk="shift" class="vk-k vk-wide">⇧ Shift</button>
@@ -149,6 +148,10 @@ const VKeyboard = {
     if (layoutBtn) layoutBtn.textContent = this.layout === 'letters' ? '123' : 'ABC';
     const shiftBtn = this._overlay.querySelector('[data-vk="shift"]');
     if (shiftBtn) shiftBtn.classList.toggle('on', this.shift);
+
+    // The highlighted key just moved to a new element — re-place its
+    // "type this key" badge there (see Pad.ACTION_EL's vkSelect entry).
+    if (typeof Pad !== 'undefined') Pad._renderElementHints();
   },
 
   _wireBottom() {

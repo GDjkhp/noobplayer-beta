@@ -139,48 +139,73 @@ const Pad = {
     });
   },
 
-  /* ───────── button-prompt bar ("game controller only") ───────── */
-  // A floating strip of "[button] Action" chips, visible only while a
-  // controller is connected AND is the most-recently-used input device.
-  // When the on-screen keyboard is open, its own controls are shown
-  // instead, inside the keyboard overlay rather than as a separate bar.
-  _buildPrompts() {
-    const el = document.createElement('div');
-    el.id = 'pad-prompts';
-    document.body.appendChild(el);
-    this._promptsEl = el;
+  /* ───────── in-place button prompts ("game controller only") ───────── */
+  // Rather than a separate floating list, each bound action's own real
+  // GUI control grows a tiny badge showing what's bound to it — the
+  // play button gets its own prompt at the bottom of its circle, a tab
+  // gets one in its corner, and so on. Badges live as a child of the
+  // real element (position: relative on the host, position: absolute
+  // on the badge) and are hidden by CSS whenever body doesn't have the
+  // "pad-active" class, so no per-element JS toggling is needed for
+  // show/hide — only for keeping their text in sync with the bindings.
+  //
+  // Only actions with a genuine one-to-one on-screen control get an
+  // entry here; sliders (volume) and directional/continuous actions
+  // (seek repeat, vk grid movement) have no single element to pin a
+  // badge to and are skipped.
+  ACTION_EL: {
+    playPause: '#btn-play', next: '#btn-next', prev: '#btn-prev', stop: '#btn-stop',
+    seekFwd: '#btn-f10', seekBack: '#btn-b10',
+    loop: '#loop-btn', shuffle: '#btn-shuf', autoplay: '#btn-autoplay', gapless: '#gapless-btn',
+    tabSearch: '.tab[data-tab="search"]', tabQueue: '.tab[data-tab="queue"]', tabLyrics: '.tab[data-tab="lyrics"]',
+    tabSkins: '.tab[data-tab="skins"]', tabViz: '.tab[data-tab="viz"]', tabConfig: '.tab[data-tab="config"]',
+    tabBindings: '.tab[data-tab="bindings"]',
+    virtualKeyboard: '#vk-trigger',
+    // On-screen keyboard's own buttons — "vkSelect" tracks whichever
+    // grid key is currently highlighted, since that's the one A/✕ would
+    // actually type; the rest are the overlay's fixed bottom-row buttons.
+    vkSelect: '.vk-k.sel', vkBackspace: '[data-vk="back"]', vkClear: '[data-vk="clear"]',
+    vkShift: '[data-vk="shift"]', vkLayout: '[data-vk="layout"]', vkSpace: '[data-vk="space"]', vkClose: '[data-vk="close"]',
   },
-  _promptChips(p, vk) {
-    return Bindings.ACTIONS
-      .filter(a => Bindings._isVk(a.id) === vk)
-      .map((a) => {
-        const b = Bindings.pad[a.id];
-        if (b === null || b === undefined) return null;
-        const arr = Array.isArray(b) ? b : [b];
-        const glyph = arr.map(i => this._btnName(p.type, i)).join('+');
-        return `<span class="pp-chip"><span class="pp-btn">${esc(glyph)}</span>${esc(a.label.replace(/^On-screen keyboard:\s*/i, ''))}</span>`;
-      })
-      .filter(Boolean).join('');
-  },
-  _renderPrompts() {
-    if (!this._promptsEl) return;
+  // Tabs and the keyboard trigger are wide/rectangular — a bottom-center
+  // badge would sit on top of their label, so they get a corner badge
+  // instead. Everything else (the round transport buttons, the vk grid
+  // key) gets the bottom-of-circle placement.
+  _hintCorner(id) { return id.startsWith('tab') || id === 'virtualKeyboard'; },
+
+  _renderElementHints() {
     const p = this.pads[this.activeIdx];
-    const vk = typeof VKeyboard !== 'undefined' && VKeyboard.active;
-    const vkHost = document.getElementById('vk-prompts');
-    if (vk) {
-      this._promptsEl.classList.remove('show');
-      if (vkHost) vkHost.innerHTML = (this._padActive && p) ? this._promptChips(p, true) : '';
-      return;
+    // The vk grid's selected key moves every render — clear any stale
+    // badge left on a previously-selected key before re-placing it.
+    document.querySelectorAll('#vk-rows .pad-hint').forEach(h => h.remove());
+    for (const id of Object.keys(this.ACTION_EL)) {
+      const el = document.querySelector(this.ACTION_EL[id]);
+      if (!el) continue;
+      const b = p ? Bindings.pad[id] : null;
+      let hint = el.querySelector('.pad-hint');
+      if (b === null || b === undefined || !p) {
+        if (hint) hint.remove();
+        continue;
+      }
+      const arr = Array.isArray(b) ? b : [b];
+      const glyph = arr.map(i => this._btnName(p.type, i)).join('+');
+      if (!hint) {
+        hint = document.createElement('span');
+        hint.className = 'pad-hint' + (this._hintCorner(id) ? ' corner' : '');
+        // Only force position:relative on elements that aren't already
+        // positioned — #vk-trigger is position:fixed for its
+        // follow-the-focused-field behavior, and .pad-hint-host's
+        // position:relative would silently override that.
+        if (getComputedStyle(el).position === 'static') el.classList.add('pad-hint-host');
+        el.appendChild(hint);
+      }
+      hint.textContent = glyph;
     }
-    if (vkHost) vkHost.innerHTML = '';
-    const chips = (this._padActive && p) ? this._promptChips(p, false) : '';
-    this._promptsEl.innerHTML = chips;
-    this._promptsEl.classList.toggle('show', !!chips);
   },
   _setPadActive(v) {
     if (this._padActive === v) return;
     this._padActive = v;
-    this._renderPrompts();
+    document.body.classList.toggle('pad-active', v);
   },
 
   /* ───────── connect / disconnect ───────── */
@@ -190,7 +215,7 @@ const Pad = {
     this.pads[gp.index] = { prevComboKey: '', comboNext: 0, type: d.type, label: d.label, id: gp.id, mapping: gp.mapping };
     this.activeIdx = gp.index;
     this._renderBadge();
-    this._renderPrompts();
+    this._renderElementHints();
     toast(`${d.label} controller connected`, 'success', 2200);
     this._start();
   },
@@ -202,7 +227,7 @@ const Pad = {
     const rest = Object.keys(this.pads);
     if (this.activeIdx === index) this.activeIdx = rest.length ? Number(rest[0]) : null;
     this._renderBadge();
-    this._renderPrompts();
+    this._renderElementHints();
     toast(`${p.label} controller disconnected`, 'warn', 2200);
     if (!rest.length) this._stop();
   },
@@ -247,7 +272,7 @@ const Pad = {
 
     if (downIdx.length) {
       this._setPadActive(true);
-      if (this.activeIdx !== gp.index) { this.activeIdx = gp.index; this._renderBadge(); this._renderPrompts(); }
+      if (this.activeIdx !== gp.index) { this.activeIdx = gp.index; this._renderBadge(); this._renderElementHints(); }
       this._flash();
     }
 
@@ -275,7 +300,6 @@ const Pad = {
   },
 
   init() {
-    this._buildPrompts();
     // Any non-controller input hides the "game controller only" prompts.
     window.addEventListener('mousemove', () => this._setPadActive(false), { passive: true });
     window.addEventListener('mousedown', () => this._setPadActive(false));
