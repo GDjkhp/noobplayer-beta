@@ -68,13 +68,13 @@ const SKIN_PRESETS = {
     vars: { bg:'#1a0b2e', surf:'#241041', surf2:'#2d1452', surf3:'#3a1a68', brd:'#3d1f66',
             brd2:'#552d8c', text:'#ffe9ff', muted:'#a97fd4', muted2:'#7a5aa0',
             accent:'#ff71ce', accent2:'#01cdfe', green:'#05ffa1', pink:'#ff71ce' },
-    opts: { radius: 0, glow: 14, noise: 5 },
+    opts: { radius: 32, glow: 14, noise: 5 },
   },
   'Terminal': {
     vars: { bg:'#000000', surf:'#050f05', surf2:'#0a1a0a', surf3:'#0f230f', brd:'#123d12',
             brd2:'#1c5c1c', text:'#c8ffc8', muted:'#4f9e4f', muted2:'#2f6b2f',
             accent:'#00ff66', accent2:'#8bff00', fn:"'JetBrains Mono', monospace" },
-    opts: { radius: 0, noise: 1, glow: 8 },
+    opts: { radius: 32, noise: 1, glow: 8 },
   },
   'Paper': {
     vars: { bg:'#f4f1ea', surf:'#ffffff', surf2:'#f7f4ee', surf3:'#efe9de', brd:'#ddd6c8',
@@ -240,13 +240,17 @@ const Skins = {
     const o = { ...SKIN_OPT_DEFAULTS, ...(skin.opts || {}) };
     const out = [];
 
-    if (Number(o.radius) > 0) {
-      const r = Number(o.radius) + 'px';
-      out.push(`.cfg-block,.hi,.overlay-btn,.cb,.qa,.add-btn,.preset-btn,.toast,
-        .pl-item,#meaning-box,#si,#btn-srch,#chat-input,#chat-send,#src-sel,
-        .si-th,.qi-th,.si-nth,.qi-nth{border-radius:${r}}`);
-      out.push(`.cb.sm,.cb.lg{border-radius:${Math.min(Number(o.radius) * 2, 50)}%}`);
-    }
+    // Unlike the other sliders, 0 here is a real value (square corners),
+    // not "leave the stock Material rounding alone" — so this always
+    // emits a rule, all the way from 0 (square) up through --sh-full's
+    // 999px (a full pill on anything shorter than ~2000px tall).
+    
+    const r = Number(o.radius) + 'px';
+    out.push(`.cfg-block,.hi,.overlay-btn,.cb,.qa,.add-btn,.preset-btn,.toast,
+      .pl-item,#meaning-box,#si,#btn-srch,#chat-input,#chat-send,#src-sel,
+      .si-th,.qi-th,.si-nth,.qi-nth{border-radius:${r}}`);
+    out.push(`.cb.sm,.cb.lg{border-radius:${r}}`);
+    
     if (Number(o.artRadius) > 0) {
       out.push(`#art-wrap{border-radius:${o.artRadius}%;overflow:hidden}`);
     }
