@@ -1022,7 +1022,18 @@ body::after {
   pointer-events: none; opacity: 0; transition: opacity .12s;
   white-space: nowrap; z-index: 3;
 }
-body.pad-active .pad-hint { opacity: 1; }
+body.pad-active .pad-hint:not(.pad-hint-playeronly) { opacity: 1; }
+/* Playback/Queue-group badges (play, seek, loop, ...) only light up
+   while the player actually has controller focus — see the focus-zone
+   note in gamepad.js. Tab-opening and on-screen-keyboard badges are
+   exempt (not .pad-hint-playeronly) and stay lit in either zone. */
+body.pad-active:not(.pad-tabs-focused) .pad-hint-playeronly { opacity: 1; }
+/* A visible cue for which zone currently has controller focus: the
+   player control bar dims and drops its "focused" outline once a tab
+   takes over, and picks both back up when focus returns to it. */
+body.pad-active #ctrls { transition: opacity .15s, filter .15s, outline-color .15s; }
+body.pad-active:not(.pad-tabs-focused) #ctrls { outline: 1px solid var(--accent); outline-offset: 6px; border-radius: var(--sh-md); }
+body.pad-active.pad-tabs-focused #ctrls { opacity: .45; filter: saturate(.5); outline: 1px solid transparent; outline-offset: 6px; }
 /* Wide/rectangular controls (tabs, the keyboard trigger) get a corner
    badge instead — a bottom-center one would sit on top of their label. */
 .pad-hint.corner { left: auto; right: 1px; top: 1px; bottom: auto; transform: none; }

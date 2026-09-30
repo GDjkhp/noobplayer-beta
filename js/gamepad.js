@@ -191,7 +191,7 @@ const Pad = {
       const glyph = arr.map(i => this._btnName(p.type, i)).join('+');
       if (!hint) {
         hint = document.createElement('span');
-        hint.className = 'pad-hint' + (this._hintCorner(id) ? ' corner' : '');
+        hint.className = 'pad-hint' + (this._hintCorner(id) ? ' corner' : '') + (this._isPlayerAction(id) ? ' pad-hint-playeronly' : '');
         // Only force position:relative on elements that aren't already
         // positioned — #vk-trigger is position:fixed for its
         // follow-the-focused-field behavior, and .pad-hint-host's
@@ -291,12 +291,62 @@ const Pad = {
     if (comboKey !== p.prevComboKey) {
       p.prevComboKey = comboKey;
       p.comboNext = ts + this.RAMP_DELAY;
-      if (id) Bindings.run(id);
+      if (id) this._dispatch(id);
     } else if (id) {
       const a = Bindings._byId(id);
       const repeatMs = a && a.repeat ? (vk ? this.VK_REPEAT : 110) : 0;
-      if (repeatMs && ts >= (p.comboNext || 0)) { p.comboNext = ts + repeatMs; Bindings.run(id); }
+      if (repeatMs && ts >= (p.comboNext || 0)) { p.comboNext = ts + repeatMs; this._dispatch(id); }
     }
+  },
+
+  /* ───────── player-vs-tabs focus ─────────
+     A controller has one cursor, not a mouse, so it needs to know
+     whether a button press means "control playback" or "navigate the
+     tabs" — otherwise browsing the Search tab with the d-pad would also
+     seek the current track. tabPrev/tabNext (LT/RT by default) cycle
+     through a ring of stops: Player, then each visible tab in order,
+     wrapping back to Player. Only while Player has focus do Playback/
+     Queue-group actions (play/pause, seek, volume, loop, shuffle...)
+     fire; while any tab has focus they're silently suppressed. Direct
+     tab-opening shortcuts (tabSearch, tabQueue, ...) and the on-screen
+     keyboard's own controls are exempt — they work in either zone.
+     This only governs GAMEPAD dispatch — keyboard bindings, and mouse/
+     touch clicks on the buttons themselves, are never gated. */
+  focus: 'player',   // 'player' | 'tabs'
+  TAB_OPEN_ACTIONS: ['tabSearch', 'tabQueue', 'tabLyrics', 'tabSkins', 'tabViz', 'tabConfig', 'tabBindings'],
+  _isPlayerAction(id) {
+    const a = Bindings._byId(id);
+    return !!a && (a.group === 'Playback' || a.group === 'Queue');
+  },
+  _setFocus(f) {
+    if (this.focus === f) return;
+    this.focus = f;
+    document.body.classList.toggle('pad-tabs-focused', f === 'tabs');
+    this._renderElementHints();
+  },
+  _cycleFocus(dir) {
+    const tabs = Bindings._tabs();
+    if (this.focus === 'player') {
+      if (!tabs.length) return;
+      this._setFocus('tabs');
+      if (dir < 0) { const last = tabs[tabs.length - 1]; if (last) last.click(); }
+      // dir > 0 just enters the tab ring at whichever tab is already showing.
+      return;
+    }
+    if (!tabs.length) { this._setFocus('player'); return; }
+    let i = tabs.findIndex(b => b.classList.contains('on'));
+    i += dir;
+    if (i < 0 || i >= tabs.length) { this._setFocus('player'); return; }
+    tabs[i].click();
+  },
+  _dispatch(id) {
+    if (!id) return;
+    if (Bindings._isVk(id)) { Bindings.run(id); return; }        // on-screen keyboard is modal — always active
+    if (id === 'tabPrev') { this._cycleFocus(-1); return; }
+    if (id === 'tabNext') { this._cycleFocus(1); return; }
+    if (this.TAB_OPEN_ACTIONS.includes(id)) { Bindings.run(id); this._setFocus('tabs'); return; }
+    if (this._isPlayerAction(id) && this.focus !== 'player') return;   // a tab has focus — playback buttons disabled
+    Bindings.run(id);
   },
 
   init() {
@@ -305,6 +355,17 @@ const Pad = {
     window.addEventListener('mousedown', () => this._setPadActive(false));
     window.addEventListener('touchstart', () => this._setPadActive(false), { passive: true });
     document.addEventListener('keydown', () => this._setPadActive(false));
+
+    // Keep gamepad focus in sync with whatever was actually clicked —
+    // clicking a tab (or one of its keyboard/mouse shortcuts, which
+    // route through Bindings.openTab and click the tab button too)
+    // moves focus to the tab ring; clicking inside the player controls
+    // brings focus back, same as cycling all the way around with the
+    // controller would.
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('#ctrls')) this._setFocus('player');
+      else if (e.target.closest('.tab')) this._setFocus('tabs');
+    });
 
     if (typeof navigator === 'undefined' || !navigator.getGamepads) return;   // no Gamepad API
     window.addEventListener('gamepadconnected', (e) => this._add(e.gamepad));
