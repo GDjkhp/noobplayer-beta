@@ -1034,6 +1034,13 @@ body.pad-active:not(.pad-tabs-focused) .pad-hint-playeronly { opacity: 1; }
 body.pad-active #ctrls { transition: opacity .15s, filter .15s, outline-color .15s; }
 body.pad-active:not(.pad-tabs-focused) #ctrls { outline: 1px solid var(--accent); outline-offset: 6px; border-radius: var(--sh-md); }
 body.pad-active.pad-tabs-focused #ctrls { opacity: .45; filter: saturate(.5); outline: 1px solid transparent; outline-offset: 6px; }
+/* Makes it obvious what navUp/navDown/navSelect currently landed on —
+   only while actually navigating a tab with the controller, so it
+   doesn't add a focus ring for ordinary mouse/keyboard use. */
+body.pad-active.pad-tabs-focused .pane :focus {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px;
+}
 /* Wide/rectangular controls (tabs, the keyboard trigger) get a corner
    badge instead — a bottom-center one would sit on top of their label. */
 .pad-hint.corner { left: auto; right: 1px; top: 1px; bottom: auto; transform: none; }

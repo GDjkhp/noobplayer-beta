@@ -166,6 +166,12 @@ const Pad = {
     // actually type; the rest are the overlay's fixed bottom-row buttons.
     vkSelect: '.vk-k.sel', vkBackspace: '[data-vk="back"]', vkClear: '[data-vk="clear"]',
     vkShift: '[data-vk="shift"]', vkLayout: '[data-vk="layout"]', vkSpace: '[data-vk="space"]', vkClose: '[data-vk="close"]',
+    // In-tab navigation — "navSelect" tracks whichever element currently
+    // has native DOM focus (see navMove/navSelect below), so its badge
+    // moves the same way vkSelect's does. navUp/Down/Left/Right have no
+    // single fixed target and get no badge, same as the player's own
+    // seek/volume repeat actions.
+    navSelect: ':focus',
   },
   // Tabs and the keyboard trigger are wide/rectangular — a bottom-center
   // badge would sit on top of their label, so they get a corner badge
@@ -173,11 +179,18 @@ const Pad = {
   // key) gets the bottom-of-circle placement.
   _hintCorner(id) { return id.startsWith('tab') || id === 'virtualKeyboard'; },
 
+  // Targets that track "whichever element is currently selected/focused"
+  // rather than a fixed one — their host moves between renders, so any
+  // stale badge left on the PREVIOUS host has to be found and removed
+  // before re-placing it, using the data-hint-for back-reference set
+  // when each badge is created below.
+  DYNAMIC_HINT_IDS: ['vkSelect', 'navSelect'],
+
   _renderElementHints() {
     const p = this.pads[this.activeIdx];
-    // The vk grid's selected key moves every render — clear any stale
-    // badge left on a previously-selected key before re-placing it.
-    document.querySelectorAll('#vk-rows .pad-hint').forEach(h => h.remove());
+    for (const dynId of this.DYNAMIC_HINT_IDS) {
+      document.querySelectorAll(`.pad-hint[data-hint-for="${dynId}"]`).forEach(h => h.remove());
+    }
     for (const id of Object.keys(this.ACTION_EL)) {
       const el = document.querySelector(this.ACTION_EL[id]);
       if (!el) continue;
@@ -192,6 +205,7 @@ const Pad = {
       if (!hint) {
         hint = document.createElement('span');
         hint.className = 'pad-hint' + (this._hintCorner(id) ? ' corner' : '') + (this._isPlayerAction(id) ? ' pad-hint-playeronly' : '');
+        hint.dataset.hintFor = id;
         // Only force position:relative on elements that aren't already
         // positioned — #vk-trigger is position:fixed for its
         // follow-the-focused-field behavior, and .pad-hint-host's
@@ -286,7 +300,24 @@ const Pad = {
 
     const vk = typeof VKeyboard !== 'undefined' && VKeyboard.active;
     const comboKey = downIdx.slice().sort((a, b) => a - b).join('+');
-    const id = downIdx.length ? Bindings.actionForPadCombo(downIdx, vk) : null;
+    // Which binding namespace this combo should be looked up in: the
+    // on-screen keyboard's own controls while it's open, in-tab
+    // navigation while a tab has focus (falling back to the always-on
+    // tab-switch shortcuts if this combo isn't a nav binding), or the
+    // normal player/tab-switch namespace otherwise.
+    let id = null;
+    if (downIdx.length) {
+      if (vk) id = Bindings.actionForPadCombo(downIdx, 'vk');
+      else if (this.focus === 'tabs') {
+        id = Bindings.actionForPadCombo(downIdx, 'nav');
+        if (!id) {
+          const normalId = Bindings.actionForPadCombo(downIdx, 'normal');
+          if (normalId === 'tabPrev' || normalId === 'tabNext' || this.TAB_OPEN_ACTIONS.includes(normalId)) id = normalId;
+        }
+      } else {
+        id = Bindings.actionForPadCombo(downIdx, 'normal');
+      }
+    }
 
     if (comboKey !== p.prevComboKey) {
       p.prevComboKey = comboKey;
@@ -339,6 +370,49 @@ const Pad = {
     if (i < 0 || i >= tabs.length) { this._setFocus('player'); return; }
     tabs[i].click();
   },
+
+  /* ───────── in-tab navigation (only while focus === 'tabs') ─────────
+     Rather than hand-wiring each tab's own layout, this moves the
+     browser's OWN focus between whatever's already naturally focusable
+     inside the active pane — search-result buttons, queue-row buttons,
+     config inputs, bindings rebind buttons, and so on all just work,
+     with no per-tab code. navSelect activates whatever ends up focused;
+     on a range slider, left/right nudge its value instead of moving
+     focus, matching how arrow keys already behave on a focused slider. */
+  _activePane() {
+    const tab = document.querySelector('.tab.on');
+    if (!tab) return null;
+    return document.getElementById('pane-' + tab.dataset.tab);
+  },
+  _focusableIn(pane) {
+    if (!pane) return [];
+    const sel = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    return [...pane.querySelectorAll(sel)].filter(el => el.offsetParent !== null);
+  },
+  navMove(dir, axis) {
+    const el = document.activeElement;
+    if (axis === 'h' && el && el.tagName === 'INPUT' && el.type === 'range') {
+      const step = parseFloat(el.step) || 1;
+      const min = el.min === '' ? -Infinity : parseFloat(el.min);
+      const max = el.max === '' ? Infinity : parseFloat(el.max);
+      el.value = Math.max(min, Math.min(max, (parseFloat(el.value) || 0) + dir * step));
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      this._renderElementHints();
+      return;
+    }
+    const items = this._focusableIn(this._activePane());
+    if (!items.length) return;
+    let i = items.indexOf(el);
+    i = i === -1 ? (dir > 0 ? 0 : items.length - 1) : Math.max(0, Math.min(items.length - 1, i + dir));
+    items[i].focus();
+    if (items[i].scrollIntoView) items[i].scrollIntoView({ block: 'nearest' });
+    this._renderElementHints();
+  },
+  navSelect() {
+    const el = document.activeElement;
+    if (el && typeof el.click === 'function') el.click();
+  },
+
   _dispatch(id) {
     if (!id) return;
     if (Bindings._isVk(id)) { Bindings.run(id); return; }        // on-screen keyboard is modal — always active

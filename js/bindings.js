@@ -71,6 +71,19 @@ const Bindings = {
     { id: 'vkLayout',    label: 'On-screen keyboard: toggle 123/ABC', group: 'On-Screen Keyboard', run: () => VKeyboard.toggleLayout() },
     { id: 'vkSpace',     label: 'On-screen keyboard: space',      group: 'On-Screen Keyboard', run: () => VKeyboard.space() },
     { id: 'vkClose',     label: 'On-screen keyboard: close',      group: 'On-Screen Keyboard', run: () => VKeyboard.close() },
+
+    // In-tab navigation — active only while a tab (not the player) has
+    // controller focus (see the focus-zone note in gamepad.js). Moves
+    // native DOM focus between the tab's own interactive elements
+    // (search results, queue rows, config controls, ...) rather than
+    // needing per-tab wiring, and reuses the same physical D-pad/A
+    // buttons as the player controls without conflicting — the two
+    // namespaces are never active at the same time.
+    { id: 'navUp',     label: 'In-tab: move focus up',       group: 'Tab Navigation', run: () => Pad.navMove(-1, 'v'), repeat: true },
+    { id: 'navDown',   label: 'In-tab: move focus down',     group: 'Tab Navigation', run: () => Pad.navMove(1, 'v'),  repeat: true },
+    { id: 'navLeft',   label: 'In-tab: move focus left / decrease slider', group: 'Tab Navigation', run: () => Pad.navMove(-1, 'h'), repeat: true },
+    { id: 'navRight',  label: 'In-tab: move focus right / increase slider', group: 'Tab Navigation', run: () => Pad.navMove(1, 'h'),  repeat: true },
+    { id: 'navSelect', label: 'In-tab: activate focused item', group: 'Tab Navigation', run: () => Pad.navSelect() },
   ],
 
   // actionId -> { codes: [...normalized key codes] }
@@ -104,13 +117,23 @@ const Bindings = {
     vkUp: 12, vkDown: 13, vkLeft: 14, vkRight: 15,
     vkSelect: 0, vkBackspace: 1, vkClear: 2, vkShift: 3,
     vkLayout: 4, vkSpace: 5, vkClose: 9,
+    navUp: 12, navDown: 13, navLeft: 14, navRight: 15, navSelect: 0,
   },
 
   keys: {},
   pad: {},
 
   _byId(id) { return this.ACTIONS.find(a => a.id === id); },
+  // Gamepad button/chord bindings live in one of three namespaces that
+  // share the same physical buttons without conflicting, since only one
+  // is ever active at a time: "vk" (on-screen keyboard, open only while
+  // its overlay is up), "nav" (in-tab focus navigation, active only
+  // while a tab has controller focus — see gamepad.js), and everything
+  // else ("normal" — playback/queue controls plus the always-available
+  // tab-switch shortcuts, active while the player has focus).
   _isVk(id) { return id.startsWith('vk'); },
+  _isNav(id) { return id.startsWith('nav'); },
+  _namespaceOf(id) { return this._isVk(id) ? 'vk' : this._isNav(id) ? 'nav' : 'normal'; },
 
   // Physical Left/Right variants of a modifier key are folded into one
   // generic token, so a binding captured with the left Shift still
@@ -172,9 +195,9 @@ const Bindings = {
     const arr = (binding === null || binding === undefined) ? null : (Array.isArray(binding) ? binding : [binding]);
     if (arr && arr.length) {
       const key = this._comboKey(arr);
-      const vk = this._isVk(actionId);
+      const ns = this._namespaceOf(actionId);
       for (const id of Object.keys(this.pad)) {
-        if (id === actionId || this._isVk(id) !== vk) continue;
+        if (id === actionId || this._namespaceOf(id) !== ns) continue;
         const b = this.pad[id];
         if (b === null || b === undefined) continue;
         const bArr = Array.isArray(b) ? b : [b];
@@ -194,10 +217,10 @@ const Bindings = {
     }
     return null;
   },
-  actionForPadCombo(indices, vkOnly) {
+  actionForPadCombo(indices, namespace) {
     const key = this._comboKey(indices);
     for (const id of Object.keys(this.pad)) {
-      if (this._isVk(id) !== !!vkOnly) continue;
+      if (this._namespaceOf(id) !== (namespace || 'normal')) continue;
       const b = this.pad[id];
       if (b === null || b === undefined) continue;
       const arr = Array.isArray(b) ? b : [b];
@@ -277,7 +300,7 @@ const Bindings = {
     }
     // Keep the "game controller only" prompt bar / on-screen keyboard's
     // prompt row in sync with whatever was just rebound.
-    if (typeof Pad !== 'undefined') Pad._renderPrompts();
+    if (typeof Pad !== 'undefined') Pad._renderElementHints();
   },
 
   _codeLabel(code) {
