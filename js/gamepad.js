@@ -302,9 +302,11 @@ const Pad = {
     const comboKey = downIdx.slice().sort((a, b) => a - b).join('+');
     // Which binding namespace this combo should be looked up in: the
     // on-screen keyboard's own controls while it's open, in-tab
-    // navigation while a tab has focus (falling back to the always-on
-    // tab-switch shortcuts if this combo isn't a nav binding), or the
-    // normal player/tab-switch namespace otherwise.
+    // navigation while a tab has focus (falling back to the Navigation
+    // group — tab-switch shortcuts, open-this-tab shortcuts, and
+    // "open on-screen keyboard" — which are never gated by focus since
+    // none of them are playback controls), or the normal player/
+    // tab-switch namespace otherwise.
     let id = null;
     if (downIdx.length) {
       if (vk) id = Bindings.actionForPadCombo(downIdx, 'vk');
@@ -312,7 +314,8 @@ const Pad = {
         id = Bindings.actionForPadCombo(downIdx, 'nav');
         if (!id) {
           const normalId = Bindings.actionForPadCombo(downIdx, 'normal');
-          if (normalId === 'tabPrev' || normalId === 'tabNext' || this.TAB_OPEN_ACTIONS.includes(normalId)) id = normalId;
+          const a = normalId && Bindings._byId(normalId);
+          if (a && a.group === 'Navigation') id = normalId;
         }
       } else {
         id = Bindings.actionForPadCombo(downIdx, 'normal');
