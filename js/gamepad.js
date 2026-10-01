@@ -160,7 +160,6 @@ const Pad = {
     tabSearch: '.tab[data-tab="search"]', tabQueue: '.tab[data-tab="queue"]', tabLyrics: '.tab[data-tab="lyrics"]',
     tabSkins: '.tab[data-tab="skins"]', tabViz: '.tab[data-tab="viz"]', tabConfig: '.tab[data-tab="config"]',
     tabBindings: '.tab[data-tab="bindings"]',
-    virtualKeyboard: '#vk-trigger',
     // On-screen keyboard's own buttons — "vkSelect" tracks whichever
     // grid key is currently highlighted, since that's the one A/✕ would
     // actually type; the rest are the overlay's fixed bottom-row buttons.
@@ -173,11 +172,11 @@ const Pad = {
     // seek/volume repeat actions.
     navSelect: ':focus',
   },
-  // Tabs and the keyboard trigger are wide/rectangular — a bottom-center
-  // badge would sit on top of their label, so they get a corner badge
-  // instead. Everything else (the round transport buttons, the vk grid
-  // key) gets the bottom-of-circle placement.
-  _hintCorner(id) { return id.startsWith('tab') || id === 'virtualKeyboard'; },
+  // Tabs are wide/rectangular — a bottom-center badge would sit on top
+  // of their label, so they get a corner badge instead. Everything else
+  // (the round transport buttons, the vk grid key) gets the
+  // bottom-of-circle placement.
+  _hintCorner(id) { return id.startsWith('tab'); },
 
   // Targets that track "whichever element is currently selected/focused"
   // rather than a fixed one — their host moves between renders, so any
@@ -207,9 +206,8 @@ const Pad = {
         hint.className = 'pad-hint' + (this._hintCorner(id) ? ' corner' : '') + (this._isPlayerAction(id) ? ' pad-hint-playeronly' : '');
         hint.dataset.hintFor = id;
         // Only force position:relative on elements that aren't already
-        // positioned — #vk-trigger is position:fixed for its
-        // follow-the-focused-field behavior, and .pad-hint-host's
-        // position:relative would silently override that.
+        // positioned — a fixed/absolute element's own positioning would
+        // be silently overridden by .pad-hint-host's position:relative.
         if (getComputedStyle(el).position === 'static') el.classList.add('pad-hint-host');
         el.appendChild(hint);
       }
@@ -300,13 +298,29 @@ const Pad = {
 
     const vk = typeof VKeyboard !== 'undefined' && VKeyboard.active;
     const comboKey = downIdx.slice().sort((a, b) => a - b).join('+');
+
+    // Hardcoded, NOT a Bindings action on purpose: A opens the on-screen
+    // keyboard whenever a text field has focus, taking priority over
+    // whatever A would otherwise do there (Play/Pause in the player
+    // zone, "activate" in the tab zone). Making this rebindable would
+    // let it collide with Play/Pause's own A binding, which is the bug
+    // this replaced — so it's pinned to button 0 specifically and
+    // skips the whole lookup below.
+    if (!vk && downIdx.length === 1 && downIdx[0] === 0 && typeof VKeyboard !== 'undefined' && VKeyboard._isTextField(document.activeElement)) {
+      if (comboKey !== p.prevComboKey) {
+        p.prevComboKey = comboKey;
+        p.comboNext = ts + this.RAMP_DELAY;
+        VKeyboard.open(document.activeElement);
+      }
+      return;
+    }
+
     // Which binding namespace this combo should be looked up in: the
     // on-screen keyboard's own controls while it's open, in-tab
     // navigation while a tab has focus (falling back to the Navigation
-    // group — tab-switch shortcuts, open-this-tab shortcuts, and
-    // "open on-screen keyboard" — which are never gated by focus since
-    // none of them are playback controls), or the normal player/
-    // tab-switch namespace otherwise.
+    // group — tab-switch and open-this-tab shortcuts, which are never
+    // gated by focus since none of them are playback controls), or the
+    // normal player/tab-switch namespace otherwise.
     let id = null;
     if (downIdx.length) {
       if (vk) id = Bindings.actionForPadCombo(downIdx, 'vk');

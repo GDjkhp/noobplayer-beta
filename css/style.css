@@ -965,13 +965,8 @@ body::after {
 }
 
 /* ═══════════════ ON-SCREEN KEYBOARD ═══════════════ */
-#vk-trigger {
-  position: fixed; z-index: 9990; width: 28px; height: 28px; display: none; align-items: center; justify-content: center;
-  background: var(--surf2); border: 1px solid var(--brd2); border-radius: var(--sh-xs); color: var(--accent); cursor: pointer;
-}
-#vk-trigger:hover { border-color: var(--accent); }
-#vk-trigger .material-symbols-outlined { font-size: 16px; }
-
+/* No floating trigger button — it opens only via a controller's A
+   button while a text field has focus (see gamepad.js's _process). */
 #vk-overlay {
   position: fixed; inset: 0; z-index: 9995; display: none; align-items: flex-end; justify-content: center;
   background: rgba(4,4,12,.55); backdrop-filter: blur(2px);
@@ -1045,4 +1040,3 @@ body.pad-active.pad-tabs-focused .pane :focus {
    badge instead — a bottom-center one would sit on top of their label. */
 .pad-hint.corner { left: auto; right: 1px; top: 1px; bottom: auto; transform: none; }
 .cb.sm .pad-hint { font-size: 7px; padding: 1px 3px; bottom: 1px; }
-#vk-trigger.pad-hint-host .pad-hint.corner { right: -4px; top: -4px; }

@@ -54,7 +54,11 @@ const Bindings = {
     { id: 'tabBindings',  label: 'Open Bindings tab',    group: 'Navigation', run: () => Bindings.openTab('bindings') },
     { id: 'tabPrev',      label: 'Previous tab',         group: 'Navigation', run: () => Bindings.cycleTab(-1) },
     { id: 'tabNext',      label: 'Next tab',             group: 'Navigation', run: () => Bindings.cycleTab(1) },
-    { id: 'virtualKeyboard', label: 'Open on-screen keyboard (focused field)', group: 'Navigation', run: () => VKeyboard.openForFocused() },
+    // Opening the on-screen keyboard is deliberately NOT a bindable
+    // action — it's hardcoded in gamepad.js to fire on A specifically
+    // when a text field has focus, which is the one case A would
+    // otherwise just toggle Play/Pause for no useful reason. Making it
+    // rebindable would let it collide with Play/Pause's own A binding.
 
     // On-screen keyboard's own controls — gamepad-only in practice (see
     // vkeyboard.js's class comment), namespaced by the "vk" id prefix so

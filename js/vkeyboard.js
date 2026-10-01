@@ -1,15 +1,13 @@
 'use strict';
 /* ═══════════════════════════════════════════
    VKeyboard — on-screen keyboard for typing without a physical
-   keyboard: click/touch, or a gamepad via the rebindable "On-Screen
-   Keyboard" actions in the Bindings tab (vkUp/vkSelect/etc. — see
-   bindings.js) or the small keyboard icon that floats next to whatever
-   text input/textarea currently has focus.
-
-   Navigation/typing is exposed as plain methods (moveUp, select,
-   backspace, ...) rather than hardcoded to specific buttons — gamepad.js
-   dispatches to them the same way it dispatches any other action, via
-   Bindings, which is what makes them independently rebindable.
+   keyboard, controller-only: opens when a text field has focus and the
+   player presses A (see the hardcoded intercept in gamepad.js's
+   _process — deliberately not a Bindings action, so it can't collide
+   with Play/Pause's own A binding). Once open, navigation/typing is
+   exposed as plain methods (moveUp, select, backspace, ...) that ARE
+   ordinary rebindable "On-Screen Keyboard" actions in the Bindings tab
+   (vkUp/vkSelect/etc. — see bindings.js).
 ═══════════════════════════════════════════ */
 const VKeyboard = {
   target: null,
@@ -30,12 +28,7 @@ const VKeyboard = {
   ],
 
   init() {
-    this._buildTrigger();
     this._buildOverlay();
-    document.addEventListener('focusin', (e) => this._onFocusIn(e));
-    document.addEventListener('focusout', (e) => this._onFocusOut(e));
-    window.addEventListener('resize', () => this._positionTrigger());
-    window.addEventListener('scroll', () => this._positionTrigger(), true);
   },
 
   _isTextField(el) {
@@ -43,47 +36,6 @@ const VKeyboard = {
     if (el.tagName === 'TEXTAREA') return true;
     if (el.tagName === 'INPUT') return ['text', 'search', ''].includes((el.type || '').toLowerCase());
     return false;
-  },
-
-  _onFocusIn(e) {
-    if (!this._isTextField(e.target)) return;
-    this._lastFocused = e.target;
-    this._trigger.style.display = 'flex';
-    this._positionTrigger(e.target);
-  },
-  _onFocusOut() {
-    setTimeout(() => {
-      if (this.active) return;
-      const a = document.activeElement;
-      if (this._isTextField(a) || a === this._trigger) return;
-      this._trigger.style.display = 'none';
-    }, 120);
-  },
-
-  _buildTrigger() {
-    const btn = document.createElement('button');
-    btn.id = 'vk-trigger';
-    btn.type = 'button';
-    btn.title = 'Open on-screen keyboard';
-    btn.innerHTML = '<span class="material-symbols-outlined">keyboard</span>';
-    btn.style.display = 'none';
-    btn.addEventListener('mousedown', (e) => e.preventDefault());
-    btn.addEventListener('click', () => this.open(this._lastFocused));
-    document.body.appendChild(btn);
-    this._trigger = btn;
-  },
-
-  _positionTrigger(field) {
-    field = field || this._lastFocused;
-    if (!field || !this._trigger || this._trigger.style.display === 'none') return;
-    const r = field.getBoundingClientRect();
-    this._trigger.style.top = `${Math.round(r.top + (r.height - 28) / 2)}px`;
-    this._trigger.style.left = `${Math.round(r.right - 32)}px`;
-  },
-
-  openForFocused() {
-    const a = document.activeElement;
-    this.open(this._isTextField(a) ? a : (this._lastFocused || document.getElementById('si')));
   },
 
   open(field) {
