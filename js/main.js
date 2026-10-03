@@ -166,6 +166,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* ───────── Download (now-playing) ───────── */
   document.getElementById('btn-dl').addEventListener('click', e => UI.openDownloadMenu(e.currentTarget, S.current));
+  document.getElementById('public-refresh-btn').addEventListener('click', () => Lobby.refreshPublicList());
   document.getElementById('btn-link').addEventListener('click', () => UI.openTrackLink(S.current));
 
   /* ───────── Media Session (lock-screen / hardware media keys) ─────────
