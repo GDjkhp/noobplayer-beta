@@ -251,7 +251,7 @@ const Skins = {
       .si-th,.qi-th,.si-nth,.qi-nth,.cfg-mode-btn,.radio-opt,
       #viz-stage,.viz-frame,.viz-card,.viz-tab,.viz-error,.hi.viz-code,
       .dbg-card,.dbg-section,.dbg-wave-canvas,.dbg-seg-btn,.dbg-seg-toggle,.dbg-table,
-      .bnd-btn,.bnd-x,.skin-badge,.hdr-btn,.lobby-code-badge,.skin-tab,.eb,
+      .bnd-btn,.bnd-x,.skin-badge,.hdr-btn,.lobby-code-badge,.skin-tab,.tab,.eb,
       .pm-bar,.pm-fill,.skin-swatch,.skin-sw,.skin-card,.chat-msg,.cu-item{border-radius:${r}}`);
     out.push(`.skin-swatch::-webkit-color-swatch-wrapper,.skin-swatch::-webkit-color-swatch{border-radius:${r}}`);
     out.push(`.skin-swatch::-moz-color-swatch{border-radius:${r}}`);
