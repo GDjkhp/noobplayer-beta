@@ -248,7 +248,16 @@ const Skins = {
     const r = Number(o.radius) + 'px';
     out.push(`.cfg-block,.hi,.overlay-btn,.cb,.qa,.add-btn,.preset-btn,.toast,
       .pl-item,#meaning-box,#si,#btn-srch,#chat-input,#chat-send,#src-sel,
-      .si-th,.qi-th,.si-nth,.qi-nth{border-radius:${r}}`);
+      .si-th,.qi-th,.si-nth,.qi-nth,.cfg-mode-btn,.radio-opt,
+      #viz-stage,.viz-frame,.viz-card,.viz-tab,.viz-error,.hi.viz-code,
+      .dbg-card,.dbg-section,.dbg-wave-canvas,.dbg-seg-btn,.dbg-seg-toggle,.dbg-table,
+      .bnd-btn,.bnd-x,.skin-badge,.hdr-btn,.lobby-code-badge,.skin-tab,.eb,
+      .pm-bar,.pm-fill,.skin-swatch,.skin-sw,.skin-card,.chat-msg,.cu-item{border-radius:${r}}`);
+    out.push(`.skin-swatch::-webkit-color-swatch-wrapper,.skin-swatch::-webkit-color-swatch{border-radius:${r}}`);
+    out.push(`.skin-swatch::-moz-color-swatch{border-radius:${r}}`);
+
+    // Scrollbar thumb/track follow the corner radius (thickness is in style.css).
+    out.push(`*::-webkit-scrollbar-track,*::-webkit-scrollbar-thumb,*::-webkit-scrollbar-corner{border-radius:${r}!important}`);
     out.push(`.cb.sm,.cb.lg{border-radius:${r}}`);
     
     if (Number(o.artRadius) > 0) {
@@ -264,7 +273,7 @@ const Skins = {
     if (Number(o.glow) > 0) {
       const g = Number(o.glow);
       out.push(`.cb.lg,#btn-srch,.overlay-btn:not(.ghost),#chat-send{box-shadow:0 0 ${g}px color-mix(in srgb, var(--accent) 60%, transparent)}`);
-      out.push(`.tab.on,.lobby-tab.on,.skin-tab.on{text-shadow:0 0 ${Math.round(g / 2)}px var(--accent)}`);
+      out.push(`.tab.on,.skin-tab.on{text-shadow:0 0 ${Math.round(g / 2)}px var(--accent)}`);
     }
 
     const d = Number(o.density);

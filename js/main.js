@@ -234,11 +234,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('cfg-save-lobby').addEventListener('click', () => UI.saveConfigLobby());
   document.getElementById('cfg-leave-lobby').addEventListener('click', () => Lobby.leave());
 
-  /* ───────── Config: Lobby card (Public Lobbies / Current Lobby) ───────── */
-  document.querySelectorAll('.lobby-tab').forEach(tab => {
-    tab.addEventListener('click', () => UI.switchLobbyTab(tab.dataset.ltab));
-  });
-
   /* ───────── Config: join a lobby by code (works for private lobbies) ───────── */
   document.getElementById('join-code-btn').addEventListener('click', () => Lobby.joinByCode());
   document.getElementById('join-code-input').addEventListener('keydown', e => { if (e.key === 'Enter') Lobby.joinByCode(); });

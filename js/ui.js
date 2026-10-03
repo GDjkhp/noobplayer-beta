@@ -708,13 +708,6 @@ const UI = {
     toast('User settings saved', 'success', 1500);
   },
 
-  /* ───────── Lobby card: Public Lobbies / Current Lobby sub-tabs ───────── */
-  switchLobbyTab(name) {
-    document.querySelectorAll('.lobby-tab').forEach(t => t.classList.toggle('on', t.dataset.ltab === name));
-    document.querySelectorAll('.lobby-pane').forEach(p => p.classList.toggle('on', p.id === 'ltab-' + name));
-    if (name === 'public') Lobby.refreshPublicList();
-  },
-
   updateServerUrlDisplay() {
     const el = document.getElementById('cfg-server-url');
     if (el) el.textContent = Backend.serverUrl || window.location.origin;

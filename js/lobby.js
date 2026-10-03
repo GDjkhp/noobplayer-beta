@@ -40,12 +40,10 @@ const Lobby = {
         item.addEventListener('click', async () => {
           // It's the lobby we're already hosting/in — joining it as a
           // second participant would just displace us as host (a fresh
-          // join, new clientId, same as any other participant). Just hop
-          // over to the Current Lobby tab instead.
-          if (S.mode === 'server' && S.lobby.active && item.dataset.code === S.lobby.code) { UI.switchLobbyTab('current'); return; }
+          // join, new clientId, same as any other participant).
+          if (S.mode === 'server' && S.lobby.active && item.dataset.code === S.lobby.code) { toast("You're already in this lobby", 'info', 1800); return; }
           const displayName = localStorage.getItem('nl_display_name') || 'Guest';
-          const ok = await this.join(item.dataset.code, displayName);
-          if (ok) UI.switchLobbyTab('current');
+          await this.join(item.dataset.code, displayName);
         });
       });
     } catch (e) {
@@ -66,7 +64,7 @@ const Lobby = {
     try {
       const displayName = localStorage.getItem('nl_display_name') || 'Guest';
       const ok = await this.join(code, displayName);
-      if (ok) { input.value = ''; UI.switchLobbyTab('current'); }
+      if (ok) input.value = '';
     } finally { btn.disabled = false; }
   },
 
