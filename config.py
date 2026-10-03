@@ -82,7 +82,6 @@ QUIC_CERT_DAYS = 12
 
 # ── Lobbies ──
 LOBBY_CODE_LENGTH = 6
-CHAT_HISTORY_LIMIT = 100
 
 # ── Recommendations / autoplay ──
 # Autoplay and Smart Shuffle ask the node for tracks similar to whatever is

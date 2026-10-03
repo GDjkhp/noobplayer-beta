@@ -2357,7 +2357,6 @@ async def post_chat(code):
         return jsonify({"error": "not in lobby"}), 403
     msg = {"id": uuid.uuid4().hex, "name": p.name, "text": str(data.get("text", ""))[:500], "ts": time.time() * 1000}
     lobby.chat.append(msg)
-    lobby.chat = lobby.chat[-config.CHAT_HISTORY_LIMIT:]
     await broadcast(lobby, "chat", msg)
     return jsonify({"ok": True})
 
