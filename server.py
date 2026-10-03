@@ -650,7 +650,7 @@ class LobbyRelay:
             "autoQueueCount": len(self.lobby.auto_queue),
             "autoQueue": [_track_brief(t) for t in self.lobby.auto_queue],
             # Everything that already played (Lobby.history is oldest->newest,
-            # capped at HISTORY_LIMIT), flipped so the most recent track is
+            # unbounded), flipped so the most recent track is
             # first — the Debug tab's History Queue card renders it as-is.
             "historyCount": len(self.lobby.history),
             "history": [_track_brief(t) for t in reversed(self.lobby.history)],
@@ -1322,8 +1322,6 @@ class LobbyRelay:
 # talk to NodeLink over plain REST here, the same query strings are built
 # directly instead of going through the library.
 # ═══════════════════════════════════════════════════════════════════
-HISTORY_LIMIT = 100
-AUTO_QUEUE_LIMIT = 60
 
 # source name (as NodeLink reports it) -> recommendation search prefix
 REC_PREFIXES = {
@@ -1474,8 +1472,6 @@ async def populate_recommendations(lobby, seed=None, broadcast_state=True):
         played, queued = lobby._played_ids(), lobby._queued_ids()
         have = {track_id(t) for t in lobby.auto_queue}
         for t in recs:
-            if len(lobby.auto_queue) >= AUTO_QUEUE_LIMIT:
-                break
             tid = track_id(t)
             if tid in played or tid in queued or tid in have:
                 continue
@@ -1633,7 +1629,6 @@ class Lobby:
             return finished
         if finished:
             self.history.append(finished)
-            del self.history[:-HISTORY_LIMIT]
         if self.loop_mode == "queue" and finished:
             self.queue.append(finished)
         if not self.queue:
@@ -2395,7 +2390,6 @@ async def lobby_play(code):
     was_idle = lobby.current_track is None
     if lobby.current_track:
         lobby.history.append(lobby.current_track)
-        del lobby.history[:-HISTORY_LIMIT]
     lobby.current_track = stamp_requester(data.get("track"), lobby.participants.get(client_id))
     lobby.paused = False
     lobby.position_anchor_ms = 0
@@ -2847,7 +2841,7 @@ async def lobby_queue_smart(code):
         return jsonify({"error": "nothing playing to base recommendations on"}), 400
 
     try:
-        count = max(1, min(int(data.get("count", 20)), AUTO_QUEUE_LIMIT))
+        count = max(1, int(data.get("count", 20)))
     except (TypeError, ValueError):
         count = 20
 

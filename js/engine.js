@@ -155,7 +155,6 @@ const Engine = {
     // server.py carries the same guard for the same reason.
     if (S.loopMode === 'track' && finishedTrack && !skipTrackLoop) return finishedTrack;
     if (finishedTrack) {
-      if (S.history.length > 80) S.history.shift();
       S.history.push(finishedTrack);
     }
     if (S.loopMode === 'queue' && finishedTrack) S.queue.push(finishedTrack);
@@ -267,7 +266,6 @@ const Engine = {
       const have = new Set(S.autoQueue.map(t => this._trackId(t)));
       let added = 0;
       for (const t of tracks) {
-        if (S.autoQueue.length >= 60) break;
         const id = this._trackId(t);
         if (played.has(id) || queued.has(id) || have.has(id)) continue;
         have.add(id);
