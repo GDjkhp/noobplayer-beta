@@ -98,6 +98,13 @@ const UI = {
     }
   },
 
+  // Opens the track's source page (info.uri) in a new window/tab.
+  openTrackLink(track) {
+    const uri = track && track.info && track.info.uri;
+    if (!uri || !/^https?:\/\//i.test(uri)) { toast('No link available for this track', 'info', 1800); return; }
+    window.open(uri, '_blank', 'noopener,noreferrer');
+  },
+
   setBuffering(on) { document.getElementById('buf-ring').classList.toggle('show', on); },
 
   updatePlayerUI() {
@@ -105,6 +112,7 @@ const UI = {
     const img = document.getElementById('art-img');
     const empty = document.getElementById('art-empty');
     document.getElementById('btn-dl').disabled = !t;
+    document.getElementById('btn-link').disabled = !(t && t.info.uri);
 
     if (t) {
       if (t.info.artworkUrl) {
@@ -322,6 +330,7 @@ const UI = {
           <button class="qib" data-qa="play" data-qi="${i}" title="Play now" ${locked?'disabled':''}><span class="material-symbols-outlined">play_arrow</span></button>
           <button class="qib" data-qa="up"   data-qi="${i}" title="Move up" ${(locked||i===0)?'disabled':''}><span class="material-symbols-outlined">keyboard_arrow_up</span></button>
           <button class="qib" data-qa="dn"   data-qi="${i}" title="Move down" ${(locked||i===S.queue.length-1)?'disabled':''}><span class="material-symbols-outlined">keyboard_arrow_down</span></button>
+          <button class="qib" data-qa="link" data-qi="${i}" title="Open track link" ${t.info.uri?'':'disabled'}><span class="material-symbols-outlined">open_in_new</span></button>
           <button class="qib dl" data-qa="dl" data-qi="${i}" title="Download"><span class="material-symbols-outlined">download</span></button>
           <button class="qib del" data-qa="rm" data-qi="${i}" title="${canRemove ? 'Remove' : 'Only the host can remove other people\u2019s tracks'}" ${canRemove?'':'disabled'}><span class="material-symbols-outlined">close</span></button>
         </div>
@@ -351,6 +360,7 @@ const UI = {
         else if (a === 'dn' && i < S.queue.length - 1) { Engine.moveQueueItem(i, i + 1); }
         else if (a === 'rm') Engine.removeFromQueue(i);
         else if (a === 'dl') UI.openDownloadMenu(btn, S.queue[i]);
+        else if (a === 'link') UI.openTrackLink(S.queue[i]);
       });
     });
 
