@@ -1037,7 +1037,7 @@ const Debug = {
       list.innerHTML = `<div class="dbg-empty-row">${S.mode ? 'empty — nothing queued for autoplay/smart shuffle yet' : 'not connected'}</div>`;
       return;
     }
-    list.innerHTML = items.slice(0, 25).map((t, i) => `
+    list.innerHTML = items.map((t, i) => `
       <div class="dbg-list-row">
         <span class="dbg-mono">#${i + 1}</span>
         <span>${esc(t.title || 'Unknown title')}</span>

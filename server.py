@@ -648,7 +648,7 @@ class LobbyRelay:
             # detail Autoplay/Smart Shuffle drain from. Capped + stripped
             # down (see _track_brief) since this goes out on every push.
             "autoQueueCount": len(self.lobby.auto_queue),
-            "autoQueue": [_track_brief(t) for t in self.lobby.auto_queue[:30]],
+            "autoQueue": [_track_brief(t) for t in self.lobby.auto_queue],
             # Everything that already played (Lobby.history is oldest->newest,
             # capped at HISTORY_LIMIT), flipped so the most recent track is
             # first — the Debug tab's History Queue card renders it as-is.
@@ -1482,6 +1482,10 @@ async def populate_recommendations(lobby, seed=None, broadcast_state=True):
             have.add(tid)
             t.setdefault("requester", {"id": "__auto__", "name": "Autoplay"})
             lobby.auto_queue.append(t)
+        # Shuffle the whole pool, not just this batch: batches are appended in
+        # the order tracks were played, so the front of the pool (what Smart
+        # Shuffle / autoplay take first) would always come from the oldest seed.
+        random.shuffle(lobby.auto_queue)
         if broadcast_state and lobby.code in LOBBIES:
             await broadcast(lobby, "state", lobby.public_state())
 
@@ -2857,6 +2861,9 @@ async def lobby_queue_smart(code):
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
 
+    # Shuffle the pool BEFORE taking from it, so the picks aren't just the
+    # first ones parked (which come from the earliest-played seeds).
+    random.shuffle(lobby.auto_queue)
     played, queued = lobby._played_ids(), lobby._queued_ids()
     added, leftover = [], []
     for t in lobby.auto_queue:

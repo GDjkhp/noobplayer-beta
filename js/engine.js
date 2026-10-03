@@ -275,6 +275,14 @@ const Engine = {
         S.autoQueue.push(t);
         added++;
       }
+      // Shuffle the whole pool, not just this batch: batches are appended in
+      // the order tracks were played, so without this the front of the pool
+      // (what Smart Shuffle / autoplay take first) always comes from the
+      // oldest seed.
+      for (let i = S.autoQueue.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [S.autoQueue[i], S.autoQueue[j]] = [S.autoQueue[j], S.autoQueue[i]];
+      }
       S.autoQueueCount = S.autoQueue.length;
       this._ensurePreload();   // autoplay may have just gained a "next track"
       return added;
@@ -734,6 +742,12 @@ const Engine = {
       await this._populateRecommendations();
     }
 
+    // Shuffle the pool BEFORE taking from it, so the picks aren't just the
+    // first ones parked (which come from the earliest-played seeds).
+      for (let i = S.autoQueue.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [S.autoQueue[i], S.autoQueue[j]] = [S.autoQueue[j], S.autoQueue[i]];
+      }
     const played = this._playedIds(), queued = this._queuedIds();
     const added = [], leftover = [];
     for (const t of S.autoQueue) {
