@@ -679,6 +679,7 @@ const UI = {
     this.updateServerUrlDisplay();
     this.renderCurrentLobbyConfig();
     this.renderDjCard();
+    Sessions.render();
     this.renderUserSettings();
     if (S.mode === 'server') Lobby.refreshPublicList();
     document.getElementById('sa-disconnect-cfg').style.display = (S.mode === 'standalone') ? 'inline-block' : 'none';
@@ -729,9 +730,11 @@ const UI = {
     // there's no real "not in a lobby" state worth showing — this tab is
     // just briefly blank the instant before the very first lobby connects.
     document.getElementById('cfg-lobby-form').style.display = 'block';
-    if (!inLobby) { document.getElementById('cfg-lobby-code').textContent = '------'; return; }
+    if (!inLobby) { document.getElementById('cfg-lobby-code').textContent = '------'; const ce = document.getElementById('cfg-code-edit'); if (ce) ce.style.display = 'none'; return; }
 
     document.getElementById('cfg-lobby-code').textContent = S.lobby.code;
+    const codeEdit = document.getElementById('cfg-code-edit');
+    if (codeEdit) codeEdit.style.display = S.lobby.isHost ? 'block' : 'none';
 
     // Name and display name are no longer edited here — see User Settings
     // above, which is now the single place those live (and pushes changes

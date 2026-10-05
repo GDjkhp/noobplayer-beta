@@ -233,6 +233,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* ───────── Config: current lobby settings ───────── */
   document.getElementById('cfg-copy-code').addEventListener('click', () => Lobby.copyCode());
+  {
+    const ci = document.getElementById('cfg-code-input');
+    const doChange = async () => {
+      const btn = document.getElementById('cfg-code-btn');
+      btn.disabled = true;
+      try { if (await Lobby.changeCode(ci.value)) ci.value = ''; } finally { btn.disabled = false; }
+    };
+    ci.addEventListener('input', () => { ci.value = ci.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 6); });
+    ci.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doChange(); } });
+    document.getElementById('cfg-code-btn').addEventListener('click', doChange);
+  }
+  document.getElementById('sessions-save').addEventListener('click', () => Sessions.save());
+  document.getElementById('heal-cancel').addEventListener('click', () => Heal.cancel());
   document.getElementById('cfg-save-lobby').addEventListener('click', () => UI.saveConfigLobby());
   document.getElementById('cfg-leave-lobby').addEventListener('click', () => Lobby.leave());
 

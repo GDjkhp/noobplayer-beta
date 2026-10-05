@@ -83,6 +83,12 @@ QUIC_CERT_DAYS = 12
 # ── Lobbies ──
 LOBBY_CODE_LENGTH = 6
 
+# Saved sessions (self-heal / "Saved Sessions" card): the host's browser keeps
+# a snapshot of the lobby and, after a server restart, asks the server to
+# rebuild it under the same code. This caps how many queued tracks a restore
+# request may carry, so a hostile or corrupted snapshot can't bloat memory.
+RESTORE_MAX_QUEUE = 9999
+
 # ── Recommendations / autoplay ──
 # Autoplay and Smart Shuffle ask the node for tracks similar to whatever is
 # playing. Only some sources support that: YouTube/YouTube Music (via the

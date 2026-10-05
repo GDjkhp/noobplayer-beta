@@ -1482,7 +1482,7 @@ async def populate_recommendations(lobby, seed=None, broadcast_state=True):
         # the order tracks were played, so the front of the pool (what Smart
         # Shuffle / autoplay take first) would always come from the oldest seed.
         random.shuffle(lobby.auto_queue)
-        if broadcast_state and lobby.code in LOBBIES:
+        if broadcast_state and LOBBIES.get(lobby.code) is lobby:
             await broadcast(lobby, "state", lobby.public_state())
 
     lobby.rec_task = asyncio.create_task(run())
@@ -1678,15 +1678,58 @@ LOBBIES = {}
 _sid_registry = {}
 
 
+# ── Lobby code registry ────────────────────────────────────────────────
+# LOBBIES IS the registry of every running lobby code. All mutation goes
+# through register_lobby / unregister_lobby / the re-key in lobby_change_code
+# so a code can never belong to two lobbies at once. Everything runs on one
+# event loop and none of these helpers await between their check and their
+# write, so check-then-claim is atomic.
+LOBBY_CODE_RE = re.compile(r"[A-Z]{%d}" % config.LOBBY_CODE_LENGTH)
+CLIENT_ID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def clean_code(raw):
+    """Normalise user input to a valid lobby code (exactly N letters A-Z), or None."""
+    code = str(raw or "").strip().upper()
+    return code if LOBBY_CODE_RE.fullmatch(code) else None
+
+
+def code_in_use(code):
+    return code in LOBBIES
+
+
+def register_lobby(lobby):
+    if lobby.code in LOBBIES:
+        raise ValueError(f"lobby code {lobby.code} is already in use")
+    LOBBIES[lobby.code] = lobby
+
+
+def unregister_lobby(lobby):
+    # Identity check: only ever free the code if it still points at THIS lobby.
+    if LOBBIES.get(lobby.code) is lobby:
+        LOBBIES.pop(lobby.code, None)
+
+
 def gen_code():
     while True:
         code = "".join(random.choices(string.ascii_uppercase, k=config.LOBBY_CODE_LENGTH))
-        if code not in LOBBIES:
+        if not code_in_use(code):
             return code
 
 
 def get_lobby_or_404(code):
     return LOBBIES.get((code or "").upper())
+
+
+def find_lobby_by_client(client_id):
+    """The lobby a client id belongs to, whatever its code is NOW. Lets a
+    participant who missed a host's code change find their way back."""
+    if not client_id:
+        return None
+    for l in LOBBIES.values():
+        if client_id in l.participants:
+            return l
+    return None
 
 
 async def broadcast(lobby, event, data):
@@ -1966,7 +2009,7 @@ async def _finalize_leave(lobby, client_id):
 
     if not lobby.participants:
         await lobby.relay.shutdown()
-        LOBBIES.pop(lobby.code, None)
+        unregister_lobby(lobby)
         return  # lobby is gone, nobody left to notify
 
     if p:
@@ -2218,7 +2261,7 @@ async def create_lobby():
     client_id = uuid.uuid4().hex
     lobby = Lobby(code, name, is_public, client_id)
     lobby.participants[client_id] = Participant(client_id, display_name)
-    LOBBIES[code] = lobby
+    register_lobby(lobby)
 
     return jsonify({"code": code, "clientId": client_id, "isHost": True, "state": lobby.public_state()})
 
@@ -2263,6 +2306,131 @@ async def leave_lobby(code):
     return jsonify({"ok": True})
 
 
+# ── Self-heal: rejoin / restore ────────────────────────────────────────
+# After the server drops (or restarts) every client keeps retrying:
+#   - non-hosts call /rejoin until the lobby exists again;
+#   - the host calls /rejoin first and, if the lobby is gone, /restore with
+#     the snapshot its browser saved, which rebuilds the lobby under the
+#     SAME code (unless another lobby grabbed it meanwhile — see below).
+# Neither endpoint can squat on a code: /rejoin never creates a lobby, and
+# /restore goes through register_lobby like everything else.
+def _clean_track(t):
+    """Keep only what a track needs; reject anything that isn't a real track."""
+    if not isinstance(t, dict):
+        return None
+    encoded, info = t.get("encoded"), t.get("info")
+    if not isinstance(encoded, str) or not encoded or not isinstance(info, dict):
+        return None
+    out = {"encoded": encoded, "info": info}
+    if isinstance(t.get("pluginInfo"), dict):
+        out["pluginInfo"] = t["pluginInfo"]
+    req = t.get("requester")
+    if isinstance(req, dict) and isinstance(req.get("id"), str) and isinstance(req.get("name"), str):
+        out["requester"] = {"id": req["id"][:64], "name": req["name"][:24]}
+    return out
+
+
+def _join_payload(lobby, client_id, **extra):
+    return jsonify({
+        "code": lobby.code, "clientId": client_id,
+        "isHost": lobby.host_id == client_id,
+        "state": lobby.public_state(), **extra,
+    })
+
+
+@app.route("/api/lobby/rejoin", methods=["POST"])
+async def rejoin_lobby():
+    data = await request.get_json(force=True, silent=True) or {}
+    code = clean_code(data.get("code"))
+    client_id = str(data.get("clientId") or "")
+    display_name = (data.get("displayName") or "Guest")[:24]
+
+    # Same identity still valid (a network blip, not a restart) — possibly
+    # under a different code if the host renamed the lobby meanwhile.
+    lobby = find_lobby_by_client(client_id)
+    if lobby:
+        return _join_payload(lobby, client_id, rejoined=True)
+
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "Lobby not found", "reason": "not_found"}), 404
+
+    # The lobby exists but no longer knows us (it was rebuilt by its host
+    # after a restart, or we were evicted): come back in as a new participant.
+    new_id = uuid.uuid4().hex
+    lobby.participants[new_id] = Participant(new_id, display_name)
+    await broadcast(lobby, "participants", lobby.participant_list())
+    await broadcast(lobby, "chat", {"system": True, "text": f"{display_name} reconnected", "ts": time.time() * 1000})
+    return _join_payload(lobby, new_id, rejoined=True)
+
+
+@app.route("/api/lobby/restore", methods=["POST"])
+async def restore_lobby():
+    """Rebuild a lobby from a snapshot the host's browser saved. The restored
+    lobby starts PAUSED at the saved position (nobody is startled by audio),
+    with the saved queue and queue/loop/autoplay/gapless/fair settings."""
+    data = await request.get_json(force=True, silent=True) or {}
+    snap = data.get("snapshot") if isinstance(data.get("snapshot"), dict) else {}
+    code = clean_code(snap.get("code"))
+    if not code:
+        return jsonify({"error": "snapshot has no valid lobby code", "reason": "bad_snapshot"}), 400
+
+    client_id = str(data.get("clientId") or "")
+    if not CLIENT_ID_RE.fullmatch(client_id):
+        client_id = uuid.uuid4().hex
+    display_name = (data.get("displayName") or snap.get("displayName") or "Guest")[:24]
+    allow_new = bool(data.get("allowNewCode"))
+
+    existing = LOBBIES.get(code)
+    if existing:
+        if existing.host_id == client_id and client_id in existing.participants:
+            return _join_payload(existing, client_id, restored=False)   # already alive
+        if not allow_new:
+            return jsonify({"error": f"Code {code} is in use by another lobby", "reason": "code_in_use"}), 409
+        code = gen_code()   # the original code was taken meanwhile — restore under a fresh one
+
+    name = str(snap.get("name") or "Untitled Lobby")[:40]
+    lobby = Lobby(code, name, bool(snap.get("isPublic", False)), client_id)
+    lobby.participants[client_id] = Participant(client_id, display_name)
+    if snap.get("loopMode") in ("none", "track", "queue"):
+        lobby.loop_mode = snap["loopMode"]
+    if snap.get("autoplay") in ("enabled", "partial", "disabled"):
+        lobby.autoplay = snap["autoplay"]
+    lobby.gapless = bool(snap.get("gapless", True))
+    lobby.fair = bool(snap.get("fair", True))
+
+    me = {"id": client_id, "name": display_name}
+    limit = int(getattr(config, "RESTORE_MAX_QUEUE", 500))
+    queue = [t for t in (_clean_track(x) for x in (snap.get("queue") or [])[:limit]) if t]
+    current = _clean_track(snap.get("currentTrack"))
+    pos = 0.0
+    if current:
+        try:
+            pos = max(0.0, float(snap.get("positionMs") or 0))
+        except (TypeError, ValueError):
+            pos = 0.0
+        length = (current.get("info") or {}).get("length")
+        if isinstance(length, (int, float)) and length > 0:
+            pos = min(pos, max(0.0, length - 1000))
+    elif queue:
+        current = queue.pop(0)   # a queue with nothing playing: line the first one up
+    for t in queue + ([current] if current else []):
+        t.setdefault("requester", me)
+    lobby.queue = queue
+
+    register_lobby(lobby)   # raises if the code got claimed since the check above (can't — no await in between)
+    if current:
+        lobby.current_track = current
+        lobby.paused = True
+        lobby.position_anchor_ms = pos
+        lobby.anchor_time = time.time()
+        await lobby.relay.start_track(current, pos)   # stays gated (silence) until the host presses play
+        await populate_recommendations(lobby, broadcast_state=False)
+    lobby.apply_fair()
+    lobby.relay.ensure_preload()
+    return _join_payload(lobby, client_id, restored=True, codeChanged=(code != clean_code(snap.get("code"))))
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Socket.IO — real-time push. REST handlers above already return fresh
 # state to whoever made the change; these events are purely for fanning
@@ -2285,9 +2453,15 @@ async def socket_join_lobby(sid, data):
     lobby = get_lobby_or_404(code)
 
     if not lobby or client_id not in lobby.participants:
+        # The host may have changed the lobby code while this client was
+        # disconnected — the client id still identifies its lobby.
+        lobby = find_lobby_by_client(client_id)
+
+    if not lobby:
         await sio.emit("join_error", {"error": "not found"}, room=sid)
         return
 
+    code = lobby.code
     await sio.enter_room(sid, code)
     _sid_registry[sid] = (code, client_id)
     lobby.sids.setdefault(client_id, set()).add(sid)
@@ -2660,6 +2834,48 @@ async def lobby_settings(code):
             lobby.name = name
     if "isPublic" in data:
         lobby.is_public = bool(data.get("isPublic"))
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
+
+
+@app.route("/api/lobby/<code>/code", methods=["POST"])
+async def lobby_change_code(code):
+    """Host-only: pick your own lobby code instead of the random one. Must be
+    exactly LOBBY_CODE_LENGTH letters (A-Z) and not belong to any running
+    lobby. Re-keys the lobby in the registry and moves every connected
+    socket into the new Socket.IO room, then broadcasts the new code."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_host(lobby, data.get("clientId")):
+        return jsonify({"error": "host only"}), 403
+    new_code = clean_code(data.get("newCode"))
+    if not new_code:
+        return jsonify({"error": f"Lobby codes are exactly {config.LOBBY_CODE_LENGTH} letters (A-Z)"}), 400
+    if new_code == lobby.code:
+        return jsonify({"ok": True, "state": lobby.public_state()})
+    if code_in_use(new_code):
+        return jsonify({"error": f"The code {new_code} is already in use by another lobby"}), 409
+
+    old = lobby.code
+    # Claim + release with no await in between: the registry never shows
+    # the lobby under both codes, or neither.
+    LOBBIES[new_code] = lobby
+    LOBBIES.pop(old, None)
+    lobby.code = new_code
+    lobby.relay.audio_out.code = new_code
+    for cid, sids in list(lobby.sids.items()):
+        for sid in list(sids):
+            _sid_registry[sid] = (new_code, cid)
+            try:
+                await sio.leave_room(sid, old)
+                await sio.enter_room(sid, new_code)
+            except Exception:
+                traceback.print_exc()
+
+    await broadcast(lobby, "chat", {"system": True, "text": f"Lobby code changed to {new_code}", "ts": time.time() * 1000})
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})

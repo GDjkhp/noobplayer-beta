@@ -153,29 +153,100 @@ const Lobby = {
     // reconnect (socket.io gives each attempt a fresh sid), so re-sending
     // join_lobby here is also how we re-associate with our lobby/clientId
     // after a drop — no separate 'reconnect' handler needed.
+    // Reads S.lobby.* at send time (not the closure args) so a reconnect
+    // after the host changed the lobby code, or after a heal gave this
+    // client a new id, always presents the current identity.
     socket.on('connect', () => {
-      socket.emit('join_lobby', { code, clientId });
+      socket.emit('join_lobby', { code: S.lobby.code || code, clientId: S.lobby.clientId || clientId });
       document.getElementById('sdot')?.classList.remove('err');
       document.getElementById('sdot')?.classList.add('ok');
     });
 
     socket.on('join_error', (payload) => {
-      const msg = payload?.error === 'not found' ? 'Lobby no longer exists' : (payload?.error || 'Failed to rejoin lobby');
-      toast(msg, 'error', 5000);
+      if (payload?.error === 'not found') {
+        // The server came back without this lobby (restart) — self-heal
+        // instead of leaving the user stranded with a dead lobby.
+        Heal.begin('the lobby no longer exists on the server');
+        return;
+      }
+      toast(payload?.error || 'Failed to rejoin lobby', 'error', 5000);
     });
 
-    socket.on('state', (state) => this._applyState(state));
+    socket.on('state', (state) => {
+      this._adoptCode(state.code);   // host renamed the lobby while we were here
+      Heal.noteAlive();              // a blip that fixed itself — nothing to rebuild
+      this._applyState(state);
+    });
     socket.on('participants', (list) => this._applyParticipants(list));
     socket.on('chat', (msg) => this._applyChat(msg));
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', (reason) => {
       document.getElementById('sdot')?.classList.remove('ok');
       document.getElementById('sdot')?.classList.add('err');
+      // Our own leave()/teardown, or the server deliberately removing us,
+      // isn't an outage. Everything else (server died, network dropped,
+      // ping timeout) starts the infinite reconnect loop.
+      if (reason === 'io client disconnect' || reason === 'io server disconnect') return;
+      Heal.begin('connection to the server was lost');
     });
+  },
+
+  // The server may change this lobby's code (host picked a custom one).
+  // Only ever called with state that arrived over OUR socket or in the
+  // response to our own request, so it can't be a stale lobby's state.
+  _adoptCode(newCode) {
+    if (!newCode || newCode === S.lobby.code || !S.lobby.active) return;
+    S.lobby.code = newCode;
+    const hdr = document.getElementById('lobby-code-display');
+    if (hdr) hdr.textContent = newCode;
+    const cfg = document.getElementById('cfg-lobby-code');
+    if (cfg) cfg.textContent = newCode;
+    toast(`Lobby code is now ${newCode}`, 'info', 3000);
+  },
+
+  // Host-only: pick a custom 6-letter code. The server validates it and
+  // refuses any code a running lobby already uses.
+  async changeCode(raw) {
+    if (!(S.mode === 'server' && S.lobby.active)) return false;
+    if (!S.lobby.isHost) { toast('Only the host can change the lobby code', 'warn'); return false; }
+    const code = String(raw || '').toUpperCase().replace(/[^A-Z]/g, '');
+    if (code.length !== 6) { toast('Lobby codes are exactly 6 letters (A–Z)', 'warn'); return false; }
+    if (code === S.lobby.code) { toast('That is already your lobby code', 'info', 1800); return false; }
+    try {
+      const r = await LobbyAPI.control(S.lobby.code, 'code', { clientId: S.lobby.clientId, newCode: code });
+      this._adoptCode(r.state.code);
+      this._applyState(r.state);
+      return true;
+    } catch (e) { toast(e.message, 'error', 4500); return false; }
+  },
+
+  // Self-heal re-bind: the server accepted us back (same lobby, or one the
+  // host rebuilt). Reconnect the socket under the identity it returned and
+  // rebuild the audio session if it died. Throws on failure so the heal
+  // loop retries.
+  async _resume(r) {
+    S.lobby.code = r.code;
+    S.lobby.clientId = r.clientId;
+    S.lobby.isHost = !!r.isHost;
+    const hdr = document.getElementById('lobby-code-display');
+    if (hdr) hdr.textContent = r.code;
+    this._connectSocket(r.code, r.clientId);
+    if (!(S.player && S.player.connected)) await this._rebuildMedia();
+    this._applyState(r.state);
+    UI.applyLockState();
+    UI.renderConfigTab();
+  },
+
+  async _rebuildMedia() {
+    const old = S.player;
+    S.player = null;
+    if (old) { try { await old.destroy(); } catch (_) {} }
+    await this._connectMedia({ strict: true });
   },
 
   _applyState(state) {
     S.lobby.lastServerState = state;
+    S.lobby.lastStateAt = Date.now();   // lets a saved session extrapolate the playback position
     const wasHost = S.lobby.isHost, wasDj = S.lobby.isDj;
     S.lobby.isHost = state.hostId === S.lobby.clientId;
     S.lobby.isDj = !S.lobby.isHost && (state.djs || []).includes(S.lobby.clientId);
@@ -189,6 +260,7 @@ const Lobby = {
     S.queue = state.queue || [];
     UI.renderQueue();
     UI.renderCurrentLobbyConfig();
+    if (wasHost !== S.lobby.isHost) Sessions.render();   // the Save button follows host status
 
     Engine._lobbySync(state);
   },
@@ -287,6 +359,10 @@ const Lobby = {
   // makes teardown near-instant instead of waiting ~12s.
   leaveBeacon() {
     if (S.mode !== 'server' || !S.lobby.active || !S.lobby.code || !S.lobby.clientId) return;
+    // Host closing the page as the last member: keep the lobby so it can be
+    // loaded again from Saved Sessions (localStorage writes are synchronous,
+    // so they survive the page going away).
+    Sessions.autosaveIfLastHost('page-closed');
     try {
       const url = `${Backend.serverUrl}/api/lobby/${S.lobby.code}/leave`;
       const blob = new Blob([JSON.stringify({ clientId: S.lobby.clientId })], { type: 'application/json' });
@@ -308,8 +384,12 @@ const Lobby = {
   // `autoRejoin: false` so this doesn't create a lobby only to abandon it a
   // moment later.
   async leave(opts = {}) {
-    const { autoRejoin = true } = opts;
+    const { autoRejoin = true, noAutosave = false } = opts;
     const displayName = S.lobby.displayName || localStorage.getItem('nl_display_name') || 'Guest';
+    // A deliberate leave must stop any reconnect loop, and a host leaving as
+    // the last member keeps the lobby in Saved Sessions.
+    if (!noAutosave) Sessions.autosaveIfLastHost('host-left');
+    if (Heal.active && Heal.mode === 'heal') Heal.stop();
 
     if (S.lobby.socket) { S.lobby.socket.disconnect(); S.lobby.socket = null; }
     if (S.lobby.code) await LobbyAPI.leave(S.lobby.code, S.lobby.clientId);
@@ -323,7 +403,7 @@ const Lobby = {
     S.autoQueue = []; S.autoQueueCount = 0;
     S.history = [];
     S.mode = null;
-    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, isDj:false, displayName:'', participants:[], socket:null, lastServerState:null, relayGen:0 };
+    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, isDj:false, displayName:'', participants:[], socket:null, lastServerState:null, lastStateAt:0, relayGen:0 };
     document.getElementById('hdr-lobby').style.display = 'none';
     document.getElementById('tab-chat-btn').style.display = 'none';
     document.getElementById('chat-log').innerHTML = '';
@@ -363,16 +443,24 @@ const Lobby = {
      reconnect either: it's just more audio arriving in the same
      continuous relay (see QuicPcmRelay in server.py) — the read loop in
      WebTransportPlayer picks it up on its own. */
-  async _connectMedia() {
+  async _connectMedia(opts = {}) {
     if (!S.player) S.player = new WebTransportPlayer();
     const player = S.player;
+    player.onClosed = () => {
+      if (S.player === player && S.lobby.active) Heal.begin('the audio connection closed');
+    };
     try {
       const info = await LobbyAPI.quicInfo();
       const url = LobbyAPI.quicUrl(S.lobby.code, info);
       await player.connect(url, info.certHashHex);
     } catch (e) {
       console.warn('Failed to connect lobby audio:', e);
-      toast(`Couldn't connect to the lobby's audio (${e.message}) — try leaving and rejoining`, 'error', 8000);
+      if (opts.strict) throw e;   // the heal loop retries
+      if (e.nonRetryable) {
+        toast(`Couldn't connect to the lobby's audio (${e.message})`, 'error', 8000);
+      } else {
+        Heal.begin('the audio connection could not be opened');
+      }
     }
 
     // Playback itself starts once Engine._lobbySync (driven by the

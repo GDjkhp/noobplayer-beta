@@ -112,8 +112,39 @@ const LobbyAPI = {
       await fetch(`${this.base()}/api/lobby/${code}/leave`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ clientId }),
+        // Leaving must never hang on a dead server (self-heal cancel / leave
+        // while reconnecting both go through here).
+        signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(4000) : undefined,
       });
     } catch (_) {}
+  },
+
+  // Self-heal. Errors carry `.status` (undefined = the server couldn't be
+  // reached at all) and `.reason`, so the reconnect loop can tell "keep
+  // retrying" from "this will never work" — see Heal in sessions.js.
+  async _post(path, payload) {
+    const res = await fetch(`${this.base()}${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(body.error || `HTTP ${res.status}`);
+      err.status = res.status; err.reason = body.reason;
+      throw err;
+    }
+    return body;
+  },
+
+  // Ask for the same identity back (blip) or re-enter as a new participant
+  // (the lobby was rebuilt). Never creates a lobby.
+  rejoin(code, clientId, displayName) {
+    return this._post('/api/lobby/rejoin', { code, clientId, displayName });
+  },
+
+  // Host-only in practice: rebuild a lobby from a saved snapshot.
+  restore(snapshot, clientId, displayName, allowNewCode) {
+    return this._post('/api/lobby/restore', { snapshot, clientId, displayName, allowNewCode: !!allowNewCode });
   },
 
   async chat(code, clientId, text) {
@@ -183,7 +214,9 @@ const LobbyAPI = {
     if (host === 'localhost') host = '127.0.0.1';
     else if (info.host) host = info.host;
     else if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(host) && !host.startsWith('[')) {
-      throw new Error(`can't open a pinned WebTransport session to "${host}" — connect via its IP address instead (or use a CA-signed cert to skip pinning entirely)`);
+      const err = new Error(`can't open a pinned WebTransport session to "${host}" — connect via its IP address instead (or use a CA-signed cert to skip pinning entirely)`);
+      err.nonRetryable = true;   // a config problem — reconnecting can't fix it
+      throw err;
     }
     const path = info.path.replace('{code}', code);
     return `https://${host}:${info.port}${path}`;

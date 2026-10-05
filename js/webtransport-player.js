@@ -34,6 +34,8 @@ class WebTransportPlayer {
     this._pcmReady = this._pcm.init(0.8);
     this._transport = null;
     this._closed = false;
+    this._live = false;             // WebTransport session open and not yet dropped
+    this.onClosed = null;           // set by Lobby._connectMedia — called when the session dies on its own
 
     this._decoder = null;
     this._rx = new Uint8Array(0);   // partial length-prefixed message carry-over
@@ -52,10 +54,14 @@ class WebTransportPlayer {
 
   async connect(url, certHashHex) {
     await this._pcmReady;
-    if (typeof AudioDecoder === 'undefined') throw new Error('this browser has no WebCodecs AudioDecoder (needed for the Opus lobby stream)');
+    // Missing browser features can't be fixed by retrying — flag them so
+    // the self-heal loop doesn't spin forever on them.
+    const unsupported = (msg) => Object.assign(new Error(msg), { nonRetryable: true });
+    if (typeof WebTransport === 'undefined') throw unsupported('this browser has no WebTransport (needed for the lobby audio stream)');
+    if (typeof AudioDecoder === 'undefined') throw unsupported('this browser has no WebCodecs AudioDecoder (needed for the Opus lobby stream)');
     const cfg = { codec: 'opus', sampleRate: 48000, numberOfChannels: 2 };
     const sup = await AudioDecoder.isConfigSupported(cfg);
-    if (!sup.supported) throw new Error('this browser cannot decode Opus via WebCodecs');
+    if (!sup.supported) throw unsupported('this browser cannot decode Opus via WebCodecs');
     this._decoder = new AudioDecoder({
       output: (ad) => this._onDecoded(ad),
       error: (e) => { if (!this._closed) console.warn('Opus decoder error:', e); },
@@ -67,10 +73,18 @@ class WebTransportPlayer {
       serverCertificateHashes: [{ algorithm: 'sha-256', value: new Uint8Array(bytes) }],
     });
     await this._transport.ready;
+    this._live = true;
 
+    // If the session dies on its own (server restart, network drop) hand it
+    // to the self-heal loop; without a handler fall back to the old toast.
+    const dropped = (msg, kind, ms) => {
+      this._live = false;
+      if (this._closed) return;
+      if (this.onClosed) this.onClosed(); else toast(msg, kind, ms);
+    };
     this._transport.closed
-      .then(() => { if (!this._closed) toast('Lobby audio connection closed', 'warn', 4000); })
-      .catch(() => { if (!this._closed) toast('Lobby audio connection dropped — try leaving and rejoining', 'error', 6000); });
+      .then(() => dropped('Lobby audio connection closed', 'warn', 4000))
+      .catch(() => dropped('Lobby audio connection dropped — try leaving and rejoining', 'error', 6000));
 
     const streamsReader = this._transport.incomingUnidirectionalStreams.getReader();
     const { value: stream, done } = await streamsReader.read();
@@ -186,6 +200,10 @@ class WebTransportPlayer {
 
   get isPaused() { return this._anchorPaused; }
 
+  // True while the WebTransport session is open — the heal loop uses this
+  // to decide whether the audio side needs rebuilding.
+  get connected() { return this._live && !this._closed; }
+
   getPositionMs() {
     const ctx = this._pcm.ctx;
     if (!ctx || !this._tl.length) {
@@ -219,6 +237,7 @@ class WebTransportPlayer {
 
   async destroy() {
     this._closed = true;
+    this._live = false;
     if (this._evTimer) { clearTimeout(this._evTimer); this._evTimer = null; }
     if (this._decoder) { try { this._decoder.close(); } catch (_) {} this._decoder = null; }
     if (this._transport) { try { this._transport.close(); } catch (_) {} this._transport = null; }

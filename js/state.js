@@ -101,6 +101,7 @@ const S = {
     // Lobby._connectMedia), destroyed the same way for every mode via
     // S.player.destroy().
     lastServerState: null,
+    lastStateAt: 0,
     relayGen: 0,        // last-seen LobbyRelay generation — bumps on a hard cut (skip/seek); the relay's PCM stream itself keeps flowing across this, nothing client-side needs to react to it anymore
   },
 };
