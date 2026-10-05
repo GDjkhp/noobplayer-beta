@@ -33,7 +33,7 @@ const Lobby = {
       const myCode = (S.mode === 'server' && S.lobby.active) ? S.lobby.code : null;
       el.innerHTML = list.map(l => `
         <div class="pl-item${l.code === myCode ? ' pl-mine' : ''}" data-code="${l.code}">
-          <span class="pl-name">${esc(l.name)}${l.code === myCode ? ' <span class="cu-tag">YOURS</span>' : ''}</span>
+          <span class="pl-name">${l.hasPassword ? '<span class="material-symbols-outlined pl-lock" title="Password protected">lock</span> ' : ''}${esc(l.name)}${l.code === myCode ? ' <span class="cu-tag">YOURS</span>' : ''}</span>
           <span class="pl-count">${l.participants} online · ${l.code}</span>
         </div>`).join('');
       el.querySelectorAll('.pl-item').forEach(item => {
@@ -57,14 +57,15 @@ const Lobby = {
   async joinByCode() {
     const input = document.getElementById('join-code-input');
     const btn = document.getElementById('join-code-btn');
+    const passInput = document.getElementById('join-pass-input');
     const code = input.value.toUpperCase().replace(/[^A-Z]/g, '').trim();
     input.value = code;
     if (!code) { toast('Enter a lobby code', 'warn'); input.focus(); return; }
     btn.disabled = true;
     try {
       const displayName = localStorage.getItem('nl_display_name') || 'Guest';
-      const ok = await this.join(code, displayName);
-      if (ok) input.value = '';
+      const ok = await this.join(code, displayName, passInput ? passInput.value : '');
+      if (ok) { input.value = ''; if (passInput) passInput.value = ''; }
     } finally { btn.disabled = false; }
   },
 
@@ -78,7 +79,7 @@ const Lobby = {
     }
   },
 
-  async join(code, displayName) {
+  async join(code, displayName, password = '') {
     code = (code || '').toUpperCase().trim();
     if (code.length !== 6) { toast('Lobby codes are 6 letters', 'warn'); return false; }
     // Already in this lobby — a second join would create a new participant
@@ -89,10 +90,19 @@ const Lobby = {
       return false;
     }
     try {
-      const r = await LobbyAPI.join(code, displayName || 'Guest');
-      this._enterLobby(r.code, r.clientId, r.token, r.isHost, displayName || 'Guest', r.state);
+      const r = await LobbyAPI.join(code, displayName || 'Guest', password);
+      this._enterLobby(r.code, r.clientId, r.token, r.isHost, displayName || 'Guest', r.state, password);
       return true;
-    } catch (e) { toast(`Failed to join: ${e.message}`, 'error'); return false; }
+    } catch (e) {
+      // Protected lobby: ask for the password and try again (a wrong one asks again;
+      // cancelling the prompt gives up). The server rate-limits repeated wrong guesses.
+      if (e.reason === 'password_required' || e.reason === 'wrong_password') {
+        const pw = prompt(e.reason === 'wrong_password' ? `Wrong password for ${code}. Try again:` : `Lobby ${code} is password protected. Password:`);
+        if (pw) return this.join(code, displayName, pw);
+        return false;
+      }
+      toast(`Failed to join: ${e.message}`, 'error'); return false;
+    }
   },
 
   // Tears down whatever lobby connection is currently active — socket,
@@ -107,7 +117,7 @@ const Lobby = {
     if (S.lobby.code) LobbyAPI.leave(S.lobby.code, S.lobby.clientId).catch(() => {});
   },
 
-  _enterLobby(code, clientId, token, isHost, displayName, initialState) {
+  _enterLobby(code, clientId, token, isHost, displayName, initialState, password = '') {
     // Switching straight from one lobby into another — e.g. picking a
     // different one from Public Lobbies while already sitting in your own
     // auto-created lobby — skips leave()'s teardown entirely. Without this,
@@ -126,6 +136,7 @@ const Lobby = {
     S.lobby.token = token;
     S.lobby.isHost = isHost;
     S.lobby.displayName = displayName;
+    S.lobby.password = password || '';
     localStorage.setItem('nl_display_name', displayName);
 
     Main.enterApp();
@@ -278,6 +289,7 @@ const Lobby = {
   async updateSettings(patch) {
     try {
       const r = await LobbyAPI.updateSettings(S.lobby.code, S.lobby.clientId, patch);
+      if ('password' in patch) S.lobby.password = patch.password || '';
       this._applyState(r.state);
       return true;
     } catch (e) { toast(`Error: ${e.message}`, 'error'); return false; }
@@ -403,7 +415,7 @@ const Lobby = {
     S.autoQueue = []; S.autoQueueCount = 0;
     S.history = [];
     S.mode = null;
-    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, isDj:false, displayName:'', participants:[], socket:null, lastServerState:null, lastStateAt:0, relayGen:0 };
+    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, isDj:false, displayName:'', participants:[], socket:null, lastServerState:null, lastStateAt:0, password:'', relayGen:0 };
     document.getElementById('hdr-lobby').style.display = 'none';
     document.getElementById('tab-chat-btn').style.display = 'none';
     document.getElementById('chat-log').innerHTML = '';

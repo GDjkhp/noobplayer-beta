@@ -1056,3 +1056,9 @@ body.pad-active.pad-tabs-focused .pane :focus {
 #heal-banner { position:fixed; top:0; left:0; right:0; z-index:9999; align-items:center; justify-content:center; gap:10px; padding:8px 16px; background:var(--surf); border-bottom:1px solid var(--brd); color:var(--text); font-size:13px; box-shadow:var(--ev2); }
 .heal-spin { font-size:18px; animation:heal-rot 1.2s linear infinite; }
 @keyframes heal-rot { to { transform:rotate(360deg); } }
+
+/* ── Lobby password ── */
+.pass-btns { display:flex; gap:8px; margin-top:6px; }
+.pass-btns .overlay-btn { flex:1; }
+.pass-btns .overlay-btn:disabled { opacity:.45; cursor:default; }
+.pl-lock { font-size:14px; vertical-align:-2px; color:var(--muted); }

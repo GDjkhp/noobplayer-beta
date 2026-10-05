@@ -410,6 +410,16 @@
                   <label class="radio-opt"><input type="radio" name="cfg-vis" value="private"> Private <span class="radio-sub">(share code only)</span></label>
                   <label class="radio-opt"><input type="radio" name="cfg-vis" value="public"> Public <span class="radio-sub">(listed for anyone)</span></label>
                 </div>
+                <div id="cfg-pass-block">
+                  <label>Password <span class="radio-sub" id="cfg-pass-status">(optional — anyone with the code can join)</span></label>
+                  <div id="cfg-pass-edit" style="display:none">
+                    <input id="cfg-pass-input" class="hi full" type="password" maxlength="32" placeholder="Set a password" autocomplete="new-password" spellcheck="false" readonly onfocus="this.removeAttribute('readonly');">
+                    <div class="pass-btns">
+                      <button id="cfg-pass-set" class="overlay-btn">Set Password</button>
+                      <button id="cfg-pass-clear" class="overlay-btn ghost">Remove</button>
+                    </div>
+                  </div>
+                </div>
                 <button id="cfg-save-lobby" class="overlay-btn">Save Changes</button>
                 <button id="cfg-leave-lobby" class="overlay-btn ghost">Leave Lobby</button>
               </div>
@@ -419,6 +429,7 @@
               <span class="cfg-label">Join Lobby</span>
               <div class="join-code-row">
                 <input id="join-code-input" class="hi" type="text" maxlength="6" placeholder="Enter 6-letter lobby code" autocomplete="off" autocapitalize="characters" spellcheck="false">
+                <input id="join-pass-input" class="hi" type="password" maxlength="32" placeholder="Password (if the lobby has one)" autocomplete="off" spellcheck="false" style="margin-top:8px;font-family:inherit;letter-spacing:normal;text-transform:none">
                 <button id="join-code-btn" class="overlay-btn">Join</button>
               </div>
               <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">

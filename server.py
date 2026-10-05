@@ -81,8 +81,10 @@ with zero extra configuration.
 import asyncio
 import datetime
 import hashlib
+import hmac
 import io
 import json
+import os
 import random
 import re
 import string
@@ -1518,6 +1520,11 @@ class Lobby:
         self.chat = []
         self.created_at = time.time()
 
+        # Optional join password. Only a salted hash is kept; it never leaves
+        # the server (public_state exposes just `hasPassword`).
+        self.pw_salt = None
+        self.pw_hash = None
+
         # ---- queue behaviour (mirrors the standalone client's own S.loopMode
         # / S.autoplay / S.history / S.autoQueue, and the bot's Queue +
         # auto_queue + history_queue triple in music_lyra.py) --------------
@@ -1647,9 +1654,29 @@ class Lobby:
             self.queue.insert(0, self.current_track)
         return prev
 
+    @property
+    def has_password(self):
+        return self.pw_hash is not None
+
+    def set_password(self, pw):
+        """Set (non-empty string) or clear (empty/None) the join password."""
+        pw = str(pw or "")[:config.LOBBY_PASSWORD_MAX]
+        if not pw:
+            self.pw_salt = self.pw_hash = None
+            return
+        self.pw_salt = os.urandom(16)
+        self.pw_hash = hashlib.pbkdf2_hmac("sha256", pw.encode(), self.pw_salt, 50_000)
+
+    def check_password(self, pw):
+        if not self.has_password:
+            return True
+        cand = hashlib.pbkdf2_hmac("sha256", str(pw or "")[:config.LOBBY_PASSWORD_MAX].encode(), self.pw_salt, 50_000)
+        return hmac.compare_digest(cand, self.pw_hash)
+
     def public_state(self):
         return {
             "code": self.code,
+            "hasPassword": self.has_password,
             "name": self.name,
             "isPublic": self.is_public,
             "hostId": self.host_id,
@@ -2250,6 +2277,38 @@ async def download_track():
 # ═══════════════════════════════════════════════════════════════════
 # Lobby REST API
 # ═══════════════════════════════════════════════════════════════════
+# ── Lobby passwords ────────────────────────────────────────────────────
+# Wrong guesses are throttled per (client IP, lobby code) so a 6-letter code
+# plus a short password can't just be brute-forced.
+_PW_FAILS = {}
+
+
+def _client_ip():
+    fwd = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return fwd or request.remote_addr or "?"
+
+
+def _password_gate(lobby, data):
+    """None if the caller may enter `lobby`; otherwise a (response, status) to return as-is."""
+    if not lobby.has_password:
+        return None
+    key = (_client_ip(), lobby.code)
+    now = time.time()
+    hits = [t for t in _PW_FAILS.get(key, []) if now - t < config.PASSWORD_FAIL_WINDOW]
+    if len(hits) >= config.PASSWORD_MAX_FAILS:
+        _PW_FAILS[key] = hits
+        return jsonify({"error": "Too many wrong passwords — wait a minute and try again", "reason": "rate_limited"}), 429
+    supplied = data.get("password")
+    if supplied is None or supplied == "":
+        return jsonify({"error": "This lobby needs a password", "reason": "password_required"}), 403
+    if not lobby.check_password(supplied):
+        hits.append(now)
+        _PW_FAILS[key] = hits
+        return jsonify({"error": "Wrong password", "reason": "wrong_password"}), 403
+    _PW_FAILS.pop(key, None)
+    return None
+
+
 @app.route("/api/lobby/create", methods=["POST"])
 async def create_lobby():
     data = await request.get_json(force=True, silent=True) or {}
@@ -2261,6 +2320,7 @@ async def create_lobby():
     client_id = uuid.uuid4().hex
     lobby = Lobby(code, name, is_public, client_id)
     lobby.participants[client_id] = Participant(client_id, display_name)
+    lobby.set_password(data.get("password"))
     register_lobby(lobby)
 
     return jsonify({"code": code, "clientId": client_id, "isHost": True, "state": lobby.public_state()})
@@ -2276,6 +2336,10 @@ async def join_lobby():
     if not lobby:
         return jsonify({"error": "Lobby not found"}), 404
 
+    blocked = _password_gate(lobby, data)
+    if blocked:
+        return blocked
+
     client_id = uuid.uuid4().hex
     lobby.participants[client_id] = Participant(client_id, display_name)
     state = lobby.public_state()
@@ -2290,7 +2354,7 @@ async def join_lobby():
 @app.route("/api/lobby/public")
 async def list_public():
     out = [
-        {"code": l.code, "name": l.name, "participants": len(l.participants)}
+        {"code": l.code, "name": l.name, "participants": len(l.participants), "hasPassword": l.has_password}
         for l in LOBBIES.values() if l.is_public
     ]
     return jsonify(out)
@@ -2356,7 +2420,11 @@ async def rejoin_lobby():
         return jsonify({"error": "Lobby not found", "reason": "not_found"}), 404
 
     # The lobby exists but no longer knows us (it was rebuilt by its host
-    # after a restart, or we were evicted): come back in as a new participant.
+    # after a restart, or we were evicted): come back in as a new participant
+    # — through the password gate, like any other newcomer.
+    blocked = _password_gate(lobby, data)
+    if blocked:
+        return blocked
     new_id = uuid.uuid4().hex
     lobby.participants[new_id] = Participant(new_id, display_name)
     await broadcast(lobby, "participants", lobby.participant_list())
@@ -2398,6 +2466,7 @@ async def restore_lobby():
         lobby.autoplay = snap["autoplay"]
     lobby.gapless = bool(snap.get("gapless", True))
     lobby.fair = bool(snap.get("fair", True))
+    lobby.set_password(snap.get("password"))
 
     me = {"id": client_id, "name": display_name}
     limit = int(getattr(config, "RESTORE_MAX_QUEUE", 500))
@@ -2834,6 +2903,8 @@ async def lobby_settings(code):
             lobby.name = name
     if "isPublic" in data:
         lobby.is_public = bool(data.get("isPublic"))
+    if "password" in data:
+        lobby.set_password(data.get("password"))   # empty string removes it
     state = lobby.public_state()
     await broadcast(lobby, "state", state)
     return jsonify({"ok": True, "state": state})

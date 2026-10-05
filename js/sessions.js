@@ -62,6 +62,9 @@ const Sessions = {
       code: S.lobby.code,
       name: st.name || 'Untitled Lobby',
       isPublic: !!st.isPublic,
+      // The password lives only in the host's own browser; restore needs it to protect the rebuilt lobby.
+      password: S.lobby.isHost ? (S.lobby.password || '') : '',
+      hasPassword: !!st.hasPassword,
       displayName: S.lobby.displayName || localStorage.getItem('nl_display_name') || 'Guest',
       loopMode: st.loopMode,
       autoplay: st.autoplay,
@@ -138,7 +141,7 @@ const Sessions = {
                     new Date(s.savedAt).toLocaleString(), this._reasonText[s.reason] || ''].filter(Boolean).join(' · ');
       return `<div class="ss-item" data-code="${esc(s.code)}">
         <div class="ss-info">
-          <span class="ss-name">${esc(s.name)} <span class="cu-tag">${esc(s.code)}</span></span>
+          <span class="ss-name">${esc(s.name)} <span class="cu-tag">${esc(s.code)}</span>${s.hasPassword || s.password ? ' <span class="material-symbols-outlined pl-lock" title="Password protected">lock</span>' : ''}</span>
           <span class="ss-meta">${meta}</span>
         </div>
         <button class="qa ss-load">Load</button>
@@ -232,7 +235,7 @@ const Heal = {
         const name = S.lobby.displayName || localStorage.getItem('nl_display_name') || 'Guest';
         let r;
         try {
-          r = await LobbyAPI.rejoin(S.lobby.code, S.lobby.clientId, name);
+          r = await LobbyAPI.rejoin(S.lobby.code, S.lobby.clientId, name, S.lobby.password);
         } catch (e) {
           const gone = e.status === 404 || e.reason === 'not_found';
           if (!(gone && this._wasHost && this._snap)) throw e;
@@ -259,6 +262,13 @@ const Heal = {
           toast(`Couldn't reconnect: ${e.message}`, 'error', 6000);
           this.stop(false);
           return;
+        }
+        if (e && (e.reason === 'password_required' || e.reason === 'wrong_password')) {
+          // The lobby came back (or was rebuilt) with a password we don't have.
+          const pw = prompt(`Lobby ${S.lobby.code} needs a password to reconnect:`);
+          if (pw) { S.lobby.password = pw; continue; }
+          toast('Reconnect cancelled — no password given', 'warn', 4000);
+          this.cancel(); return;
         }
         this._attempt++;
         const waiting = (e.status === 404 || e.reason === 'not_found') && !this._wasHost;
@@ -291,7 +301,7 @@ const Heal = {
       try {
         const r = await LobbyAPI.restore(snap, clientId, name, allowNew);
         if (this._run !== run) return;
-        Lobby._enterLobby(r.code, r.clientId, r.token, true, name, r.state);
+        Lobby._enterLobby(r.code, r.clientId, r.token, true, name, r.state, snap.password || '');
         this.stop(false);
         toast(r.codeChanged ? `Loaded as ${r.code} (${snap.code} was in use)` : `Loaded session ${r.code} — paused where it left off`,
               'success', 3500);

@@ -102,6 +102,7 @@ const S = {
     // S.player.destroy().
     lastServerState: null,
     lastStateAt: 0,
+    password: '',       // the lobby password this client knows (set by the host / typed on join) — kept in memory only, so self-heal can re-enter
     relayGen: 0,        // last-seen LobbyRelay generation — bumps on a hard cut (skip/seek); the relay's PCM stream itself keeps flowing across this, nothing client-side needs to react to it anymore
   },
 };

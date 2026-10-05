@@ -83,21 +83,26 @@ const Backend = {
 const LobbyAPI = {
   base() { return Backend.serverUrl; },
 
-  async create(name, isPublic, displayName) {
+  async create(name, isPublic, displayName, password) {
     const res = await fetch(`${this.base()}/api/lobby/create`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, isPublic, displayName }),
+      body: JSON.stringify({ name, isPublic, displayName, password: password || '' }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   },
 
-  async join(code, displayName) {
+  async join(code, displayName, password) {
     const res = await fetch(`${this.base()}/api/lobby/join`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, displayName }),
+      body: JSON.stringify({ code, displayName, password: password || '' }),
     });
-    if (!res.ok) { const t = await res.json().catch(() => ({})); throw new Error(t.error || `HTTP ${res.status}`); }
+    if (!res.ok) {
+      const t = await res.json().catch(() => ({}));
+      const err = new Error(t.error || `HTTP ${res.status}`);
+      err.status = res.status; err.reason = t.reason;
+      throw err;
+    }
     return res.json();
   },
 
@@ -138,8 +143,8 @@ const LobbyAPI = {
 
   // Ask for the same identity back (blip) or re-enter as a new participant
   // (the lobby was rebuilt). Never creates a lobby.
-  rejoin(code, clientId, displayName) {
-    return this._post('/api/lobby/rejoin', { code, clientId, displayName });
+  rejoin(code, clientId, displayName, password) {
+    return this._post('/api/lobby/rejoin', { code, clientId, displayName, password: password || '' });
   },
 
   // Host-only in practice: rebuild a lobby from a saved snapshot.

@@ -244,6 +244,13 @@ document.addEventListener('DOMContentLoaded', () => {
     ci.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doChange(); } });
     document.getElementById('cfg-code-btn').addEventListener('click', doChange);
   }
+  {
+    const pi = document.getElementById('cfg-pass-input');
+    pi.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); UI.setLobbyPassword(false); } });
+    document.getElementById('cfg-pass-set').addEventListener('click', () => UI.setLobbyPassword(false));
+    document.getElementById('cfg-pass-clear').addEventListener('click', () => UI.setLobbyPassword(true));
+    document.getElementById('join-pass-input').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); Lobby.joinByCode(); } });
+  }
   document.getElementById('sessions-save').addEventListener('click', () => Sessions.save());
   document.getElementById('heal-cancel').addEventListener('click', () => Heal.cancel());
   document.getElementById('cfg-save-lobby').addEventListener('click', () => UI.saveConfigLobby());

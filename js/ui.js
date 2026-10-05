@@ -740,10 +740,33 @@ const UI = {
     // above, which is now the single place those live (and pushes changes
     // to the server itself; see saveUserSettings).
     const cur = S.lobby.lastServerState || {};
+    const hasPw = !!cur.hasPassword;
+    const passEdit = document.getElementById('cfg-pass-edit');
+    if (passEdit) passEdit.style.display = S.lobby.isHost ? 'block' : 'none';
+    const passStatus = document.getElementById('cfg-pass-status');
+    if (passStatus) passStatus.textContent = hasPw ? '🔒 password protected' : '(optional — anyone with the code can join)';
+    const passClear = document.getElementById('cfg-pass-clear');
+    if (passClear) passClear.disabled = !hasPw;
+    const passSet = document.getElementById('cfg-pass-set');
+    if (passSet) passSet.textContent = hasPw ? 'Change Password' : 'Set Password';
     document.querySelectorAll('input[name="cfg-vis"]').forEach(r => {
       r.checked = (r.value === 'public') === !!cur.isPublic;
       r.disabled = !S.lobby.isHost;
     });
+  },
+
+  async setLobbyPassword(clear) {
+    if (!(S.mode === 'server' && S.lobby.active)) return;
+    if (!S.lobby.isHost) { toast('Only the host can change the password', 'warn'); return; }
+    const input = document.getElementById('cfg-pass-input');
+    const pw = clear ? '' : input.value.trim();
+    if (!clear && !pw) { toast('Type a password first', 'warn'); input.focus(); return; }
+    const ok = await Lobby.updateSettings({ password: pw });
+    if (ok) {
+      input.value = '';
+      toast(clear ? 'Password removed — anyone with the code can join' : 'Password set', 'success', 2000);
+      this.renderCurrentLobbyConfig();
+    }
   },
 
   async saveConfigLobby() {
