@@ -274,6 +274,34 @@ const Lobby = {
     if (wasHost !== S.lobby.isHost) Sessions.render();   // the Save button follows host status
 
     Engine._lobbySync(state);
+    this._syncHistory(state);
+  },
+
+  // Host-only: public state carries just historyCount, so fetch the contents
+  // when the count changes and cache them for Sessions.snapshot().
+  async _syncHistory(state) {
+    const L = S.lobby;
+    if (!L.isHost || !L.code) return;
+    const n = Number(state.historyCount) || 0;
+    if (n === (L.historyCount || 0) || L._historyBusy) return;
+    if (n === 0) { L.history = []; L.historyCount = 0; return; }
+    L._historyBusy = true;
+    const code = L.code;
+    try {
+      const res = await fetch(`${LobbyAPI.base()}/api/lobby/${code}/history?clientId=${encodeURIComponent(L.clientId)}`);
+      if (!res.ok) return;
+      const r = await res.json();
+      if (S.lobby !== L || L.code !== code) return;   // left / switched lobby meanwhile
+      L.history = r.history || [];
+      L.historyCount = Number(r.count) || L.history.length;
+    } catch (_) {
+    } finally {
+      L._historyBusy = false;
+      // Count may have moved while the request was in flight.
+      if (S.lobby === L && L.lastServerState && (Number(L.lastServerState.historyCount) || 0) !== (L.historyCount || 0)) {
+        this._syncHistory(L.lastServerState);
+      }
+    }
   },
 
   // Applies a control endpoint's returned state immediately, so the person
@@ -415,7 +443,7 @@ const Lobby = {
     S.autoQueue = []; S.autoQueueCount = 0;
     S.history = [];
     S.mode = null;
-    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, isDj:false, displayName:'', participants:[], socket:null, lastServerState:null, lastStateAt:0, password:'', relayGen:0 };
+    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, isDj:false, displayName:'', participants:[], socket:null, lastServerState:null, lastStateAt:0, password:'', relayGen:0, history:[], historyCount:0, _historyBusy:false };
     document.getElementById('hdr-lobby').style.display = 'none';
     document.getElementById('tab-chat-btn').style.display = 'none';
     document.getElementById('chat-log').innerHTML = '';

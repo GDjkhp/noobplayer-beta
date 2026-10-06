@@ -2486,6 +2486,8 @@ async def restore_lobby():
     for t in queue + ([current] if current else []):
         t.setdefault("requester", me)
     lobby.queue = queue
+    # Restore history before recommendations so they dedupe against it.
+    lobby.history = [t for t in (_clean_track(x) for x in (snap.get("history") or [])[-limit:]) if t]
 
     register_lobby(lobby)   # raises if the code got claimed since the check above (can't — no await in between)
     if current:
@@ -2614,6 +2616,19 @@ def _require_controller(lobby, client_id):
     settings and DJ management stay host-only (_require_host)."""
     return lobby.host_id == client_id or client_id in lobby.djs
 
+
+@app.route("/api/lobby/<code>/history", methods=["GET"])
+async def lobby_history(code):
+    """History contents (public_state only carries the count). Controllers only;
+    the host's browser caches this so saved sessions can include history."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    if not _require_controller(lobby, request.args.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
+    limit = int(getattr(config, "RESTORE_MAX_QUEUE", 500))
+    tracks = [t for t in (_clean_track(x) for x in lobby.history[-limit:]) if t]
+    return jsonify({"history": tracks, "count": len(lobby.history)})
 
 
 @app.route("/api/lobby/<code>/play", methods=["POST"])

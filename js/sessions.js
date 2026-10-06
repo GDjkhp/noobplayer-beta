@@ -3,8 +3,9 @@
    Sessions + Heal
 
    Sessions — the "Saved Sessions" card. A snapshot of a lobby (code, name,
-   settings, queue, current track + position) lives in localStorage, one per
-   lobby code; saving again with the same code overwrites it. The host's
+   settings, queue, history, current track + position) lives in localStorage,
+   one per lobby code; saving again with the same code overwrites it. Lobbies
+   with no current track, queue, history or smart pool are never saved. The host's
    browser autosaves when:
      • the server goes away (Heal.begin),
      • the host leaves the lobby as its last member,
@@ -73,13 +74,29 @@ const Sessions = {
       currentTrack: st.currentTrack || null,
       positionMs: Math.max(0, Math.round(pos)),
       queue: st.queue || [],
+      // History contents are host-synced from the server (Lobby._syncHistory).
+      history: S.lobby.history || [],
+      // Server-side counts, so emptiness checks work before history has synced.
+      historyCount: Number(st.historyCount) || 0,
+      autoQueueCount: Number(st.autoQueueCount) || 0,
       savedAt: Date.now(),
       reason: reason || 'manual',
     };
   },
 
+  // A lobby with no current track, queue, history or smart pool has nothing
+  // worth restoring — never persist it.
+  _isEmpty(snap) {
+    if (!snap) return true;
+    return !snap.currentTrack
+      && !(snap.queue && snap.queue.length)
+      && !(snap.history && snap.history.length)
+      && !snap.historyCount
+      && !snap.autoQueueCount;
+  },
+
   _store(snap) {
-    if (!snap) return false;
+    if (!snap || this._isEmpty(snap)) return false;
     const all = this._read();
     all[snap.code] = snap;            // same code → overwritten
     const ok = this._write(all);
@@ -92,7 +109,7 @@ const Sessions = {
     if (!(S.mode === 'server' && S.lobby.active)) { toast('Join a lobby first', 'warn'); return; }
     if (!S.lobby.isHost) { toast('Only the host can save the session', 'warn'); return; }
     const snap = this.snapshot('manual');
-    if (!snap) { toast('Nothing to save yet', 'warn'); return; }
+    if (!snap || this._isEmpty(snap)) { toast('Nothing to save yet', 'warn'); return; }
     const ok = this._store(snap);
     if (ok) toast(`Saved session ${snap.code}`, 'success', 2200);
     else toast("Couldn't save — browser storage is full or blocked", 'error');
