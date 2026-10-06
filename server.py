@@ -2353,10 +2353,19 @@ async def join_lobby():
 
 @app.route("/api/lobby/public")
 async def list_public():
-    out = [
-        {"code": l.code, "name": l.name, "participants": len(l.participants), "hasPassword": l.has_password}
-        for l in LOBBIES.values() if l.is_public
-    ]
+    out = []
+    for l in LOBBIES.values():
+        if not l.is_public:
+            continue
+        info = (l.current_track or {}).get("info") or {}
+        out.append({
+            "code": l.code, "name": l.name, "participants": len(l.participants),
+            "hasPassword": l.has_password,
+            # Brief only — never the encoded track blob.
+            "nowPlaying": {"title": info.get("title"), "author": info.get("author")} if l.current_track else None,
+            "paused": l.paused,
+            "queueLength": len(l.queue),
+        })
     return jsonify(out)
 
 

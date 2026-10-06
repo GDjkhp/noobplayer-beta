@@ -151,8 +151,13 @@ body::after {
 }
 .pl-item:hover { border-color: var(--accent); background: var(--st-hover); }
 .pl-mine { border-color: var(--accent); opacity: .75; }
-.pl-name { font-weight: 600; font-size: 13px; flex: 1; }
-.pl-count { font-family: var(--fm); font-size: 10px; color: var(--muted); }
+.pl-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pl-name { font-weight: 600; font-size: 13px; }
+.pl-np { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pl-np .material-symbols-outlined { font-size: 13px; vertical-align: -2px; margin-right: 3px; color: var(--accent); }
+.pl-np.paused .material-symbols-outlined, .pl-np.idle { opacity: .6; }
+.pl-np.idle { font-style: italic; }
+.pl-count { font-family: var(--fm); font-size: 10px; color: var(--muted); text-align: right; white-space: nowrap; }
 .empty.small { padding: 20px; }
 
 /* ═══════════════ APP HEADER ═══════════════ */

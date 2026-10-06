@@ -31,11 +31,21 @@ const Lobby = {
       const list = await LobbyAPI.listPublic();
       if (!list.length) { el.innerHTML = `<div class="empty small"><p>No public lobbies right now</p></div>`; return; }
       const myCode = (S.mode === 'server' && S.lobby.active) ? S.lobby.code : null;
-      el.innerHTML = list.map(l => `
+      el.innerHTML = list.map(l => {
+        const np = l.nowPlaying;
+        const q = Number(l.queueLength) || 0;
+        const npLine = np
+          ? `<span class="pl-np${l.paused ? ' paused' : ''}" title="${esc(np.title || '')}${np.author ? ' — ' + esc(np.author) : ''}"><span class="material-symbols-outlined">${l.paused ? 'pause' : 'music_note'}</span>${esc(np.title || 'Unknown')}${np.author ? ' · ' + esc(np.author) : ''}</span>`
+          : `<span class="pl-np idle">Nothing playing</span>`;
+        return `
         <div class="pl-item${l.code === myCode ? ' pl-mine' : ''}" data-code="${l.code}">
-          <span class="pl-name">${l.hasPassword ? '<span class="material-symbols-outlined pl-lock" title="Password protected">lock</span> ' : ''}${esc(l.name)}${l.code === myCode ? ' <span class="cu-tag">YOURS</span>' : ''}</span>
-          <span class="pl-count">${l.participants} online · ${l.code}</span>
-        </div>`).join('');
+          <div class="pl-main">
+            <span class="pl-name">${l.hasPassword ? '<span class="material-symbols-outlined pl-lock" title="Password protected">lock</span> ' : ''}${esc(l.name)}${l.code === myCode ? ' <span class="cu-tag">YOURS</span>' : ''}</span>
+            ${npLine}
+          </div>
+          <span class="pl-count">${l.participants} online · ${q} queued<br>${l.code}</span>
+        </div>`;
+      }).join('');
       el.querySelectorAll('.pl-item').forEach(item => {
         item.addEventListener('click', async () => {
           // It's the lobby we're already hosting/in — joining it as a
