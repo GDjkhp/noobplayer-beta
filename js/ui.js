@@ -464,7 +464,13 @@ const UI = {
           e.stopPropagation();
           const t = S.searchResults[parseInt(btn.dataset.i)];
           if (!t) return;
-          if (btn.dataset.a === 'play') {
+          // Something is already loaded (playing OR paused): Play on a search
+          // result queues it instead of replacing the current track.
+          if (btn.dataset.a === 'play' && S.current) {
+            Engine.addToQueue(t, { silent: true }).then(ok => {
+              if (ok) toast(`Queued from search: ${t.info.title}`, 'success', 2500);
+            });
+          } else if (btn.dataset.a === 'play') {
             if (S.mode === 'standalone') { S.queue = []; if (S.current) S.history.push(S.current); }
             Engine.playTrack(t); UI.switchTab('queue');
           } else {

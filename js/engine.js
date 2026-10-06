@@ -634,18 +634,25 @@ const Engine = {
     this._ensurePreload();
   },
 
-  async addToQueue(track) {
+  // Returns true on success. opts.silent suppresses the standalone "+ title"
+  // toast (the caller shows its own notification).
+  async addToQueue(track, opts = {}) {
     if (S.mode === 'server') {
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/add', { clientId: S.lobby.clientId, track });
         Lobby.applyControlResult(r);
-      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
-      return;
+        return true;
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); return false; }
     }
     track.requester = track.requester || this._selfRequester();
     S.queue.push(track);
     if (!S.current) { const t = S.queue.shift(); this.playTrack(t); }
-    else { UI.renderQueue(); toast(`+ ${track.info.title}`, 'success', 2000); this._ensurePreload(); }
+    else {
+      UI.renderQueue();
+      if (!opts.silent) toast(`+ ${track.info.title}`, 'success', 2000);
+      this._ensurePreload();
+    }
+    return true;
   },
 
   // Bulk variant of addToQueue — used by "+ Add All" on a playlist result.
