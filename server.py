@@ -2488,6 +2488,17 @@ async def restore_lobby():
     lobby.queue = queue
     # Restore history before recommendations so they dedupe against it.
     lobby.history = [t for t in (_clean_track(x) for x in (snap.get("history") or [])[-limit:]) if t]
+    # Smart (recommendation) pool, minus anything already queued/played.
+    seen = {track_id(t) for t in queue + lobby.history}
+    if current:
+        seen.add(track_id(current))
+    for x in (snap.get("smart") or [])[:limit]:
+        t = _clean_track(x)
+        if not t or track_id(t) in seen:
+            continue
+        seen.add(track_id(t))
+        t.setdefault("requester", {"id": "__auto__", "name": "Autoplay"})
+        lobby.auto_queue.append(t)
 
     register_lobby(lobby)   # raises if the code got claimed since the check above (can't — no await in between)
     if current:
@@ -2619,8 +2630,9 @@ def _require_controller(lobby, client_id):
 
 @app.route("/api/lobby/<code>/history", methods=["GET"])
 async def lobby_history(code):
-    """History contents (public_state only carries the count). Controllers only;
-    the host's browser caches this so saved sessions can include history."""
+    """History + smart-pool contents (public_state only carries the counts).
+    Controllers only; the host's browser caches this so saved sessions can
+    include both."""
     lobby = get_lobby_or_404(code)
     if not lobby:
         return jsonify({"error": "not found"}), 404
@@ -2628,7 +2640,9 @@ async def lobby_history(code):
         return jsonify({"error": "host or DJ only"}), 403
     limit = int(getattr(config, "RESTORE_MAX_QUEUE", 500))
     tracks = [t for t in (_clean_track(x) for x in lobby.history[-limit:]) if t]
-    return jsonify({"history": tracks, "count": len(lobby.history)})
+    smart = [t for t in (_clean_track(x) for x in lobby.auto_queue[:limit]) if t]
+    return jsonify({"history": tracks, "count": len(lobby.history),
+                    "smart": smart, "smartCount": len(lobby.auto_queue)})
 
 
 @app.route("/api/lobby/<code>/play", methods=["POST"])

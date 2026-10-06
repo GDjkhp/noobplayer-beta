@@ -3,7 +3,7 @@
    Sessions + Heal
 
    Sessions — the "Saved Sessions" card. A snapshot of a lobby (code, name,
-   settings, queue, history, current track + position) lives in localStorage,
+   settings, queue, history, smart pool, current track + position) lives in localStorage,
    one per lobby code; saving again with the same code overwrites it. Lobbies
    with no current track, queue, history or smart pool are never saved. The host's
    browser autosaves when:
@@ -76,6 +76,7 @@ const Sessions = {
       queue: st.queue || [],
       // History contents are host-synced from the server (Lobby._syncHistory).
       history: S.lobby.history || [],
+      smart: S.lobby.smart || [],
       // Server-side counts, so emptiness checks work before history has synced.
       historyCount: Number(st.historyCount) || 0,
       autoQueueCount: Number(st.autoQueueCount) || 0,
@@ -92,6 +93,7 @@ const Sessions = {
       && !(snap.queue && snap.queue.length)
       && !(snap.history && snap.history.length)
       && !snap.historyCount
+      && !(snap.smart && snap.smart.length)
       && !snap.autoQueueCount;
   },
 
