@@ -925,7 +925,7 @@ const Debug = {
       ['Avg request latency', this._fmtMaybeMs(netMs)],
       ['Preload / queue chunks', this._queueChunksLabel()],
     ];
-    el.innerHTML = cards.map(([k, v]) => `<div class="dbg-card"><div class="dbg-card-k">${esc(k)}</div><div class="dbg-card-v">${esc(String(v))}</div></div>`).join('');
+    this._setCards(el, cards);
   },
 
   _bufferedAheadMs() {
@@ -957,15 +957,15 @@ const Debug = {
     const count = document.getElementById('dbg-net-count');
     if (!body) return;
     count.textContent = `(${this.net.length})`;
-    body.innerHTML = this.net.slice(0, 20).map(n => `
+    this._setHTML(body, this.net.slice(0, 20).map(n => `
       <tr class="${n.ok === false ? 'dbg-row-err' : ''}">
         <td>${this._fmtTime(n.ts)}</td>
         <td>${esc(n.method)}</td>
-        <td class="dbg-mono" title="${esc(n.path)}">${esc(this._trunc(n.path, 26))}</td>
+        <td class="dbg-mono" title="${esc(n.path)}">${esc(n.path)}</td>
         <td>${n.pending ? '…' : esc(String(n.status))}</td>
         <td>${n.ms == null ? '—' : n.ms + 'ms'}</td>
         <td>${this._fmtBytes(n.size)}</td>
-      </tr>`).join('') || `<tr><td colspan="6" class="dbg-empty-row">no requests yet</td></tr>`;
+      </tr>`).join('') || `<tr><td colspan="6" class="dbg-empty-row">no requests yet</td></tr>`);
   },
 
   _renderNodelinkTable() {
@@ -974,19 +974,19 @@ const Debug = {
     if (!body) return;
     if (S.mode !== 'server') {
       count.textContent = '';
-      body.innerHTML = `<tr><td colspan="6" class="dbg-empty-row">standalone mode — your browser talks to NodeLink directly, see Server requests</td></tr>`;
+      this._setHTML(body, `<tr><td colspan="6" class="dbg-empty-row">standalone mode — your browser talks to NodeLink directly, see Server requests</td></tr>`);
       return;
     }
     count.textContent = `(${this.nodelinkRequests.length})`;
-    body.innerHTML = this.nodelinkRequests.slice(0, 20).map(n => `
+    this._setHTML(body, this.nodelinkRequests.slice(0, 20).map(n => `
       <tr class="${n.ok === false ? 'dbg-row-err' : ''}">
         <td>${this._fmtTime(n.ts)}</td>
         <td>${esc(n.method)}</td>
-        <td class="dbg-mono" title="${esc(n.path)}">${esc(this._trunc(n.path, 26))}</td>
+        <td class="dbg-mono" title="${esc(n.path)}">${esc(n.path)}</td>
         <td>${esc(String(n.status))}</td>
         <td>${n.ms == null ? '—' : n.ms + 'ms'}</td>
         <td>${this._fmtBytes(n.size)}</td>
-      </tr>`).join('') || `<tr><td colspan="6" class="dbg-empty-row">no NodeLink requests yet</td></tr>`;
+      </tr>`).join('') || `<tr><td colspan="6" class="dbg-empty-row">no NodeLink requests yet</td></tr>`);
   },
 
   _renderEvtTable() {
@@ -994,13 +994,13 @@ const Debug = {
     const count = document.getElementById('dbg-evt-count');
     if (!body) return;
     count.textContent = `(${this.playerEvents.length})`;
-    body.innerHTML = this.playerEvents.slice(0, 20).map(e => `
+    this._setHTML(body, this.playerEvents.slice(0, 20).map(e => `
       <tr>
         <td>${this._fmtTime(e.ts)}</td>
         <td>${esc(e.name)}</td>
         <td>${esc(e.mode || '—')}</td>
         <td>${e.latencyMs == null ? (this._pendingAction && this._pendingAction.id === e.id ? 'pending…' : '—') : e.latencyMs + 'ms'}</td>
-      </tr>`).join('') || `<tr><td colspan="4" class="dbg-empty-row">no actions yet</td></tr>`;
+      </tr>`).join('') || `<tr><td colspan="4" class="dbg-empty-row">no actions yet</td></tr>`);
   },
 
   _renderAel() {
@@ -1008,12 +1008,12 @@ const Debug = {
     const count = document.getElementById('dbg-ael-count');
     if (!list) return;
     count.textContent = `(${this.audioElEvents.length})`;
-    list.innerHTML = this.audioElEvents.slice(0, 20).map(a => `
+    this._setHTML(list, this.audioElEvents.slice(0, 20).map(a => `
       <div class="dbg-list-row ${a.type === 'error' ? 'dbg-row-warn' : ''}">
         <span class="dbg-mono">${this._fmtTime(a.ts)}</span>
         <span>${esc(a.type)}</span>
         <span class="dbg-muted">${a.meta && a.meta.message ? esc(a.meta.message) : ''}</span>
-      </div>`).join('') || `<div class="dbg-empty-row">no WebTransport session events yet</div>`;
+      </div>`).join('') || `<div class="dbg-empty-row">no WebTransport session events yet</div>`);
   },
 
   // Standalone: S.autoQueue is already client-side (nothing hidden).
@@ -1034,15 +1034,15 @@ const Debug = {
     }
     count.textContent = total ? `(${total})` : '';
     if (!items.length) {
-      list.innerHTML = `<div class="dbg-empty-row">${S.mode ? 'empty — nothing queued for autoplay/smart shuffle yet' : 'not connected'}</div>`;
+      this._setHTML(list, `<div class="dbg-empty-row">${S.mode ? 'empty — nothing queued for autoplay/smart shuffle yet' : 'not connected'}</div>`);
       return;
     }
-    list.innerHTML = items.map((t, i) => `
+    this._setHTML(list, items.map((t, i) => `
       <div class="dbg-list-row">
         <span class="dbg-mono">#${i + 1}</span>
         <span>${esc(t.title || 'Unknown title')}</span>
         <span class="dbg-muted">${esc(t.author || '')}</span>
-      </div>`).join('');
+      </div>`).join(''));
   },
 
   // Everything that has already finished playing, most recent at the top.
@@ -1071,15 +1071,15 @@ const Debug = {
     list._sig = sig;
 
     if (!items.length) {
-      list.innerHTML = `<div class="dbg-empty-row">${S.mode ? 'nothing has finished playing yet' : 'not connected'}</div>`;
+      this._setHTML(list, `<div class="dbg-empty-row">${S.mode ? 'nothing has finished playing yet' : 'not connected'}</div>`);
       return;
     }
-    list.innerHTML = items.map((t, i) => `
+    this._setHTML(list, items.map((t, i) => `
       <div class="dbg-list-row">
         <span class="dbg-mono">#${i + 1}</span>
         <span>${esc(t.title || 'Unknown title')}</span>
         <span class="dbg-muted">${esc(t.author || '')}</span>
-      </div>`).join('');
+      </div>`).join(''));
   },
 
   _renderServer() {
@@ -1089,7 +1089,7 @@ const Debug = {
     if (S.mode !== 'server' || !this.server) { section.style.display = 'none'; return; }
     section.style.display = '';
     const s = this.server;
-    if (s.error) { el.innerHTML = `<div class="dbg-card"><div class="dbg-card-k">error</div><div class="dbg-card-v">${esc(s.error)}</div></div>`; return; }
+    if (s.error) { this._setHTML(el, `<div class="dbg-card"><div class="dbg-card-k">error</div><div class="dbg-card-v">${esc(s.error)}</div></div>`); return; }
     const cards = [
       ['Generation', s.generation],
       ['Idle', s.idle ? 'yes (silence keepalive)' : 'no'],
@@ -1102,7 +1102,7 @@ const Debug = {
       ['Last frame age', s.lastFrameAgeMs == null ? '—' : `${Math.round(s.lastFrameAgeMs)}ms`],
       ['Participants / Queue len', `${s.participants ?? '—'} / ${s.queueLength ?? '—'}`],
     ];
-    el.innerHTML = cards.map(([k, v]) => `<div class="dbg-card"><div class="dbg-card-k">${esc(k)}</div><div class="dbg-card-v">${esc(String(v))}</div></div>`).join('');
+    this._setCards(el, cards);
   },
 
   /* ───────── formatting helpers ───────── */
@@ -1117,6 +1117,31 @@ const Debug = {
     return `${(n / 1024 / 1024).toFixed(2)}MB`;
   },
   _fmtMaybeMs(n) { return n == null ? '—' : `${Math.round(n)} ms`; },
+  // The debug tab re-renders ~3.5x/sec. Rebuilding unchanged DOM every time
+  // would restart the marquee animation on long text before it ever scrolls,
+  // so only touch the DOM when the content really changed.
+  _setHTML(el, html) {
+    if (!el || el._h === html) return;
+    el._h = html;
+    el.innerHTML = html;
+  },
+
+  // Stat cards: update values in place when the set of cards is unchanged.
+  _setCards(el, cards) {
+    const kids = el.children;
+    const same = kids.length === cards.length && cards.every(([k], i) => kids[i].firstElementChild && kids[i].firstElementChild.textContent === k);
+    if (!same) {
+      this._setHTML(el, cards.map(([k, v]) => `<div class="dbg-card"><div class="dbg-card-k">${esc(k)}</div><div class="dbg-card-v">${esc(String(v))}</div></div>`).join(''));
+      return;
+    }
+    el._h = null;
+    cards.forEach(([, v], i) => {
+      const vEl = kids[i].lastElementChild;
+      const t = String(v);
+      if (vEl && vEl.textContent !== t) vEl.textContent = t;
+    });
+  },
+
   _trunc(s, n) { return s && s.length > n ? s.slice(0, n - 1) + '…' : (s || ''); },
 };
 

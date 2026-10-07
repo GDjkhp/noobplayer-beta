@@ -472,7 +472,7 @@ const UI = {
             });
           } else if (btn.dataset.a === 'play') {
             if (S.mode === 'standalone') { S.queue = []; if (S.current) S.history.push(S.current); }
-            Engine.playTrack(t); UI.switchTab('queue');
+            Engine.playTrack(t);
           } else {
             Engine.addToQueue(t);
           }

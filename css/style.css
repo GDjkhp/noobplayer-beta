@@ -1072,3 +1072,23 @@ body.pad-active.pad-tabs-focused .pane :focus {
 .pass-btns .overlay-btn { flex:1; }
 .pass-btns .overlay-btn:disabled { opacity:.45; cursor:default; }
 .pl-lock { font-size:14px; vertical-align:-2px; color:var(--muted); }
+/* ═══════════════ MARQUEE ═══════════════
+   Overflowing single-line text (see Marquee in utils.js) scrolls to its end
+   and back instead of showing "…". text-indent is animated so no wrapper
+   element is needed; it holds briefly at each end. */
+.mq {
+  text-overflow: clip !important;
+  animation: mq-slide var(--mq-t, 8s) ease-in-out infinite alternate;
+}
+@keyframes mq-slide {
+  0%, 14%   { text-indent: 0; }
+  86%, 100% { text-indent: calc(-1 * var(--mq-d, 0px)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mq { animation: none; text-overflow: ellipsis !important; }
+}
+
+/* Debug tab list rows: let the title/author shrink and scroll instead of
+   widening the whole card. */
+.dbg-list-row > span:not(.dbg-mono) { min-width: 0; overflow: hidden; white-space: nowrap; flex: 1 1 0; }
+.dbg-list-row > .dbg-muted { flex: 0 1 38%; margin-left: auto; text-align: right; }

@@ -99,3 +99,90 @@ const MediaKeepAlive = {
     }
   },
 };
+
+/* ═══════════════════════════════════════════
+   Marquee — any single-line text that doesn't fit its box scrolls instead of
+   being cut off with "…". Track titles/artists, queue and search rows, lobby
+   and session names, debug cards/tables, key bindings and so on.
+
+   How it works: elements matching SELECTORS keep their normal CSS clipping.
+   When their content is wider than the box, they get the `.mq` class and two
+   custom properties (distance, duration); style.css animates `text-indent`
+   from 0 to -distance and back. No wrapper elements are added, so the many
+   render functions that rewrite innerHTML keep working untouched, and a
+   re-render of the same text doesn't restart the animation.
+
+   Re-measures (debounced) whenever the DOM changes, the window resizes, or a
+   tab is shown, plus a slow timer for anything that only becomes visible later.
+   Users with prefers-reduced-motion keep the ellipsis (see style.css).
+═══════════════════════════════════════════ */
+const Marquee = {
+  SELECTORS: [
+    '#info-title', '#info-artist',                    // now playing
+    '.si-t', '.si-a',                                 // search results
+    '.qi-t', '.qi-a',                                 // queue
+    '.pl-np',                                         // public lobby list: now playing
+    '.cu-name', '.dj-name',                           // participants / Disc Jockey
+    '.ss-name', '.ss-meta',                           // saved sessions
+    '.viz-active-name',                               // visualizer name
+    '.bnd-btn', '#vk-preview',                        // key bindings, virtual keyboard
+    '.dbg-card-v', '.dbg-table td.dbg-mono',          // debug tab cards + tables
+    '.dbg-list-row > span:not(.dbg-mono)',            // debug tab lists (smart queue, history, events)
+    '[data-marquee]',                                 // opt-in for anything else
+  ].join(','),
+
+  _raf: 0,
+  _range: null,
+
+  init() {
+    if (this._started) return;
+    this._started = true;
+    this._range = document.createRange();
+    const schedule = () => this.schedule();
+    new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
+    window.addEventListener('resize', schedule);
+    document.addEventListener('click', () => setTimeout(schedule, 60), true);   // tab switches reveal panes
+    document.addEventListener('visibilitychange', schedule);
+    setInterval(() => { if (!document.hidden) schedule(); }, 1500);
+    schedule();
+  },
+
+  schedule() {
+    if (this._raf) return;
+    this._raf = requestAnimationFrame(() => { this._raf = 0; this.scan(); });
+  },
+
+  scan() {
+    const els = document.querySelectorAll(this.SELECTORS);
+    const reads = [];
+    // Read everything first, then write, so we cause one layout, not hundreds.
+    for (const el of els) {
+      const box = el.clientWidth;
+      if (!box) { reads.push([el, 0]); continue; }      // hidden / not laid out
+      const cs = getComputedStyle(el);
+      const avail = box - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+      this._range.selectNodeContents(el);
+      const w = this._range.getBoundingClientRect().width;
+      reads.push([el, Math.ceil(w - avail)]);
+    }
+    for (const [el, over] of reads) {
+      if (over > 1) {
+        const dist = over + 2;
+        if (!el._mq || Math.abs(el._mq - dist) > 1) {
+          el._mq = dist;
+          el.style.setProperty('--mq-d', dist + 'px');
+          el.style.setProperty('--mq-t', Math.max(4, dist / 28 + 2.5).toFixed(2) + 's');
+        }
+        if (!el.classList.contains('mq')) el.classList.add('mq');
+      } else if (el._mq && over !== 0) {
+        // Fits now (text changed / box grew). `over === 0` means hidden: keep state.
+        el._mq = 0;
+        el.classList.remove('mq');
+        el.style.removeProperty('--mq-d');
+        el.style.removeProperty('--mq-t');
+      }
+    }
+  },
+};
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => Marquee.init());
+else Marquee.init();
