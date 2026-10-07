@@ -199,6 +199,13 @@ const Lobby = {
       this._applyState(state);
     });
     socket.on('participants', (list) => this._applyParticipants(list));
+
+    // The host removed us. Leave cleanly (no heal/reconnect loop) and land in
+    // a fresh lobby of our own like any other leave.
+    socket.on('kicked', (info) => {
+      toast(info?.banned ? 'You were banned from this lobby' : 'You were kicked from this lobby', 'error', 5000);
+      this.leave({ noAutosave: true });
+    });
     socket.on('chat', (msg) => this._applyChat(msg));
 
     socket.on('disconnect', (reason) => {
@@ -285,6 +292,68 @@ const Lobby = {
 
     Engine._lobbySync(state);
     this._syncHistory(state);
+    this._syncBanned(state);
+  },
+
+  // Host-only: public state carries just bannedCount; fetch the list when it
+  // changes so the Disc Jockey card can show who is banned (with Unban).
+  async _syncBanned(state) {
+    const L = S.lobby;
+    if (!L.isHost || !L.code) {
+      if ((L.banned || []).length) { L.banned = []; L.bannedCount = 0; UI.renderDjCard(); }
+      return;
+    }
+    const n = Number(state.bannedCount) || 0;
+    if (n === (L.bannedCount || 0) || L._bannedBusy) return;
+    if (n === 0) { L.banned = []; L.bannedCount = 0; UI.renderDjCard(); return; }
+    L._bannedBusy = true;
+    try {
+      const res = await fetch(`${LobbyAPI.base()}/api/lobby/${L.code}/banned?clientId=${encodeURIComponent(L.clientId)}`);
+      if (!res.ok) return;
+      const r = await res.json();
+      if (S.lobby !== L) return;
+      L.banned = r.banned || [];
+      L.bannedCount = L.banned.length;
+      UI.renderDjCard();
+    } catch (_) {
+    } finally {
+      L._bannedBusy = false;
+      if (S.lobby === L && L.lastServerState && (Number(L.lastServerState.bannedCount) || 0) !== (L.bannedCount || 0)) {
+        this._syncBanned(L.lastServerState);
+      }
+    }
+  },
+
+  // Host-only: remove a user (they can rejoin) / remove and refuse them.
+  async kick(targetId, name) {
+    if (!(S.lobby.active && S.lobby.isHost)) return;
+    if (!confirm(`Kick ${name || 'this user'} from the lobby? They can rejoin.`)) return;
+    try {
+      const r = await LobbyAPI.control(S.lobby.code, 'kick', { clientId: S.lobby.clientId, targetId });
+      this._applyState(r.state);
+      toast(`Kicked ${name || 'user'}`, 'info', 2200);
+    } catch (e) { toast(e.message, 'error', 4000); }
+  },
+
+  async ban(targetId, name) {
+    if (!(S.lobby.active && S.lobby.isHost)) return;
+    if (!confirm(`Ban ${name || 'this user'}? They won't be able to rejoin this lobby.`)) return;
+    try {
+      const r = await LobbyAPI.control(S.lobby.code, 'ban', { clientId: S.lobby.clientId, targetId });
+      this._applyState(r.state);
+      toast(`Banned ${name || 'user'}`, 'info', 2200);
+    } catch (e) { toast(e.message, 'error', 4000); }
+  },
+
+  async unban(uid) {
+    if (!(S.lobby.active && S.lobby.isHost)) return;
+    try {
+      const r = await LobbyAPI.control(S.lobby.code, 'unban', { clientId: S.lobby.clientId, uid });
+      S.lobby.banned = r.banned || [];
+      S.lobby.bannedCount = S.lobby.banned.length;
+      this._applyState(r.state);
+      UI.renderDjCard();
+    } catch (e) { toast(e.message, 'error', 4000); }
   },
 
   // Host-only: public state carries just historyCount / autoQueueCount, so
@@ -459,7 +528,7 @@ const Lobby = {
     S.autoQueue = []; S.autoQueueCount = 0;
     S.history = [];
     S.mode = null;
-    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, isDj:false, displayName:'', participants:[], socket:null, lastServerState:null, lastStateAt:0, password:'', relayGen:0, history:[], historyCount:0, smart:[], smartCount:0, _historyBusy:false };
+    S.lobby = { active:false, code:null, clientId:null, token:null, isHost:false, isDj:false, displayName:'', participants:[], socket:null, lastServerState:null, lastStateAt:0, password:'', relayGen:0, history:[], historyCount:0, smart:[], smartCount:0, _historyBusy:false, banned:[], bannedCount:0, _bannedBusy:false };
     document.getElementById('hdr-lobby').style.display = 'none';
     document.getElementById('tab-chat-btn').style.display = 'none';
     document.getElementById('chat-log').innerHTML = '';

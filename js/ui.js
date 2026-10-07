@@ -304,7 +304,7 @@ const UI = {
       return;
     }
     const locked = this.isLocked();
-    const me = S.lobby.clientId;
+    const me = LobbyAPI.userId();
     el.innerHTML = S.queue.map((t, i) => {
       const thumb = t.info.artworkUrl
         ? `<img class="qi-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
@@ -637,10 +637,11 @@ const UI = {
   },
 
   /* ───────── Disc Jockey card ─────────
-     The host clicks a connected user to make them a DJ, and clicks again to
-     remove them. DJs can drive the player and queue exactly like the host
-     (see UI.canControl / Lobby.djs in server.py). Everyone else sees the
-     same list read-only, so it's clear who can do what. */
+     The host appoints/removes DJs, kicks and bans with explicit buttons on
+     each user's row (no more click-the-row-to-toggle). DJs can drive the
+     player and queue exactly like the host (see UI.canControl / Lobby.djs in
+     server.py); everyone else sees the same list read-only. Banned users are
+     listed at the bottom for the host, each with an Unban button. */
   renderDjCard(list) {
     const wrap = document.getElementById('dj-list');
     if (!wrap) return;
@@ -648,22 +649,36 @@ const UI = {
     const isHost = S.mode === 'server' && S.lobby.isHost;
     const hint = document.getElementById('dj-hint');
     if (hint) hint.textContent = isHost
-      ? 'Click a user to make them a DJ. DJs can control the player and queue. Click again to remove.'
+      ? 'Use the buttons to make someone a DJ, kick them, or ban them. DJs can control the player and queue.'
       : 'DJs can control the player and queue like the host. Only the host can appoint them.';
     if (!list.length) { wrap.innerHTML = `<div class="cu-empty">No one here yet</div>`; return; }
-    wrap.innerHTML = list.map(p => {
+    let html = list.map(p => {
       const initial = (p.name || '?').trim().charAt(0).toUpperCase() || '?';
       const me = p.id === S.lobby.clientId;
-      const canToggle = isHost && !p.isHost;
+      const canManage = isHost && !p.isHost && !me;
       const tag = p.isHost ? 'HOST' : p.isDj ? 'DJ' : '';
-      return `<button type="button" class="dj-item ${p.isDj ? 'is-dj' : ''} ${p.isHost ? 'is-host' : ''}" data-id="${esc(p.id)}" ${canToggle ? '' : 'disabled'}
-                title="${p.isHost ? 'The host always has full control' : canToggle ? (p.isDj ? 'Remove DJ' : 'Make DJ') : ''}">
+      const acts = canManage ? `<span class="dj-acts">
+          <button type="button" class="qa dj-btn" data-act="dj" data-id="${esc(p.id)}" title="${p.isDj ? 'Remove DJ' : 'Make DJ'}"><span class="material-symbols-outlined">${p.isDj ? 'remove_circle' : 'headphones'}</span>${p.isDj ? 'Remove DJ' : 'Make DJ'}</button>
+          <button type="button" class="qa dj-btn" data-act="kick" data-id="${esc(p.id)}" title="Kick (they can rejoin)"><span class="material-symbols-outlined">logout</span>Kick</button>
+          <button type="button" class="qa d dj-btn" data-act="ban" data-id="${esc(p.id)}" title="Ban (they can't rejoin)"><span class="material-symbols-outlined">block</span>Ban</button>
+        </span>` : '';
+      return `<div class="dj-item ${p.isDj ? 'is-dj' : ''} ${p.isHost ? 'is-host' : ''}" data-name="${esc(p.name)}">
         <span class="cu-avatar ${p.isHost ? 'is-host' : ''}">${esc(initial)}</span>
         <span class="dj-name">${esc(p.name)}${me ? ' <span class="dj-you">(you)</span>' : ''}</span>
         ${tag ? `<span class="dj-tag">${tag}</span>` : ''}
-        ${canToggle ? `<span class="material-symbols-outlined dj-ico">${p.isDj ? 'remove_circle' : 'add_circle'}</span>` : ''}
-      </button>`;
+        ${acts}
+      </div>`;
     }).join('');
+    const banned = isHost ? (S.lobby.banned || []) : [];
+    if (banned.length) {
+      html += `<div class="dj-sub">Banned</div>` + banned.map(b => `
+        <div class="dj-item is-banned">
+          <span class="cu-avatar"><span class="material-symbols-outlined" style="font-size:16px">block</span></span>
+          <span class="dj-name">${esc(b.name)}</span>
+          <span class="dj-acts"><button type="button" class="qa dj-btn" data-act="unban" data-uid="${esc(b.uid)}"><span class="material-symbols-outlined">undo</span>Unban</button></span>
+        </div>`).join('');
+    }
+    wrap.innerHTML = html;
   },
 
   /* ═══════════════════ Config tab ═══════════════════

@@ -97,8 +97,13 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-qfair').addEventListener('click', () => Engine.toggleFair());
   document.getElementById('btn-autoplay').addEventListener('click', () => Engine.cycleAutoplay());
   document.getElementById('dj-list').addEventListener('click', (e) => {
-    const b = e.target.closest('.dj-item');
-    if (b && !b.disabled) Lobby.toggleDj(b.dataset.id);
+    const b = e.target.closest('.dj-btn');
+    if (!b || b.disabled) return;
+    const act = b.dataset.act;
+    if (act === 'dj') Lobby.toggleDj(b.dataset.id);
+    else if (act === 'kick') Lobby.kick(b.dataset.id, b.closest('.dj-item')?.dataset.name);
+    else if (act === 'ban') Lobby.ban(b.dataset.id, b.closest('.dj-item')?.dataset.name);
+    else if (act === 'unban') Lobby.unban(b.dataset.uid);
   });
   document.getElementById('btn-qclr').addEventListener('click', () => {
     if (!S.queue.length) { toast('Queue is already empty', 'warn'); return; }

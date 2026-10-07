@@ -282,6 +282,10 @@ const Heal = {
           this.stop(false);
           return;
         }
+        if (e && e.reason === 'banned') {
+          toast('You are banned from this lobby', 'error', 6000);
+          this.cancel(); return;
+        }
         if (e && (e.reason === 'password_required' || e.reason === 'wrong_password')) {
           // The lobby came back (or was rebuilt) with a password we don't have.
           const pw = prompt(`Lobby ${S.lobby.code} needs a password to reconnect:`);

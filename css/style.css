@@ -527,6 +527,11 @@ body::after {
 .dj-you { color: var(--muted); font-size: 10px; }
 .dj-tag { font-family: var(--fm); font-size: 9px; color: var(--accent); letter-spacing: .05em; }
 .dj-ico { font-size: 18px; color: var(--muted); }
+.dj-item { cursor: default; }
+.dj-acts { display: inline-flex; gap: 4px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.dj-btn { padding: 4px 8px; }
+.dj-sub { font-family: var(--fm); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 6px 2px; }
+.dj-item.is-banned { opacity: .8; }
 .dj-item.is-dj .dj-ico { color: var(--accent); }
 .dj-item:hover:not(:disabled) .dj-ico { color: var(--accent); }
 .pchip.is-dj { border-color: var(--accent2, var(--accent)); }

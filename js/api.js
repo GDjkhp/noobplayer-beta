@@ -83,10 +83,29 @@ const Backend = {
 const LobbyAPI = {
   base() { return Backend.serverUrl; },
 
+  // Persistent per-browser user id: generated once, kept in localStorage, and
+  // sent on every create/join/rejoin/restore. It is what tags a user's queued
+  // tracks and what a ban sticks to, so it survives leaving and rejoining
+  // (the per-join clientId does not). Falls back to a per-page-load id when
+  // storage is blocked.
+  _uid: null,
+  userId() {
+    if (this._uid) return this._uid;
+    let id = null;
+    try { id = localStorage.getItem('nl_user_id'); } catch (_) {}
+    if (!/^[0-9a-f]{32}$/.test(id || '')) {
+      const b = new Uint8Array(16);
+      (window.crypto || window.msCrypto).getRandomValues(b);
+      id = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+      try { localStorage.setItem('nl_user_id', id); } catch (_) {}
+    }
+    return (this._uid = id);
+  },
+
   async create(name, isPublic, displayName, password) {
     const res = await fetch(`${this.base()}/api/lobby/create`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, isPublic, displayName, password: password || '' }),
+      body: JSON.stringify({ name, isPublic, displayName, password: password || '', userId: this.userId() }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
@@ -95,7 +114,7 @@ const LobbyAPI = {
   async join(code, displayName, password) {
     const res = await fetch(`${this.base()}/api/lobby/join`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, displayName, password: password || '' }),
+      body: JSON.stringify({ code, displayName, password: password || '', userId: this.userId() }),
     });
     if (!res.ok) {
       const t = await res.json().catch(() => ({}));
@@ -144,12 +163,12 @@ const LobbyAPI = {
   // Ask for the same identity back (blip) or re-enter as a new participant
   // (the lobby was rebuilt). Never creates a lobby.
   rejoin(code, clientId, displayName, password) {
-    return this._post('/api/lobby/rejoin', { code, clientId, displayName, password: password || '' });
+    return this._post('/api/lobby/rejoin', { code, clientId, displayName, password: password || '', userId: this.userId() });
   },
 
   // Host-only in practice: rebuild a lobby from a saved snapshot.
   restore(snapshot, clientId, displayName, allowNewCode) {
-    return this._post('/api/lobby/restore', { snapshot, clientId, displayName, allowNewCode: !!allowNewCode });
+    return this._post('/api/lobby/restore', { snapshot, clientId, displayName, allowNewCode: !!allowNewCode, userId: this.userId() });
   },
 
   async chat(code, clientId, text) {

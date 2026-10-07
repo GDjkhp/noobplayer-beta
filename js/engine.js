@@ -182,7 +182,7 @@ const Engine = {
   _selfRequester() {
     const name = (S.mode === 'server' && S.lobby.displayName)
       || localStorage.getItem('nl_display_name') || 'You';
-    return { id: S.lobby.clientId || 'local', name };
+    return { id: LobbyAPI.userId(), name };
   },
 
   _playedIds() { return new Set(S.history.map(t => this._trackId(t)).filter(Boolean)); },
