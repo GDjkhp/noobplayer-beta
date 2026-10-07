@@ -1684,7 +1684,9 @@ class Lobby:
             "hasPassword": self.has_password,
             "name": self.name,
             "isPublic": self.is_public,
-            "hostId": self.host_id,
+            # Public identity only: the host's persistent user id, never their
+            # session id (which is the credential every control call presents).
+            "hostId": self._uid_of(self.host_id),
             "currentTrack": self.current_track,
             "paused": self.paused,
             "positionMs": self.current_position_ms(),
@@ -1696,12 +1698,24 @@ class Lobby:
             "historyCount": len(self.history),
             "gapless": self.gapless,
             "fair": self.fair,
-            "djs": sorted(self.djs),
+            "djs": sorted({self._uid_of(c) for c in self.djs}),
             "bannedCount": len(self.banned),
         }
 
+    def _uid_of(self, client_id):
+        """Persistent user id for a session id ('' if they're gone)."""
+        p = self.participants.get(client_id)
+        return p.uid if p else ""
+
+    def client_ids_for_uid(self, uid):
+        """Every live session id belonging to a persistent user id (two tabs
+        of the same browser share one)."""
+        return [cid for cid, p in self.participants.items() if p.uid == uid]
+
     def participant_list(self):
-        return [{"id": p.id, "uid": p.uid, "name": p.name, "isHost": p.id == self.host_id, "isDj": p.id in self.djs} for p in self.participants.values()]
+        # Session ids are credentials — never put them on the wire here. Users
+        # are identified publicly by their persistent `uid` only.
+        return [{"uid": p.uid, "name": p.name, "isHost": p.id == self.host_id, "isDj": p.id in self.djs} for p in self.participants.values()]
 
 
 LOBBIES = {}
@@ -2924,20 +2938,22 @@ async def lobby_dj(code):
     data = await request.get_json(force=True, silent=True) or {}
     if not _require_host(lobby, data.get("clientId")):
         return jsonify({"error": "host only"}), 403
-    target = data.get("targetId")
-    p = lobby.participants.get(target)
+    target_uid = clean_user_id(data.get("targetUid"))
+    targets = lobby.client_ids_for_uid(target_uid) if target_uid else []
+    p = lobby.participants.get(targets[0]) if targets else None
     if not p:
         return jsonify({"error": "that user isn't in the lobby"}), 404
-    if target == lobby.host_id:
+    if lobby.host_id in targets or target_uid == lobby._uid_of(lobby.host_id):
         return jsonify({"error": "the host already controls everything"}), 400
     enabled = data.get("enabled")
-    enabled = (target not in lobby.djs) if enabled is None else bool(enabled)
-    if enabled == (target in lobby.djs):
+    enabled = (not all(t in lobby.djs for t in targets)) if enabled is None else bool(enabled)
+    if enabled == all(t in lobby.djs for t in targets):
         return jsonify({"ok": True, "isDj": enabled, "state": lobby.public_state()})
-    if enabled:
-        lobby.djs.add(target)
-    else:
-        lobby.djs.discard(target)
+    for t in targets:
+        if enabled:
+            lobby.djs.add(t)
+        else:
+            lobby.djs.discard(t)
     await broadcast(lobby, "chat", {
         "system": True,
         "text": f"🎧 {p.name} is now a DJ" if enabled else f"{p.name} is no longer a DJ",
@@ -2983,11 +2999,16 @@ async def _kick_or_ban(code, ban):
     data = await request.get_json(force=True, silent=True) or {}
     if not _require_host(lobby, data.get("clientId")):
         return jsonify({"error": "host only"}), 403
-    target = data.get("targetId")
-    if target == lobby.host_id:
+    target_uid = clean_user_id(data.get("targetUid"))
+    targets = lobby.client_ids_for_uid(target_uid) if target_uid else []
+    if not targets:
+        return jsonify({"error": "that user isn't in the lobby"}), 404
+    if lobby.host_id in targets or target_uid == lobby._uid_of(lobby.host_id):
         return jsonify({"error": "you can't remove the host"}), 400
     host = lobby.participants.get(lobby.host_id)
-    p = await _remove_participant(lobby, target, ban=ban, by_name=host.name if host else "the host")
+    p = None
+    for t in targets:
+        p = await _remove_participant(lobby, t, ban=ban, by_name=host.name if host else "the host") or p
     if not p:
         return jsonify({"error": "that user isn't in the lobby"}), 404
     return jsonify({"ok": True, "state": lobby.public_state()})

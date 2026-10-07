@@ -654,13 +654,13 @@ const UI = {
     if (!list.length) { wrap.innerHTML = `<div class="cu-empty">No one here yet</div>`; return; }
     let html = list.map(p => {
       const initial = (p.name || '?').trim().charAt(0).toUpperCase() || '?';
-      const me = p.id === S.lobby.clientId;
+      const me = p.uid === LobbyAPI.userId();
       const canManage = isHost && !p.isHost && !me;
       const tag = p.isHost ? 'HOST' : p.isDj ? 'DJ' : '';
       const acts = canManage ? `<span class="dj-acts">
-          <button type="button" class="qa dj-btn" data-act="dj" data-id="${esc(p.id)}" title="${p.isDj ? 'Remove DJ' : 'Make DJ'}"><span class="material-symbols-outlined">${p.isDj ? 'remove_circle' : 'headphones'}</span>${p.isDj ? 'Remove DJ' : 'Make DJ'}</button>
-          <button type="button" class="qa dj-btn" data-act="kick" data-id="${esc(p.id)}" title="Kick (they can rejoin)"><span class="material-symbols-outlined">logout</span>Kick</button>
-          <button type="button" class="qa d dj-btn" data-act="ban" data-id="${esc(p.id)}" title="Ban (they can't rejoin)"><span class="material-symbols-outlined">block</span>Ban</button>
+          <button type="button" class="qa dj-btn" data-act="dj" data-id="${esc(p.uid)}" title="${p.isDj ? 'Remove DJ' : 'Make DJ'}"><span class="material-symbols-outlined">${p.isDj ? 'remove_circle' : 'headphones'}</span>${p.isDj ? 'Remove DJ' : 'Make DJ'}</button>
+          <button type="button" class="qa dj-btn" data-act="kick" data-id="${esc(p.uid)}" title="Kick (they can rejoin)"><span class="material-symbols-outlined">logout</span>Kick</button>
+          <button type="button" class="qa d dj-btn" data-act="ban" data-id="${esc(p.uid)}" title="Ban (they can't rejoin)"><span class="material-symbols-outlined">block</span>Ban</button>
         </span>` : '';
       return `<div class="dj-item ${p.isDj ? 'is-dj' : ''} ${p.isHost ? 'is-host' : ''}" data-name="${esc(p.name)}">
         <span class="cu-avatar ${p.isHost ? 'is-host' : ''}">${esc(initial)}</span>

@@ -276,8 +276,8 @@ const Lobby = {
     S.lobby.lastServerState = state;
     S.lobby.lastStateAt = Date.now();   // lets a saved session extrapolate the playback position
     const wasHost = S.lobby.isHost, wasDj = S.lobby.isDj;
-    S.lobby.isHost = state.hostId === S.lobby.clientId;
-    S.lobby.isDj = !S.lobby.isHost && (state.djs || []).includes(S.lobby.clientId);
+    S.lobby.isHost = state.hostId === LobbyAPI.userId();
+    S.lobby.isDj = !S.lobby.isHost && (state.djs || []).includes(LobbyAPI.userId());
     if (wasHost !== S.lobby.isHost || wasDj !== S.lobby.isDj) {
       UI.applyLockState();
       if (S.lobby.isHost && !wasHost) toast('You are now the host', 'info');
@@ -325,21 +325,21 @@ const Lobby = {
   },
 
   // Host-only: remove a user (they can rejoin) / remove and refuse them.
-  async kick(targetId, name) {
+  async kick(targetUid, name) {
     if (!(S.lobby.active && S.lobby.isHost)) return;
     if (!confirm(`Kick ${name || 'this user'} from the lobby? They can rejoin.`)) return;
     try {
-      const r = await LobbyAPI.control(S.lobby.code, 'kick', { clientId: S.lobby.clientId, targetId });
+      const r = await LobbyAPI.control(S.lobby.code, 'kick', { clientId: S.lobby.clientId, targetUid });
       this._applyState(r.state);
       toast(`Kicked ${name || 'user'}`, 'info', 2200);
     } catch (e) { toast(e.message, 'error', 4000); }
   },
 
-  async ban(targetId, name) {
+  async ban(targetUid, name) {
     if (!(S.lobby.active && S.lobby.isHost)) return;
     if (!confirm(`Ban ${name || 'this user'}? They won't be able to rejoin this lobby.`)) return;
     try {
-      const r = await LobbyAPI.control(S.lobby.code, 'ban', { clientId: S.lobby.clientId, targetId });
+      const r = await LobbyAPI.control(S.lobby.code, 'ban', { clientId: S.lobby.clientId, targetUid });
       this._applyState(r.state);
       toast(`Banned ${name || 'user'}`, 'info', 2200);
     } catch (e) { toast(e.message, 'error', 4000); }
@@ -411,10 +411,10 @@ const Lobby = {
   // Host-only: appoint/remove a DJ. The server toggles, broadcasts the new
   // participants + state to everyone, and we apply the returned state so
   // the host's own UI updates without waiting for the socket echo.
-  async toggleDj(targetId) {
+  async toggleDj(targetUid) {
     if (!S.lobby.isHost) { toast('Only the host can appoint DJs', 'warn'); return; }
     try {
-      const r = await LobbyAPI.control(S.lobby.code, 'dj', { clientId: S.lobby.clientId, targetId });
+      const r = await LobbyAPI.control(S.lobby.code, 'dj', { clientId: S.lobby.clientId, targetUid });
       this._applyState(r.state);
     } catch (e) { toast(`Error: ${e.message}`, 'error'); }
   },
