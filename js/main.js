@@ -75,7 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* ───────── App header (lobby) ───────── */
   document.getElementById('btn-copy-code').addEventListener('click', () => Lobby.copyCode());
-  document.getElementById('btn-leave-lobby').addEventListener('click', () => Lobby.leave());
+  document.getElementById('btn-leave-lobby').addEventListener('click', () => Lobby.requestLeave());
 
   /* ───────── Playback controls ───────── */
   document.getElementById('btn-play').addEventListener('click', () => Engine.togglePause());
@@ -286,7 +286,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('sessions-save').addEventListener('click', () => Sessions.save());
   document.getElementById('heal-cancel').addEventListener('click', () => Heal.cancel());
   document.getElementById('cfg-save-lobby').addEventListener('click', () => UI.saveConfigLobby());
-  document.getElementById('cfg-leave-lobby').addEventListener('click', () => Lobby.leave());
+  document.getElementById('cfg-leave-lobby').addEventListener('click', () => Lobby.requestLeave());
 
   /* ───────── Config: join a lobby by code (works for private lobbies) ───────── */
   document.getElementById('join-code-btn').addEventListener('click', () => Lobby.joinByCode());

@@ -495,6 +495,22 @@ const Lobby = {
     } catch (_) {}
   },
 
+  // The user-facing Leave buttons. If this would save a session (host, last
+  // one in the lobby, something worth restoring) ask first: Save / Don't save /
+  // Cancel. Everything else leaves straight away.
+  async requestLeave() {
+    let save = true;
+    let code = null;
+    if (Sessions.wouldSaveOnLeave()) {
+      const choice = await Sessions.confirmSaveOnLeave();
+      if (choice === null) return;                 // cancelled — stay in the lobby
+      save = choice === 'save';
+      if (save) code = S.lobby.code;
+    }
+    await this.leave({ noAutosave: !save });
+    if (code) toast(`Saved session ${code}`, 'success', 2200);
+  },
+
   // `autoRejoin` (default true) is what keeps the app from ever landing in
   // a lobby-less limbo: S.mode null but Backend.serverUrl still pointed at
   // the Flask proxy (it's set once at boot and never cleared — see api.js —

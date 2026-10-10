@@ -1103,3 +1103,11 @@ body.pad-active.pad-tabs-focused .pane :focus {
    widening the whole card. */
 .dbg-list-row > span:not(.dbg-mono) { min-width: 0; overflow: hidden; white-space: nowrap; flex: 1 1 0; }
 .dbg-list-row > .dbg-muted { flex: 0 1 38%; margin-left: auto; text-align: right; }
+
+/* ── Save-on-leave confirmation (Sessions.confirmSaveOnLeave) ── */
+.confirm-overlay { position: fixed; inset: 0; z-index: 500; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,.55); }
+.confirm-box { width: 100%; max-width: 380px; background: var(--surf); border: 1px solid var(--brd2); border-radius: var(--sh-lg); box-shadow: var(--ev2); padding: 24px 22px; }
+.confirm-title { font-size: 16px; font-weight: 800; color: var(--text); margin-bottom: 8px; }
+.confirm-text { font-size: 13px; color: var(--muted); line-height: 1.5; }
+.confirm-text b { color: var(--text); }
+.confirm-btns { display: flex; flex-direction: column; gap: 0; }

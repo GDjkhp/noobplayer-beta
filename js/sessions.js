@@ -132,6 +132,53 @@ const Sessions = {
     } catch (_) {}
   },
 
+  // True when the host leaving right now would write a Saved Session: host,
+  // last one in the lobby, and something worth restoring (mirrors
+  // autosaveIfLastHost).
+  wouldSaveOnLeave() {
+    try {
+      if (!(S.mode === 'server' && S.lobby.active && S.lobby.isHost)) return false;
+      if ((S.lobby.participants || []).length > 1) return false;
+      return !this._isEmpty(this.snapshot('host-left'));
+    } catch (_) { return false; }
+  },
+
+  // "Save this session before you go?" dialog. Resolves 'save', 'discard',
+  // or null (cancelled: Esc, backdrop click, or the Cancel button).
+  confirmSaveOnLeave() {
+    return new Promise((resolve) => {
+      const name = esc(S.lobby.lastServerState?.name || 'this lobby');
+      const code = esc(S.lobby.code || '');
+      const ov = document.createElement('div');
+      ov.className = 'confirm-overlay';
+      ov.innerHTML = `
+        <div class="confirm-box" role="dialog" aria-modal="true" aria-labelledby="cf-title">
+          <div class="confirm-title" id="cf-title">Save this session?</div>
+          <div class="confirm-text">You're the last one in <b>${name}</b> <span class="cu-tag">${code}</span>. Save it to Saved Sessions so you can pick up where you left off?</div>
+          <div class="confirm-btns">
+            <button class="overlay-btn" data-cf="save">Save session</button>
+            <button class="overlay-btn ghost" data-cf="discard">Don't save</button>
+            <button class="overlay-btn ghost" data-cf="cancel">Cancel</button>
+          </div>
+        </div>`;
+      const done = (v) => {
+        document.removeEventListener('keydown', onKey, true);
+        ov.remove();
+        resolve(v);
+      };
+      const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); } };
+      ov.addEventListener('click', (e) => {
+        if (e.target === ov) return done(null);
+        const b = e.target.closest('[data-cf]');
+        if (!b) return;
+        done(b.dataset.cf === 'save' ? 'save' : b.dataset.cf === 'discard' ? 'discard' : null);
+      });
+      document.addEventListener('keydown', onKey, true);
+      document.body.appendChild(ov);
+      ov.querySelector('[data-cf="save"]').focus();
+    });
+  },
+
   // True when the host is closing a lobby that has something worth restoring
   // (used by main.js's 'beforeunload' confirmation).
   shouldConfirmClose() {
