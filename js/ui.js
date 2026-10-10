@@ -430,7 +430,7 @@ const UI = {
           <span style="color:var(--text);font-weight:600">${esc(data.data.info?.name || 'Playlist')}</span>
           <span>${tracks.length} tracks</span>
           <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto">+ Add All</button>
-          <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every track in this playlist">Download All</button>
+          <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every track in this playlist"><span class="material-symbols-outlined">download</span>Download All</button>
         </div>`;
       } else if (data.loadType === 'search') {
         tracks = data.data;
@@ -444,7 +444,8 @@ const UI = {
       if (!banner && tracks.length > 1) {
         banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
           <span>${tracks.length} results</span>
-          <button class="add-btn" id="btn-dl-all" style="opacity:1;margin-left:auto" title="Download every result">Download All</button>
+          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto">+ Add All</button>
+          <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every result"><span class="material-symbols-outlined">download</span>Download All</button>
         </div>`;
       }
 
