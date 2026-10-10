@@ -804,7 +804,7 @@ const Debug = {
         <div class="dbg-toolbar">
           <span class="dbg-title"><span class="material-symbols-outlined">bug_report</span>Debug</span>
           <span class="dbg-sub">live instrumentation — network · stream + buffered waveform · player events</span>
-          <button class="qa d" id="dbg-clear">Clear</button>
+          <button class="qa d" id="dbg-clear"><span class="material-symbols-outlined">delete_sweep</span>Clear</button>
         </div>
 
         <div class="dbg-grid" id="dbg-cards"></div>

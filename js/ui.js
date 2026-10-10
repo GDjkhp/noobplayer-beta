@@ -66,7 +66,7 @@ const UI = {
   updateFairButton() {
     const btn = document.getElementById('btn-qfair');
     if (!btn) return;
-    btn.textContent = S.fairEnabled ? 'Fair: On' : 'Fair: Off';
+    (btn.querySelector('.lbl') || btn).textContent = S.fairEnabled ? 'Fair: On' : 'Fair: Off';
     btn.classList.toggle('on', S.fairEnabled);
     btn.disabled = S.mode !== 'server' || this.isLocked();
     btn.title = S.mode === 'server'
@@ -88,7 +88,7 @@ const UI = {
     if (ap) {
       const pool = S.autoQueueCount || 0;
       const lbls = { enabled: 'Auto: On', partial: 'Auto: ½', disabled: 'Auto: Off' };
-      ap.textContent = S.recPending ? 'Auto …' : lbls[S.autoplay] || 'Auto';
+      (ap.querySelector('.lbl') || ap).textContent = S.recPending ? 'Auto …' : lbls[S.autoplay] || 'Auto';
       ap.classList.toggle('on', S.autoplay === 'enabled');
       ap.title = {
         enabled:  'Autoplay: keeps the queue going with recommendations when it runs dry',
