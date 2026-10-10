@@ -2855,6 +2855,23 @@ async def lobby_prev(code):
     return jsonify({"ok": True, "state": state})
 
 
+@app.route("/api/lobby/<code>/clear_history", methods=["POST"])
+async def lobby_clear_history(code):
+    """Host or DJ: forget everything that already played (Previous has nothing
+    to step back to afterwards). Queue, smart pool and the current track are
+    left alone."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    data = await request.get_json(force=True, silent=True) or {}
+    if not _require_controller(lobby, data.get("clientId")):
+        return jsonify({"error": "host or DJ only"}), 403
+    lobby.history.clear()
+    state = lobby.public_state()
+    await broadcast(lobby, "state", state)
+    return jsonify({"ok": True, "state": state})
+
+
 @app.route("/api/lobby/<code>/loop", methods=["POST"])
 async def lobby_loop(code):
     """Host-only: 'none' | 'track' (repeat one) | 'queue' (repeat all)."""

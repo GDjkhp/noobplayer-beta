@@ -132,6 +132,15 @@ const Sessions = {
     } catch (_) {}
   },
 
+  // True when the host is closing a lobby that has something worth restoring
+  // (used by main.js's 'beforeunload' confirmation).
+  shouldConfirmClose() {
+    try {
+      if (!(S.mode === 'server' && S.lobby.active && S.lobby.isHost)) return false;
+      return !this._isEmpty(this.snapshot('page-closed'));
+    } catch (_) { return false; }
+  },
+
   load(code) {
     const snap = this.get(code);
     if (!snap) { toast('That saved session is gone', 'warn'); this.render(); return; }

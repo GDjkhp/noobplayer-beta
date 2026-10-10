@@ -1074,19 +1074,30 @@ body.pad-active.pad-tabs-focused .pane :focus {
 .pl-lock { font-size:14px; vertical-align:-2px; color:var(--muted); }
 /* ═══════════════ MARQUEE ═══════════════
    Overflowing single-line text (see Marquee in utils.js) scrolls to its end
-   and back instead of showing "…". text-indent is animated so no wrapper
-   element is needed; it holds briefly at each end. */
-.mq {
-  text-overflow: clip !important;
-  animation: mq-slide var(--mq-t, 8s) ease-in-out infinite alternate;
+   and back instead of showing "…". The text sits in a .mq-in wrapper that the
+   script adds, and only its transform is animated — no layout work per frame.
+   It holds briefly at each end. */
+.mq { text-overflow: clip !important; }
+.mq > .mq-in {
+  display: inline-block;
+  vertical-align: top;
+  flex: none;
+  white-space: nowrap;
+  animation: mq-slide var(--mq-t, 8s) ease-in-out var(--mq-dl, 0s) infinite alternate;
 }
 @keyframes mq-slide {
-  0%, 14%   { text-indent: 0; }
-  86%, 100% { text-indent: calc(-1 * var(--mq-d, 0px)); }
+  0%, 14%   { transform: translateX(0); }
+  86%, 100% { transform: translateX(calc(-1 * var(--mq-d, 0px))); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .mq { animation: none; text-overflow: ellipsis !important; }
+  .mq > .mq-in { animation: none; }
 }
+
+/* Stop button: press-and-hold (Engine.clearHistory) shows a fill while you hold. */
+#btn-stop { position: relative; overflow: hidden; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: manipulation; }
+#btn-stop > * { position: relative; z-index: 1; }
+#btn-stop::after { content: ''; position: absolute; inset: 0; background: var(--red); opacity: .4; transform: scaleX(0); transform-origin: left; pointer-events: none; }
+#btn-stop.holding::after { transform: scaleX(1); transition: transform .8s linear; }
 
 /* Debug tab list rows: let the title/author shrink and scroll instead of
    widening the whole card. */

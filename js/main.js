@@ -81,7 +81,34 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-play').addEventListener('click', () => Engine.togglePause());
   document.getElementById('btn-next').addEventListener('click', () => Engine.skip());
   document.getElementById('btn-prev').addEventListener('click', () => Engine.prev());
-  document.getElementById('btn-stop').addEventListener('click', () => Engine.stop());
+  // Stop: tap = stop playback, hold ~0.8s = clear history instead.
+  (() => {
+    const btn = document.getElementById('btn-stop');
+    const HOLD_MS = 800;
+    let timer = null, fired = false;
+    const release = () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      btn.classList.remove('holding');
+      // The click that follows a completed hold must be swallowed; clear the flag afterwards.
+      if (fired) setTimeout(() => { fired = false; }, 150);
+    };
+    btn.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      fired = false;
+      btn.classList.add('holding');
+      timer = setTimeout(() => {
+        timer = null; fired = true;
+        btn.classList.remove('holding');
+        Engine.clearHistory();
+      }, HOLD_MS);
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => btn.addEventListener(ev, release));
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());   // touch long-press menu
+    btn.addEventListener('click', (e) => {
+      if (fired) { fired = false; e.preventDefault(); return; }
+      Engine.stop();
+    });
+  })();
   document.getElementById('btn-b10').addEventListener('click', () => {
     if (S.player) Engine.seekTo(S.player.getPositionMs() - 10000);
   });
@@ -300,5 +327,18 @@ document.addEventListener('DOMContentLoaded', () => {
      safety net. */
   window.addEventListener('pagehide', () => {
     if (typeof Lobby !== 'undefined') Lobby.leaveBeacon();
+  });
+
+  /* ───────── Confirm on close ─────────
+     A host with something worth keeping gets the browser's "Leave site?"
+     alert on tab close / refresh / navigation. Browsers don't allow custom
+     text here. Choosing Leave carries on to 'pagehide' above, which saves the
+     session; Cancel keeps the lobby running. */
+  window.addEventListener('beforeunload', (e) => {
+    if (typeof Sessions !== 'undefined' && Sessions.shouldConfirmClose()) {
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    }
   });
 });

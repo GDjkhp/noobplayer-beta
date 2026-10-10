@@ -618,6 +618,24 @@ const Engine = {
     UI.updatePlayerUI(); UI.renderQueue(); UI.updateQueueHeader();
   },
 
+  // Hold-Stop (see main.js): forget everything that already played, so
+  // Previous has nothing to step back to. Queue, smart pool and the current
+  // track are untouched.
+  async clearHistory() {
+    if (S.mode === 'server') {
+      if (!UI.canControl()) { toast('Only the host or a DJ can clear history', 'warn'); return; }
+      try {
+        const r = await LobbyAPI.control(S.lobby.code, 'clear_history', { clientId: S.lobby.clientId });
+        Lobby.applyControlResult(r);
+        toast('History cleared', 'success', 2000);
+      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      return;
+    }
+    if (S.mode !== 'standalone') return;
+    S.history = [];
+    toast('History cleared', 'success', 2000);
+  },
+
   async seekTo(posMs) {
     posMs = Math.max(0, posMs);
     if (S.mode === 'server') {
