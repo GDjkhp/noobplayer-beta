@@ -132,7 +132,13 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (act === 'ban') Lobby.ban(b.dataset.id, b.closest('.dj-item')?.dataset.name);
     else if (act === 'unban') Lobby.unban(b.dataset.uid);
   });
-  document.getElementById('btn-qdl').addEventListener('click', e => UI.openDownloadMenu(e.currentTarget, S.queue));
+  document.getElementById('btn-qdl').addEventListener('click', e => {
+    // The currently playing track isn't in S.queue — put it first, without duplicating it if it's also queued.
+    const all = S.current && S.current.encoded ? [S.current] : [];
+    const seen = new Set(all.map(t => t.encoded));
+    (S.queue || []).forEach(t => { if (t && t.encoded && !seen.has(t.encoded)) { seen.add(t.encoded); all.push(t); } });
+    UI.openDownloadMenu(e.currentTarget, all);
+  });
   document.getElementById('btn-qclr').addEventListener('click', () => {
     if (!S.queue.length) { toast('Queue is already empty', 'warn'); return; }
     Engine.clearQueue();
