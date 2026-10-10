@@ -463,6 +463,7 @@ const UI = {
           <div class="si-acts">
             <button class="add-btn pnow" data-a="play" data-i="${i}" ${locked?'disabled':''}><span class="material-symbols-outlined">play_arrow</span>Play</button>
             <button class="add-btn" data-a="q" data-i="${i}">+ Queue</button>
+            <button class="add-btn" data-a="dl" data-i="${i}" title="Download this track"><span class="material-symbols-outlined">download</span>Download</button>
           </div>
           <span class="si-d">${fmt(t.info.length)}</span>
         </div>`;
@@ -474,6 +475,7 @@ const UI = {
           e.stopPropagation();
           const t = S.searchResults[parseInt(btn.dataset.i)];
           if (!t) return;
+          if (btn.dataset.a === 'dl') { UI.openDownloadMenu(btn, t); return; }
           // Something is already loaded (playing OR paused): Play on a search
           // result queues it instead of replacing the current track.
           if (btn.dataset.a === 'play' && S.current) {
