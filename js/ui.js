@@ -216,14 +216,16 @@ const UI = {
   // button was clicked — the now-playing one in #ctrls-sec, or a queue
   // item's. One instance at a time; opening a new one (or clicking
   // anywhere outside, or Escape) closes whatever's already open.
-  openDownloadMenu(anchorEl, track) {
+  openDownloadMenu(anchorEl, trackOrTracks) {
     this.closeDownloadMenu();
-    if (!track) { toast('Nothing to download', 'warn'); return; }
+    const tracks = (Array.isArray(trackOrTracks) ? trackOrTracks : [trackOrTracks]).filter(t => t && t.encoded);
+    if (!tracks.length) { toast('Nothing to download', 'warn'); return; }
     if (!DownloadAPI.available()) { toast('Downloads need a server connection', 'warn'); return; }
 
     const menu = document.createElement('div');
     menu.className = 'dl-menu';
     menu.innerHTML = `
+      ${tracks.length > 1 ? `<div class="dl-menu-t">Download ${tracks.length} tracks</div>` : ''}
       <button class="dl-opt" data-fmt="opus"><span>Opus</span><small>.ogg</small></button>
       <button class="dl-opt" data-fmt="mp3"><span>MP3</span><small>.mp3</small></button>
       <button class="dl-opt" data-fmt="wav"><span>WAV</span><small>.wav</small></button>
@@ -239,8 +241,7 @@ const UI = {
 
     menu.querySelectorAll('.dl-opt').forEach(btn => {
       btn.addEventListener('click', () => {
-        triggerDownload(DownloadAPI.url(track, btn.dataset.fmt));
-        toast(`Downloading "${track.info.title}" — this can take a moment`, 'info', 3000);
+        Downloads.add(tracks, btn.dataset.fmt);
         this.closeDownloadMenu();
       });
     });
@@ -429,6 +430,7 @@ const UI = {
           <span style="color:var(--text);font-weight:600">${esc(data.data.info?.name || 'Playlist')}</span>
           <span>${tracks.length} tracks</span>
           <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto">+ Add All</button>
+          <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every track in this playlist">Download All</button>
         </div>`;
       } else if (data.loadType === 'search') {
         tracks = data.data;
@@ -438,6 +440,13 @@ const UI = {
 
       S.searchResults = tracks;
       if (!tracks.length) { res.innerHTML = `<div class="empty"><p>No results</p></div>`; return; }
+
+      if (!banner && tracks.length > 1) {
+        banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
+          <span>${tracks.length} results</span>
+          <button class="add-btn" id="btn-dl-all" style="opacity:1;margin-left:auto" title="Download every result">Download All</button>
+        </div>`;
+      }
 
       const locked = this.isLocked();
       let html = banner;
@@ -490,6 +499,9 @@ const UI = {
         addAll.disabled = false;
         addAll.textContent = prevLabel;
       });
+
+      const dlAll = document.getElementById('btn-dl-all');
+      if (dlAll) dlAll.addEventListener('click', e => { e.stopPropagation(); UI.openDownloadMenu(dlAll, tracks); });
     } catch (e) {
       res.innerHTML = `<div class="empty"><p>Error: ${esc(e.message)}</p></div>`;
       console.error('Search error:', e);

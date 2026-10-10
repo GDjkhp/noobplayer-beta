@@ -431,6 +431,7 @@ body::after {
   padding: 8px 10px; cursor: pointer; text-align: left; transition: background .15s, color .15s;
 }
 .dl-opt:hover { background: var(--st-hover); color: var(--accent); }
+.dl-menu-t { font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 6px 10px 4px; }
 .dl-opt small { font-family: var(--fm); font-size: 9px; color: var(--muted); }
 .dl-opt:hover small { color: var(--accent); }
 
@@ -1111,3 +1112,26 @@ body.pad-active.pad-tabs-focused .pane :focus {
 .confirm-text { font-size: 13px; color: var(--muted); line-height: 1.5; }
 .confirm-text b { color: var(--text); }
 .confirm-btns { display: flex; flex-direction: column; gap: 0; }
+
+/* ── Downloads tab (downloads.js) ── */
+#dl-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
+#dl-info { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }
+#dl-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; }
+.dl-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid transparent; border-radius: var(--sh-sm); margin-bottom: 2px; transition: background .15s, border-color .15s; flex-shrink: 0; }
+.dl-item:hover { background: var(--st-hover); }
+.dl-m { flex: 1; min-width: 0; }
+.dl-t { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dl-a { font-family: var(--fm); font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dl-bar { position: relative; height: 3px; margin-top: 6px; background: var(--brd2); border-radius: var(--sh-full); overflow: hidden; }
+.dl-bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--accent); border-radius: var(--sh-full); transition: width .15s linear; }
+.dl-item.done .dl-bar i { background: var(--green); }
+.dl-item.error .dl-bar i { background: var(--red); width: 100% !important; }
+.dl-item.canceled .dl-bar i { width: 0 !important; }
+.dl-item.preparing .dl-bar i { width: 35% !important; transition: none; animation: dl-ind 1.1s ease-in-out infinite alternate; }
+@keyframes dl-ind { from { transform: translateX(0); } to { transform: translateX(185%); } }
+.dl-fmt { font-family: var(--fm); font-size: 9px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--brd2); border-radius: var(--sh-full); padding: 2px 8px; flex-shrink: 0; }
+.dl-st { font-family: var(--fm); font-size: 10px; color: var(--muted); width: 150px; flex-shrink: 0; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dl-item.done .dl-st { color: var(--green); }
+.dl-item.error .dl-st { color: var(--red); }
+.dl-item .dl-bs { opacity: 1; }
+@media (max-width: 600px) { .dl-st { width: 96px; } .dl-fmt { display: none; } }

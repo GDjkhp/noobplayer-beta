@@ -132,6 +132,7 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (act === 'ban') Lobby.ban(b.dataset.id, b.closest('.dj-item')?.dataset.name);
     else if (act === 'unban') Lobby.unban(b.dataset.uid);
   });
+  document.getElementById('btn-qdl').addEventListener('click', e => UI.openDownloadMenu(e.currentTarget, S.queue));
   document.getElementById('btn-qclr').addEventListener('click', () => {
     if (!S.queue.length) { toast('Queue is already empty', 'warn'); return; }
     Engine.clearQueue();
@@ -152,6 +153,7 @@ document.addEventListener('DOMContentLoaded', () => {
     UI.switchTab(b.dataset.tab);
     if (b.dataset.tab === 'chat') document.getElementById('chat-badge').textContent = '';
     if (b.dataset.tab === 'config') UI.renderConfigTab();
+    if (b.dataset.tab === 'downloads') Downloads.render();
     if (b.dataset.tab === 'skins') Skins.renderTab();
     if (b.dataset.tab === 'bindings') Bindings.renderTab();
     // The visualizer burns a rAF loop, so it's started on entering the tab
@@ -316,6 +318,7 @@ document.addEventListener('DOMContentLoaded', () => {
   Bindings.init();
   VKeyboard.init();
   Pad.init();
+  Downloads.init();
   Main.autoStart();
 
   /* ───────── Leave-on-close ─────────
@@ -335,7 +338,9 @@ document.addEventListener('DOMContentLoaded', () => {
      text here. Choosing Leave carries on to 'pagehide' above, which saves the
      session; Cancel keeps the lobby running. */
   window.addEventListener('beforeunload', (e) => {
-    if (typeof Sessions !== 'undefined' && Sessions.shouldConfirmClose()) {
+    // Unfinished downloads live in this page's memory — closing would lose them.
+    const dlBusy = typeof Downloads !== 'undefined' && Downloads.activeCount() > 0;
+    if (dlBusy || (typeof Sessions !== 'undefined' && Sessions.shouldConfirmClose())) {
       e.preventDefault();
       e.returnValue = '';
       return '';

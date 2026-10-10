@@ -127,7 +127,8 @@ from dotenv import load_dotenv
 STATIC_DIR = Path(__file__).resolve().parent  # project root (index.html lives here)
 
 app = Quart(__name__, static_folder=None)
-app = cors(app, allow_origin="*", allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type"])
+app = cors(app, allow_origin="*", allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type"],
+           expose_headers=["Content-Length", "Content-Disposition"])
 
 # Socket.IO server for real-time push (state/participants/chat), mounted
 # in front of the Quart app. Quart apps are themselves valid ASGI apps, so

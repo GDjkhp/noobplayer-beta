@@ -137,6 +137,7 @@ const Marquee = {
     '.pl-np',                                         // public lobby list: now playing
     '.cu-name', '.dj-name',                           // participants / Disc Jockey
     '.ss-name', '.ss-meta',                           // saved sessions
+    '.dl-t', '.dl-a', '.dl-st',                       // downloads tab
     '.viz-active-name',                               // visualizer name
     '.bnd-btn', '#vk-preview',                        // key bindings, virtual keyboard
     '.dbg-card-v', '.dbg-table td.dbg-mono',          // debug tab cards + tables
