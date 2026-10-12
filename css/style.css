@@ -380,6 +380,7 @@ body::after {
 .add-btn:hover { background: var(--accent); border-color: var(--accent); color: #05050f; }
 .add-btn.pnow:hover { background: var(--green); border-color: var(--green); color: #05050f; }
 .add-btn:disabled { opacity: .3; cursor: not-allowed; }
+.add-btn .m-ico { display: none; }   /* icon-only variant of "+ Queue", used by the portrait-mobile layout */
 
 #q-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
 #q-info { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }
@@ -1139,3 +1140,46 @@ body.pad-active.pad-tabs-focused .pane :focus {
 .dl-item.error .dl-st { color: var(--red); }
 .dl-item .dl-bs { opacity: 1; }
 @media (max-width: 600px) { .dl-st { width: 96px; } .dl-fmt { display: none; } }
+
+/* ═══════════════ Portrait phone/tablet: search + queue rows ═══════════════
+   Every row used to be one line: thumbnail, title AND its whole button strip
+   (3 labelled pills / 6 icon buttons). On a phone the buttons took nearly the
+   entire width and squeezed the title down to a couple of letters. Now each
+   row is two lines — thumbnail + title/artist + duration on top, the action
+   buttons on their own full-width line underneath (icon-only in search). */
+@media (max-width: 1000px) and (orientation: portrait) {
+  .si-acts, .qi-bs { opacity: 1; }
+
+  /* ── search results ── */
+  .si {
+    display: grid; align-items: center; column-gap: 10px; row-gap: 8px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "th meta dur" "acts acts acts";
+  }
+  .si > .si-th, .si > .si-nth { grid-area: th; }
+  .si-meta { grid-area: meta; }
+  .si-d { grid-area: dur; }
+  .si-acts { grid-area: acts; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .si-acts .add-btn { justify-content: center; padding: 7px 0; }
+  .si-acts .add-btn .lbl { display: none; }                 /* icons only */
+  .si-acts .add-btn .m-ico { display: inline-block; }       /* the Queue button's icon is hidden on desktop */
+  .si-acts .add-btn .material-symbols-outlined { font-size: 20px; }
+
+  /* ── queue ── */
+  .qi {
+    display: grid; align-items: center; column-gap: 8px; row-gap: 4px;
+    grid-template-columns: auto auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "drag n th meta dur" "bs bs bs bs bs";
+  }
+  .qi-drag { grid-area: drag; }
+  .qi-n { grid-area: n; }
+  .qi > .qi-th, .qi > .qi-nth { grid-area: th; }
+  .qi-m { grid-area: meta; }
+  .qi-d { grid-area: dur; }
+  .qi-bs {
+    grid-area: bs; display: flex; justify-content: space-between; gap: 2px;
+    border-top: 1px solid var(--brd); padding-top: 4px; margin-top: 2px;
+  }
+  .qi-bs .qib { flex: 1; justify-content: center; padding: 7px 0; border-radius: var(--sh-full); }
+  .qi-bs .qib .material-symbols-outlined { font-size: 20px; }
+}

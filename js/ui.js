@@ -461,9 +461,9 @@ const UI = {
             <div class="si-a">${esc(t.info.author)}</div>
           </div>
           <div class="si-acts">
-            <button class="add-btn pnow" data-a="play" data-i="${i}" ${locked?'disabled':''}><span class="material-symbols-outlined">play_arrow</span>Play</button>
-            <button class="add-btn" data-a="q" data-i="${i}">+ Queue</button>
-            <button class="add-btn" data-a="dl" data-i="${i}" title="Download this track"><span class="material-symbols-outlined">download</span>Download</button>
+            <button class="add-btn pnow" data-a="play" data-i="${i}" title="Play" ${locked?'disabled':''}><span class="material-symbols-outlined">play_arrow</span><span class="lbl">Play</span></button>
+            <button class="add-btn" data-a="q" data-i="${i}" title="Add to queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">+ Queue</span></button>
+            <button class="add-btn" data-a="dl" data-i="${i}" title="Download this track"><span class="material-symbols-outlined">download</span><span class="lbl">Download</span></button>
           </div>
           <span class="si-d">${fmt(t.info.length)}</span>
         </div>`;
