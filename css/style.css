@@ -297,8 +297,8 @@ body::after {
 .cb.lg:disabled { background: var(--brd2); border-color: var(--brd2); color: var(--muted); box-shadow: none; }
 .cb.on { color: var(--accent); border-color: var(--accent); background: var(--st-hover); }
 .cb .material-symbols-outlined { pointer-events: none; }
-#ctrls-sec { display: flex; align-items: center; gap: 8px; }
-.hsep { width: 1px; height: 18px; background: var(--brd2); flex-shrink: 0; }
+#ctrls-sec { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 8px; justify-content: space-around;}
+.hsep { width: 1px; height: 18px; background: var(--brd2); flex-shrink: 0; display: none;}
 #loop-btn { font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .05em; padding: 0 10px; width: auto; min-width: 44px; justify-content: center; }
 #gapless-btn { font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .05em; padding: 0 10px; width: auto; min-width: 44px; justify-content: center; }
 #vol-row { flex: 1; display: flex; align-items: center; gap: 6px; }
@@ -380,7 +380,6 @@ body::after {
 .add-btn:hover { background: var(--accent); border-color: var(--accent); color: #05050f; }
 .add-btn.pnow:hover { background: var(--green); border-color: var(--green); color: #05050f; }
 .add-btn:disabled { opacity: .3; cursor: not-allowed; }
-.add-btn .m-ico { display: none; }   /* icon-only variant of "+ Queue", used by the portrait-mobile layout */
 
 #q-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
 #q-info { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }
@@ -1162,7 +1161,6 @@ body.pad-active.pad-tabs-focused .pane :focus {
   .si-acts { grid-area: acts; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .si-acts .add-btn { justify-content: center; padding: 7px 0; }
   .si-acts .add-btn .lbl { display: none; }                 /* icons only */
-  .si-acts .add-btn .m-ico { display: inline-block; }       /* the Queue button's icon is hidden on desktop */
   .si-acts .add-btn .material-symbols-outlined { font-size: 20px; }
 
   /* ── queue ── */

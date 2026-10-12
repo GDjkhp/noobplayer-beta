@@ -429,7 +429,7 @@ const UI = {
         banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
           <span style="color:var(--text);font-weight:600">${esc(data.data.info?.name || 'Playlist')}</span>
           <span>${tracks.length} tracks</span>
-          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto">+ Add All</button>
+          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button>
           <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every track in this playlist"><span class="material-symbols-outlined">download</span>Download All</button>
         </div>`;
       } else if (data.loadType === 'search') {
@@ -444,7 +444,7 @@ const UI = {
       if (!banner && tracks.length > 1) {
         banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
           <span>${tracks.length} results</span>
-          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto">+ Add All</button>
+          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button>
           <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every result"><span class="material-symbols-outlined">download</span>Download All</button>
         </div>`;
       }
@@ -462,7 +462,7 @@ const UI = {
           </div>
           <div class="si-acts">
             <button class="add-btn pnow" data-a="play" data-i="${i}" title="Play" ${locked?'disabled':''}><span class="material-symbols-outlined">play_arrow</span><span class="lbl">Play</span></button>
-            <button class="add-btn" data-a="q" data-i="${i}" title="Add to queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">+ Queue</span></button>
+            <button class="add-btn" data-a="q" data-i="${i}" title="Add to queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">Queue</span></button>
             <button class="add-btn" data-a="dl" data-i="${i}" title="Download this track"><span class="material-symbols-outlined">download</span><span class="lbl">Download</span></button>
           </div>
           <span class="si-d">${fmt(t.info.length)}</span>
