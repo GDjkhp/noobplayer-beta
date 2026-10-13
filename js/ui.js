@@ -494,13 +494,13 @@ const UI = {
       const addAll = document.getElementById('btn-add-all');
       if (addAll) addAll.addEventListener('click', async () => {
         addAll.disabled = true;
-        const prevLabel = addAll.textContent;
+        const prevLabel = addAll.innerHTML;
         addAll.textContent = 'Adding…';
         await Engine.addAllToQueue(tracks);
         toast(`Added ${tracks.length} tracks`, 'success');
         UI.switchTab('queue');
         addAll.disabled = false;
-        addAll.textContent = prevLabel;
+        addAll.innerHTML = prevLabel;
       });
 
       const dlAll = document.getElementById('btn-dl-all');
