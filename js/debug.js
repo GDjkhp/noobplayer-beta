@@ -119,6 +119,7 @@ const Debug = {
   _renderTimer: null,
   _waveRaf: null,
   _waveLastTick: 0,
+  _wavePrevPos: 0,
 
   /* ───────── setup (called once, at script load) ───────── */
   _init() {
@@ -377,6 +378,7 @@ const Debug = {
     clearInterval(this._renderTimer); this._renderTimer = null;
     this._stopWave();
     this._waveHistory = []; // fresh sweep next time the tab opens, rather than a stale gap stitched in
+    this._wavePrevPos = 0;
     // (the buffered strip is deliberately NOT reset here: it's a live view
     // of what the player holds, recorded whether or not this tab is open)
   },
@@ -411,6 +413,7 @@ const Debug = {
       if (ts - this._waveLastTick >= WAVE_TICK_MS) {
         this._waveLastTick = ts;
         this._waveSample();
+        this._updateLibCount();
         this._bufTick();
         this._drawWave();
         this._drawBufWave();
@@ -439,8 +442,95 @@ const Debug = {
         }
       } catch (_) {}
     }
-    this._waveHistory.push({ amp, ts: performance.now() });
+    // Beat markers (lobby mode, librosa analysis): note when a beat boundary
+    // passed since the previous column, using the audible track position.
+    let beat = null;
+    if (typeof Librosa !== 'undefined' && Librosa.ready() && S.player && S.player.getPositionMs) {
+      const pos = S.player.getPositionMs();
+      beat = Librosa.crossing(this._wavePrevPos, pos);
+      this._wavePrevPos = pos;
+    } else this._wavePrevPos = 0;
+    this._waveHistory.push({ amp, ts: performance.now(), beat });
     if (this._waveHistory.length > WAVE_MAX_COLS) this._waveHistory.shift();
+  },
+
+  /* ───────── Librosa info card ─────────
+     Server-side analysis (see analysis.py) fetched by librosa.js. The slow
+     fields (BPM, key, ...) refresh with render(); the beat counter runs off the
+     waveform loop so it follows the audio instead of lagging by up to 280ms. */
+  _libChipsSig: '',
+  _libCur: -1,
+
+  _updateLibCount() {
+    const el = document.getElementById('lib-count');
+    if (!el) return;
+    const L = Librosa;
+    const ready = L.ready();
+    const m = ready ? L.beatsPerBar() : 0;
+    const sig = String(m);
+    if (sig !== this._libChipsSig) {
+      this._libChipsSig = sig; this._libCur = -1;
+      el.innerHTML = m
+        ? Array.from({ length: m }, (_, k) => `<span class="lib-chip" data-k="${k + 1}">${k + 1}/${m}</span>`).join('<span class="lib-arrow">→</span>')
+        : '<span class="lib-none">—</span>';
+    }
+    if (!m) return;
+    const cur = S.player && S.player.getPositionMs ? L.current(S.player.getPositionMs()) : null;
+    const k = cur ? cur.count : 0;
+    if (k === this._libCur) return;
+    this._libCur = k;
+    el.querySelectorAll('.lib-chip').forEach(c => c.classList.toggle('on', Number(c.dataset.k) === k));
+  },
+
+  _updateMetroBtn() {
+    const b = document.getElementById('dbg-metro-btn');
+    if (!b) return;
+    const on = Librosa.metronomeOn;
+    b.classList.toggle('on', on);
+    b.disabled = !Librosa.available();
+    const lbl = b.querySelector('.lbl'); if (lbl) lbl.textContent = on ? 'Metronome: On' : 'Metronome: Off';
+  },
+
+  _renderLibrosa() {
+    const L = Librosa;
+    L.sync();
+    this._updateMetroBtn();
+
+    const statusEl = document.getElementById('dbg-lib-status');
+    const bpmEl = document.getElementById('lib-bpm-num');
+    const cardsEl = document.getElementById('dbg-lib-cards');
+    if (!statusEl) return;
+
+    if (!L.available()) {
+      statusEl.textContent = '';
+      bpmEl.textContent = '—';
+      this._setCards(cardsEl, [['Status', 'lobby mode only']]);
+      return;
+    }
+    const labels = { idle: 'nothing playing', loading: 'loading…', analyzing: 'analysing track…', ready: 'ready',
+      unsupported: 'not analysed', unavailable: 'librosa unavailable', error: 'error' };
+    statusEl.textContent = `(${labels[L.status] || L.status})`;
+
+    if (!L.ready()) {
+      bpmEl.textContent = '—';
+      this._setCards(cardsEl, [['Status', labels[L.status] || L.status], ...(L.message ? [['Reason', L.message]] : [])]);
+      return;
+    }
+    const d = L.data, t = d.tempo, m = d.meter, k = d.key;
+    const pct = (x) => Math.round((x || 0) * 100) + '%';
+    bpmEl.textContent = t ? String(Number(t.bpm.toFixed(1))) : '—';
+    this._setCards(cardsEl, [
+      ['Time signature', m ? `${m.label} · ${pct(m.confidence)} sure` : '—'],
+      ['Subdivision', m ? m.subdivision : '—'],
+      ['Key / scale', k ? `${k.name} · ${pct(k.confidence)} sure` : (d.keyError ? 'failed' : '—')],
+      ['Scale notes', k ? k.scale.join(' ') : '—'],
+      ['Relative key', k ? k.relative : '—'],
+      ['Tempo steadiness', t ? pct(t.stability) : '—'],
+      ['Alt. tempo (½× / 2×)', t ? `${t.alt[0]} / ${t.alt[1]} bpm` : '—'],
+      ['Beats tracked', String(d.beats.length)],
+      ['Tuning', k ? `${k.tuningCents > 0 ? '+' : ''}${k.tuningCents} cents` : '—'],
+      ['Analysis time', `${d.analysisSec}s`],
+    ]);
   },
 
   /* ───────── buffered waveform ─────────
@@ -615,10 +705,28 @@ const Debug = {
       ctx.fillStyle = opts.color;
       ctx.fillRect(x, midY - h, Math.max(1, colW - 0.4), h * 2);
     }
+
+    // Beat markers from the librosa analysis: bar downbeats (count 1) are
+    // amber and tall, the other beats pink; each is labelled with its count.
+    if (opts.beats) {
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      for (let i = 0; i < n; i++) {
+        const b = hist[i].beat;
+        if (!b) continue;
+        const x = startX + i * colW;
+        if (x < -2 || x > cssW + 2) continue;
+        const down = b.count === 1;
+        ctx.fillStyle = down ? 'rgba(251,191,36,.9)' : 'rgba(244,114,182,.55)';
+        ctx.fillRect(x, down ? 2 : cssH * 0.18, down ? 2 : 1, down ? cssH - 4 : cssH * 0.64);
+        ctx.fillStyle = down ? 'rgba(251,191,36,.95)' : 'rgba(244,114,182,.8)';
+        ctx.fillText(String(b.count), Math.min(Math.max(x, 8), cssW - 8), cssH - 3);
+      }
+    }
   },
 
   _drawWave() {
-    this._drawStrip('dbg-wave', this._waveHistory, { color: 'rgba(91,156,246,.85)' });
+    this._drawStrip('dbg-wave', this._waveHistory, { color: 'rgba(91,156,246,.85)', beats: true });
   },
 
   _drawBufWave() {
@@ -809,9 +917,22 @@ const Debug = {
 
         <div class="dbg-grid" id="dbg-cards"></div>
 
+        <div class="dbg-section" id="dbg-librosa-section">
+          <div class="dbg-section-title">
+            Librosa info <span class="dbg-lane-hint">server-side beat / meter / key analysis · lobby mode only</span>
+            <span class="dbg-count" id="dbg-lib-status"></span>
+            <button class="qa" id="dbg-metro-btn" title="Click track on every detected beat (accented on beat 1)"><span class="material-symbols-outlined">music_note</span><span class="lbl">Metronome: Off</span></button>
+          </div>
+          <div class="lib-hero">
+            <div class="lib-bpm"><span id="lib-bpm-num">—</span><span class="lib-bpm-unit">bpm</span></div>
+            <div class="lib-count" id="lib-count"><span class="lib-none">—</span></div>
+          </div>
+          <div class="dbg-grid" id="dbg-lib-cards"></div>
+        </div>
+
         <div class="dbg-section">
           <div class="dbg-section-title">
-            Stream waveform <span class="dbg-lane-hint">scrolling</span>
+            Stream waveform <span class="dbg-lane-hint">scrolling · beats from Librosa info (amber = bar start)</span>
             <div class="dbg-seg-toggle" id="dbg-seg-toggle">
               <button class="dbg-seg-btn on" data-seg="off">Off</button>
               <button class="dbg-seg-btn" data-seg="seconds">Seconds</button>
@@ -874,6 +995,7 @@ const Debug = {
       </div>
     `;
     document.getElementById('dbg-clear').addEventListener('click', () => this.clear());
+    document.getElementById('dbg-metro-btn').addEventListener('click', () => { Librosa.toggleMetronome(); this._updateMetroBtn(); });
     document.getElementById('dbg-seg-toggle').addEventListener('click', (e) => {
       const btn = e.target.closest('.dbg-seg-btn');
       if (!btn) return;
@@ -885,6 +1007,7 @@ const Debug = {
   /* ───────── DOM: render (cheap, throttled to ~3.5fps by the caller) ───────── */
   render() {
     if (!this._built) return;
+    this._renderLibrosa();
     this._renderCards();
     this._renderNetTable();
     this._renderNodelinkTable();

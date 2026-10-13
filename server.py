@@ -119,6 +119,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 import config
+import analysis   # librosa beat / meter / key analysis (see analysis.py) — degrades to "unavailable" if librosa is missing
 from dotenv import load_dotenv
 
 # ═══════════════════════════════════════════════════════════════════
@@ -261,6 +262,32 @@ async def shutdown():
         await http_session.close()
     if _quic_server is not None:
         _quic_server.close()
+    if _analysis_pool is not None:
+        _analysis_pool.shutdown(wait=False, cancel_futures=True)
+
+
+# ── librosa analysis worker ────────────────────────────────────────────
+# Beat tracking / chroma / CQT are CPU heavy and partly pure-Python, so a
+# thread would contend for the GIL with the 20ms relay pacing loop. A single
+# low-priority worker PROCESS (spawned lazily) keeps the relay unaffected.
+# Set LIBROSA_USE_PROCESS = False in config.py to use a plain thread instead.
+_analysis_pool = None
+
+
+def _get_analysis_pool():
+    global _analysis_pool
+    if not getattr(config, "LIBROSA_USE_PROCESS", True):
+        return None
+    if _analysis_pool is None:
+        import multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        _analysis_pool = ProcessPoolExecutor(
+            max_workers=1, mp_context=multiprocessing.get_context("spawn"),
+            initializer=analysis.worker_init)
+    return _analysis_pool
+
+
+ANALYSIS_KEEP = 12   # finished analyses remembered per lobby (LRU-ish)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -620,6 +647,71 @@ class LobbyRelay:
         self._debug_subscribers = set()   # sids
         self._debug_task = None
 
+        # ---- librosa analysis -----------------------------------------
+        # encoded track id -> result dict (status pending|ready|error|
+        # unsupported|unavailable). Fed from the same PcmCache the seek cache
+        # uses, so beat times are in exact track time. See ensure_analysis.
+        self._analysis = {}
+        self._analysis_tasks = {}
+
+    # ---- librosa analysis ---------------------------------------------
+    def ensure_analysis(self, track, cache):
+        """Start (once per track) the librosa analysis of `track`'s PCM.
+        `cache` is its PcmCache, or None if the track isn't cacheable (live
+        stream / too long) — those are reported as unsupported."""
+        key = (track or {}).get("encoded")
+        if not key or key in self._analysis:
+            return
+        if not analysis.AVAILABLE:
+            self._analysis[key] = {"status": "unavailable",
+                                   "reason": f"librosa is not installed ({analysis.IMPORT_ERROR})"}
+            return
+        if cache is None:
+            self._analysis[key] = {"status": "unsupported",
+                                   "reason": "live streams and very long tracks are not analysed"}
+            return
+        self._analysis[key] = {"status": "pending"}
+        self._analysis_tasks[key] = asyncio.create_task(self._run_analysis(key, cache))
+
+    async def _run_analysis(self, key, cache):
+        try:
+            while not cache.done:
+                if cache.failed or (cache.task is not None and cache.task.done()):
+                    # Download died or was cancelled (track skipped / preload
+                    # dropped): forget it so a later play can try again.
+                    self._analysis.pop(key, None)
+                    return
+                await asyncio.sleep(0.25)
+            mono = await asyncio.to_thread(analysis.pcm_to_mono, cache.buf)
+            pool = _get_analysis_pool()
+            result = await asyncio.get_running_loop().run_in_executor(pool, analysis.analyze_mono, mono)
+            self._analysis[key] = result
+        except asyncio.CancelledError:
+            self._analysis.pop(key, None)
+            raise
+        except Exception as e:
+            traceback.print_exc()
+            self._analysis[key] = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
+        finally:
+            self._analysis_tasks.pop(key, None)
+            # Bound memory: drop the oldest finished entries.
+            done = [k for k, v in self._analysis.items() if v.get("status") != "pending"]
+            for k in done[:max(0, len(done) - ANALYSIS_KEEP)]:
+                self._analysis.pop(k, None)
+
+    def analysis_for(self, track):
+        key = (track or {}).get("encoded")
+        a = self._analysis.get(key)
+        if a is None:
+            return {"status": "none", "encoded": key}
+        return {"encoded": key, **a}
+
+    def _cancel_analyses(self):
+        for t in list(self._analysis_tasks.values()):
+            if not t.done():
+                t.cancel()
+        self._analysis_tasks.clear()
+
     def debug_snapshot(self):
         """Read-only stats snapshot for the client Debug tab. Safe to call
         from any task — only ever reads the bounded counters above."""
@@ -715,6 +807,8 @@ class LobbyRelay:
         pre = {"track": next_track, "cache": cache, "task": None}
         cache.task = pre["task"] = asyncio.create_task(self._fill_cache(cache))
         self._preload = pre
+        if self._cacheable(next_track):
+            self.ensure_analysis(next_track, cache)   # analyse ahead of time, ready when it starts
 
     def _cancel_preload(self):
         if self._preload and self._preload["task"] and not self._preload["task"].done():
@@ -940,6 +1034,7 @@ class LobbyRelay:
         leaves (see _finalize_leave). Stops the pipeline AND finalizes +
         closes out every connected listener, unlike stop() above."""
         await self.stop()
+        self._cancel_analyses()
         self.audio_out.close()
 
     # ---- the actual pipeline ----------------------------------------------
@@ -1157,6 +1252,7 @@ class LobbyRelay:
             self._set_cache(cache)
         else:
             cache = self._acquire_cache(track)
+        self.ensure_analysis(track, cache)   # no-op if already analysed / in flight
 
         # Now that `track`'s own preload (if any) has been claimed above —
         # so a fresh prediction below can't cancel it out from under us —
@@ -2692,6 +2788,21 @@ async def lobby_history(code):
     smart = [t for t in (_clean_track(x) for x in lobby.auto_queue[:limit]) if t]
     return jsonify({"history": tracks, "count": len(lobby.history),
                     "smart": smart, "smartCount": len(lobby.auto_queue)})
+
+
+@app.route("/api/lobby/<code>/analysis", methods=["GET"])
+async def lobby_analysis(code):
+    """librosa analysis (beats / tempo / meter / key) of the CURRENT track.
+    `status` is pending|none while it is still being computed, so clients just
+    poll. Members only (same as the other per-lobby reads)."""
+    lobby = get_lobby_or_404(code)
+    if not lobby:
+        return jsonify({"error": "not found"}), 404
+    if request.args.get("clientId") not in lobby.participants:
+        return jsonify({"error": "not in lobby"}), 403
+    if not lobby.current_track:
+        return jsonify({"status": "idle", "encoded": None})
+    return jsonify(lobby.relay.analysis_for(lobby.current_track))
 
 
 @app.route("/api/lobby/<code>/play", methods=["POST"])

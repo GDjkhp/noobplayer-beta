@@ -9,3 +9,5 @@ python-socketio
 python-dotenv
 aioquic
 cryptography
+librosa
+scipy

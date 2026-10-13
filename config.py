@@ -140,3 +140,5 @@ SEEK_CACHE_WAIT_SECONDS = 6
 LOBBY_PASSWORD_MAX = 32          # max characters
 PASSWORD_MAX_FAILS = 8           # wrong guesses allowed per (client IP, lobby)...
 PASSWORD_FAIL_WINDOW = 60        # ...within this many seconds, then 429 until it cools off
+
+LIBROSA_USE_PROCESS = True

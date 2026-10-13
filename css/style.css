@@ -1181,3 +1181,20 @@ body.pad-active.pad-tabs-focused .pane :focus {
   .qi-bs .qib { flex: 1; justify-content: center; padding: 7px 0; border-radius: var(--sh-full); }
   .qi-bs .qib .material-symbols-outlined { font-size: 20px; }
 }
+/* ── Debug › Librosa info ── */
+#dbg-metro-btn { margin-left: auto; }
+#dbg-metro-btn.on { background: var(--st-focus); border-color: var(--accent); color: var(--accent); }
+.lib-hero { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; margin: 4px 0 12px; }
+.lib-bpm { display: flex; align-items: baseline; gap: 6px; }
+#lib-bpm-num { font-size: 44px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: var(--accent); }
+.lib-bpm-unit { font-size: 14px; opacity: .7; text-transform: uppercase; letter-spacing: .08em; }
+.lib-count { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lib-chip {
+  padding: 6px 12px; border-radius: 8px; font-size: 18px; font-weight: 600;
+  font-variant-numeric: tabular-nums; border: 1px solid rgba(255,255,255,.12);
+  opacity: .45; transition: opacity .06s, background .06s, transform .06s;
+}
+.lib-chip.on { opacity: 1; background: color-mix(in srgb, var(--pink) 22%, transparent); border-color: var(--pink); transform: scale(1.08); }
+.lib-chip[data-k="1"].on { background: color-mix(in srgb, var(--amber) 25%, transparent); border-color: var(--amber); }
+.lib-arrow { opacity: .35; }
+.lib-none { opacity: .5; font-size: 18px; }
