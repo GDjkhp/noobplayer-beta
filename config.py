@@ -141,9 +141,20 @@ LOBBY_PASSWORD_MAX = 32          # max characters
 PASSWORD_MAX_FAILS = 8           # wrong guesses allowed per (client IP, lobby)...
 PASSWORD_FAIL_WINDOW = 60        # ...within this many seconds, then 429 until it cools off
 
-LIBROSA_USE_PROCESS = True
-LIBROSA_PREWARM = True
+# ── Librosa analysis (Debug tab › "Librosa analysis", lobby mode only) ──
+# Master switch. False = librosa is never imported, no worker processes are
+# started, nothing is analysed and playback is never held back; the Debug card
+# just says "disabled in server config".
+LIBROSA_ENABLED = False
+
+# Hold the first audio frame of a track until its BPM / beat grid is ready
+# (at most LIBROSA_GATE_SECONDS, then it plays anyway).
 LIBROSA_GATE_PLAYBACK = True
-LIBROSA_WORKERS = 2
-LIBROSA_THREADS = 1
 LIBROSA_GATE_SECONDS = 3
+
+# Where the analysis runs: worker PROCESSES (recommended: keeps the 20 ms relay
+# pacing loop free) or, with False, a thread inside the server.
+LIBROSA_USE_PROCESS = True
+LIBROSA_WORKERS = 2        # worker processes (~300-400 MB RAM each)
+LIBROSA_THREADS = 1        # BLAS/numba threads per worker
+LIBROSA_PREWARM = True     # start + warm the workers at server start (first call costs ~10-20 s of JIT)

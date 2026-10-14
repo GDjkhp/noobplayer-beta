@@ -119,7 +119,12 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 import config
-import analysis   # librosa beat / meter / key analysis (see analysis.py) — degrades to "unavailable" if librosa is missing
+if getattr(config, "LIBROSA_ENABLED", True):
+    import analysis   # librosa beat / tempo / meter / key analysis (see analysis.py) — degrades to "unavailable" if librosa is missing
+else:
+    # Disabled in config.py: don't even import librosa (slow, and heavy on RAM).
+    import types as _types
+    analysis = _types.SimpleNamespace(AVAILABLE=False, IMPORT_ERROR="disabled", DISABLED=True)
 from dotenv import load_dotenv
 
 # ═══════════════════════════════════════════════════════════════════
@@ -703,6 +708,10 @@ class LobbyRelay:
         stream / too long) — those are reported as unsupported."""
         key = (track or {}).get("encoded")
         if not key or key in self._analysis:
+            return
+        if getattr(analysis, "DISABLED", False):
+            self._analysis[key] = {"status": "disabled", "complete": True,
+                                   "reason": "librosa analysis is turned off (LIBROSA_ENABLED = False in config.py)"}
             return
         if not analysis.AVAILABLE:
             self._analysis[key] = {"status": "unavailable", "complete": True,

@@ -526,6 +526,7 @@ const Debug = {
       }
       case 'unsupported': return 'not analysed';
       case 'unavailable': return 'librosa unavailable';
+      case 'disabled': return 'disabled in server config';
       default: return L.status;
     }
   },

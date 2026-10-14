@@ -254,6 +254,9 @@ const Librosa = {
   /* ───────── metronome ───────── */
   toggleMetronome() {
     if (!this.available()) { toast('The metronome is only available in lobby mode', 'warn'); return false; }
+    if (!this.metronomeOn && (this.status === 'disabled' || this.status === 'unavailable')) {
+      toast(this.status === 'disabled' ? 'Librosa analysis is disabled on this server' : 'Librosa is not available on this server', 'warn'); return false;
+    }
     this.metronomeOn = !this.metronomeOn;
     if (this.metronomeOn) {
       try {
