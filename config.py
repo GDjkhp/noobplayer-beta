@@ -141,11 +141,13 @@ LOBBY_PASSWORD_MAX = 32          # max characters
 PASSWORD_MAX_FAILS = 8           # wrong guesses allowed per (client IP, lobby)...
 PASSWORD_FAIL_WINDOW = 60        # ...within this many seconds, then 429 until it cools off
 
-# ── Librosa analysis (Debug tab › "Librosa analysis", lobby mode only) ──
-# Master switch. False = librosa is never imported, no worker processes are
-# started, nothing is analysed and playback is never held back; the Debug card
-# just says "disabled in server config".
-LIBROSA_ENABLED = False
+# ── Music analysis (Debug tab › "Librosa analysis", lobby mode only) ──
+# BPM / beats / tempo changes / time signature / key. Runs on numpy + scipy only
+# (the LIBROSA_* names are kept for compatibility; librosa itself is no longer
+# used or needed).
+# Master switch. False = nothing is imported or started, nothing is analysed and
+# playback is never held back; the Debug card just says "disabled in server config".
+LIBROSA_ENABLED = True
 
 # Hold the first audio frame of a track until its BPM / beat grid is ready
 # (at most LIBROSA_GATE_SECONDS, then it plays anyway).
@@ -155,6 +157,6 @@ LIBROSA_GATE_SECONDS = 3
 # Where the analysis runs: worker PROCESSES (recommended: keeps the 20 ms relay
 # pacing loop free) or, with False, a thread inside the server.
 LIBROSA_USE_PROCESS = True
-LIBROSA_WORKERS = 2        # worker processes (~300-400 MB RAM each)
+LIBROSA_WORKERS = 2        # worker processes (~100 MB RAM each)
 LIBROSA_THREADS = 1        # BLAS/numba threads per worker
-LIBROSA_PREWARM = True     # start + warm the workers at server start (first call costs ~10-20 s of JIT)
+LIBROSA_PREWARM = True     # start the workers at server start (so the first track doesn't wait for the process to spawn)

@@ -1,27 +1,36 @@
 """
-Music analysis (librosa) for the lobby relay.
+Music analysis for the lobby relay — NumPy + SciPy only (no librosa, no numba).
+
+Why no librosa: its steady-state cost is small, but every fresh process pays
+~10-20 s of numba JIT and ~400 MB of RAM, and a few of its numba kernels hard-
+crash some Windows installs. Everything here is plain vectorised NumPy/SciPy
+(the DSP maths is ported from librosa's well-known algorithms), so a worker
+starts in a fraction of a second and uses ~100 MB.
 
 Input is the raw PCM the relay already caches per track (s16le / 48 kHz /
-stereo, see PcmCache in server.py). Everything here is pure numpy/librosa and
-has no knowledge of Quart or the lobby, so it can run in a worker process.
+stereo, see PcmCache in server.py). Nothing here knows about Quart or the
+lobby, so it can run in a worker process.
 
 What it produces (all times are TRACK time in seconds, i.e. the same clock as
 the player's position, because the cache always starts at position 0):
 
-  tempo   global BPM (+ stability, half/double alternatives)
-  beats   beat times from librosa's dynamic-programming beat tracker
-  meter   beats per bar, downbeat phase, time-signature label, confidence
-  key     tonic / mode / scale notes via Krumhansl-Schmuckler profiles
+  tempo     BPM (+ stability, half/double alternatives)
+  beats     beat times from a dynamic-programming beat tracker (Ellis 2007)
+  sections  tempo changes: per-section BPM, and a beat grid that follows them
+  meter     beats per bar, per-section downbeat phase, time-signature label
+  key       tonic / mode / scale notes via Krumhansl-Schmuckler profiles
 
-Honest limitations (librosa has no downbeat tracker):
+Honest limitations:
   * Meter is estimated from beat-synchronous accents (onset strength, bass
     onset strength and harmonic change) with a periodicity + contrast score and
     a prior that favours common meters. It is a heuristic and can confuse 2/4
     with 4/4 or 3/4 with 6/4. `confidence` says how clear the winner was.
   * Tempo CHANGES are tracked (windowed autocorrelation + Viterbi, then per-
-    section beat tracking), but meter and key stay global per track. Tempo
-    section detection is tuned on synthetic audio; real music with heavy
-    syncopation or half-time feel can still be mis-segmented.
+    section beat tracking), but meter and key stay global per track. Section
+    detection is tuned on synthetic audio; real music with heavy syncopation
+    or half-time feel can still be mis-segmented.
+  * Key uses STFT chroma (not a CQT), so low bass notes are blurrier than in
+    a CQT-based tracker.
   * Compound meters (6/8, 9/8, 12/8) are inferred from a triple-vs-duple
     subdivision test on the beat grid.
 """
@@ -31,13 +40,12 @@ import time
 import numpy as np
 
 try:
-    import librosa
+    import scipy.fft
     import scipy.signal
-    from scipy.ndimage import maximum_filter1d
+    from scipy.ndimage import maximum_filter1d, median_filter
     AVAILABLE = True
     IMPORT_ERROR = None
 except Exception as _e:  # pragma: no cover - depends on the environment
-    librosa = None
     AVAILABLE = False
     IMPORT_ERROR = f"{type(_e).__name__}: {_e}"
 
@@ -47,7 +55,7 @@ HOP = 512
 N_FFT = 2048
 N_MELS = 128
 LOW_MELS = 10              # lowest mel bands ~ kick/bass region
-CHUNK_FRAMES = 2048        # STFT frames per chunk (~47 s) to bound memory
+CHUNK_FRAMES = 1024        # STFT frames per chunk (~24 s) to bound memory
 KEY_MAX_SECONDS = 240      # key is estimated from (at most) this much, centred
 
 NOTES_SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
@@ -87,8 +95,7 @@ def lower_priority():
 
 
 def worker_init():
-    """Initializer for the analysis process pool: be nice to the relay, and pay
-    librosa's first-call JIT cost (~9 s) before the first real track."""
+    """Initializer for the analysis process pool: be nice to the relay."""
     try:
         import faulthandler
         faulthandler.enable()          # a native crash prints a traceback instead of vanishing
@@ -102,39 +109,16 @@ def worker_init():
 
 
 def warmup():
-    """Run every librosa code path once on a few seconds of noise."""
+    """Build the cached filterbanks / FFT plans so the first track is not slower
+    than the rest (milliseconds — there is no JIT any more)."""
     if not AVAILABLE:
         return
     rng = np.random.default_rng(0)
-    y = (rng.standard_normal(SR * 12) * 0.1).astype(np.float32)
-    y[::SR // 2] += 1.0
+    y = (rng.standard_normal(SR * 10) * 0.1).astype(np.float32)
     mel, chroma = _features(y, 0.0)
-    db = librosa.power_to_db(mel, ref=np.max)
-    on = librosa.onset.onset_strength(S=db, sr=SR, hop_length=HOP)
-    librosa.beat.beat_track(onset_envelope=on, sr=SR, hop_length=HOP, tightness=100)
     _estimate_tuning(y)
-    librosa.feature.chroma_cqt(y=y, sr=SR, hop_length=2048, tuning=0.0)
-    librosa.effects.harmonic(y, margin=2.0)
-
-
-def _estimate_tuning(y):
-    """Tuning offset in fractions of a semitone (-0.5..0.5) from spectral peaks.
-    Same idea as librosa.estimate_tuning, but pure numpy: librosa's version goes
-    through a numba gufunc (piptrack) that hard-crashes the interpreter with an
-    access violation on some Windows/numba installs."""
-    n_fft = 4096
-    S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=2048))
-    freqs = librosa.fft_frequencies(sr=SR, n_fft=n_fft)
-    a, b, c = S[:-2], S[1:-1], S[2:]
-    thr = 0.1 * S.max(axis=0, keepdims=True)
-    f_mid = freqs[1:-1, None]
-    mask = (b > a) & (b >= c) & (b > thr) & (f_mid >= 150.0) & (f_mid < 4000.0)
-    if not mask.any():
-        return 0.0
-    denom = a - 2.0 * b + c
-    shift = np.where(denom < -1e-12, 0.5 * (a - c) / np.where(denom == 0, 1.0, denom), 0.0)
-    pitch = (np.arange(1, S.shape[0] - 1)[:, None] + np.clip(shift, -0.5, 0.5)) * (SR / n_fft)
-    return float(librosa.pitch_tuning(pitch[mask], resolution=0.01, bins_per_octave=12))
+    on = _onset_strength(mel)
+    _beat_track(on)
 
 
 def ping():
@@ -179,31 +163,277 @@ def pcm_to_mono(buf):
     return np.concatenate(out) if out else np.zeros(0, np.float32)
 
 
-# ───────────────────────── features ─────────────────────────
+# ───────────────────────── DSP primitives (ported from librosa) ─────────────────────────
+_CACHE = {}
+
+
+def _hann(n):
+    k = ("hann", n)
+    if k not in _CACHE:
+        _CACHE[k] = scipy.signal.get_window("hann", n, fftbins=True).astype(np.float32)
+    return _CACHE[k]
+
+
+def _stft_frames(ypad, n_fft, hop, f0, f1):
+    """Complex STFT frames f0..f1 of a (centre-)padded signal -> (bins, frames)."""
+    seg = ypad[f0 * hop:(f1 - 1) * hop + n_fft]
+    win = np.lib.stride_tricks.sliding_window_view(seg, n_fft)[::hop][: f1 - f0]
+    X = scipy.fft.rfft(win * _hann(n_fft), axis=1)
+    return X.T
+
+
+def _pad_center(y, n_fft, hop):
+    pad = n_fft // 2
+    n_total = 1 + len(y) // hop
+    yp = np.pad(y, (pad, pad + n_fft), mode="constant")
+    return yp, n_total
+
+
+def _hz_to_mel(f):
+    f = np.asarray(f, dtype=np.float64)
+    f_sp = 200.0 / 3
+    mel = f / f_sp
+    log_t = f >= 1000.0
+    return np.where(log_t, 1000.0 / f_sp + np.log(np.maximum(f, 1e-9) / 1000.0) / (np.log(6.4) / 27.0), mel)
+
+
+def _mel_to_hz(m):
+    m = np.asarray(m, dtype=np.float64)
+    f_sp = 200.0 / 3
+    f = f_sp * m
+    log_t = m >= 1000.0 / f_sp
+    return np.where(log_t, 1000.0 * np.exp((np.log(6.4) / 27.0) * (m - 1000.0 / f_sp)), f)
+
+
+def _mel_fb(n_mels=N_MELS, n_fft=N_FFT, sr=SR):
+    k = ("mel", n_mels, n_fft, sr)
+    if k not in _CACHE:
+        mels = np.linspace(_hz_to_mel(0.0), _hz_to_mel(sr / 2.0), n_mels + 2)
+        hz = _mel_to_hz(mels)
+        fft_f = np.linspace(0.0, sr / 2.0, n_fft // 2 + 1)
+        fdiff = np.diff(hz)
+        ramps = hz[:, None] - fft_f[None, :]
+        lower = -ramps[:-2] / fdiff[:-1, None]
+        upper = ramps[2:] / fdiff[1:, None]
+        w = np.maximum(0.0, np.minimum(lower, upper))
+        w *= (2.0 / (hz[2:n_mels + 2] - hz[:n_mels]))[:, None]          # Slaney area norm
+        _CACHE[k] = w.astype(np.float32)
+    return _CACHE[k]
+
+
+def _chroma_fb(n_fft, tuning, octave_weight=True, fmin=None, fmax=None, sr=SR):
+    """(12, bins) weights folding FFT bins onto pitch classes (C = row 0)."""
+    key = ("chroma", n_fft, round(float(tuning), 3), octave_weight, fmin, fmax, sr)
+    if key in _CACHE:
+        return _CACHE[key]
+    n = 12
+    freqs = np.linspace(0.0, sr / 2.0, n_fft // 2 + 1)
+    a440 = 440.0 * 2.0 ** (float(tuning) / n)
+    frq = n * np.log2(np.maximum(freqs[1:], 1e-9) / (a440 / 16.0))
+    frq = np.concatenate([[frq[0] - 1.5 * n], frq])                      # DC bin sits 1.5 octaves below bin 1
+    width = np.maximum(np.concatenate([np.diff(frq), [1.0]]), 1.0)
+    D = frq[None, :] - np.arange(n)[:, None]
+    D = np.mod(D + n / 2.0 + 10.0 * n, n) - n / 2.0
+    w = np.exp(-0.5 * (2.0 * D / width[None, :]) ** 2)
+    w /= np.maximum(np.sqrt((w ** 2).sum(axis=0, keepdims=True)), 1e-12)
+    if octave_weight:
+        w *= np.exp(-0.5 * ((frq / n - 5.0) / 2.0) ** 2)[None, :]
+    w = np.roll(w, -3, axis=0)                                           # A -> C is row 0
+    if fmin is not None or fmax is not None:
+        keep = np.ones(len(freqs), dtype=bool)
+        if fmin is not None:
+            keep &= freqs >= fmin
+        if fmax is not None:
+            keep &= freqs <= fmax
+        w = w * keep[None, :]
+    _CACHE[key] = w.astype(np.float32)
+    return _CACHE[key]
+
+
+def _power_to_db(S, top_db=80.0):
+    db = 10.0 * np.log10(np.maximum(S, 1e-10))
+    db -= 10.0 * np.log10(max(float(S.max()), 1e-10))
+    return np.maximum(db, db.max() - top_db)
+
+
 def _features(y, tuning):
-    """Mel power + STFT chroma, computed in chunks with context so frame j is
-    exactly librosa's global frame j (centre = j*HOP)."""
-    n_total = 1 + len(y) // HOP
+    """Mel power (n_mels, frames) + STFT chroma (12, frames), computed in chunks
+    so memory stays bounded however long the track is."""
+    yp, n_total = _pad_center(y.astype(np.float32, copy=False), N_FFT, HOP)
+    fb, cfb = _mel_fb(), _chroma_fb(N_FFT, tuning)
     mels, chromas = [], []
     for f0 in range(0, n_total, CHUNK_FRAMES):
         f1 = min(f0 + CHUNK_FRAMES, n_total)
-        start = max(0, f0 * HOP - N_FFT)
-        end = min(len(y), f1 * HOP + N_FFT)
-        S = np.abs(librosa.stft(y[start:end], n_fft=N_FFT, hop_length=HOP)) ** 2
-        off = (f0 * HOP - start) // HOP
-        S = S[:, off: off + (f1 - f0)]
-        mels.append(librosa.feature.melspectrogram(S=S, sr=SR, n_mels=N_MELS).astype(np.float32))
-        chromas.append(librosa.feature.chroma_stft(S=S, sr=SR, tuning=tuning, n_chroma=12).astype(np.float32))
+        X = _stft_frames(yp, N_FFT, HOP, f0, f1)
+        P = (X.real ** 2 + X.imag ** 2).astype(np.float32)
+        mels.append(fb @ P)
+        c = cfb @ P
+        c /= np.maximum(c.max(axis=0, keepdims=True), 1e-12)             # max-norm per frame
+        chromas.append(c)
     return np.concatenate(mels, axis=1), np.concatenate(chromas, axis=1)
 
 
+def _onset_strength(mel_power, lag=1):
+    """Spectral-flux onset envelope (mean positive dB increase across bands)."""
+    S = _power_to_db(mel_power)
+    d = np.maximum(0.0, S[:, lag:] - S[:, :-lag])
+    return np.pad(d.mean(axis=0), (lag, 0)).astype(np.float32)
+
+
+def _pitch_tuning(freqs, resolution=0.01):
+    r = np.mod(12.0 * np.log2(freqs / 440.0), 1.0)
+    r = np.where(r >= 0.5, r - 1.0, r)
+    hist, edges = np.histogram(r, bins=np.linspace(-0.5, 0.5, int(np.ceil(1.0 / resolution)) + 1))
+    return float(edges[int(np.argmax(hist))])
+
+
+def _estimate_tuning(y):
+    """Tuning offset in fractions of a semitone (-0.5..0.5) from spectral peaks."""
+    n_fft, hop = 4096, 2048
+    yp, n_total = _pad_center(y.astype(np.float32, copy=False), n_fft, hop)
+    S = np.abs(_stft_frames(yp, n_fft, hop, 0, n_total))
+    freqs = np.linspace(0.0, SR / 2.0, n_fft // 2 + 1)
+    a, b, c = S[:-2], S[1:-1], S[2:]
+    thr = 0.1 * S.max(axis=0, keepdims=True)
+    f_mid = freqs[1:-1, None]
+    mask = (b > a) & (b >= c) & (b > thr) & (f_mid >= 150.0) & (f_mid < 4000.0)
+    if not mask.any():
+        return 0.0
+    denom = a - 2.0 * b + c
+    shift = np.where(denom < -1e-12, 0.5 * (a - c) / np.where(denom == 0, 1.0, denom), 0.0)
+    pitch = (np.arange(1, S.shape[0] - 1)[:, None] + np.clip(shift, -0.5, 0.5)) * (SR / n_fft)
+    return _pitch_tuning(pitch[mask])
+
+
+# ───────────────────────── beat tracking (Ellis 2007 DP) ─────────────────────────
+def _estimate_period(onset, start_bpm=120.0):
+    """Global beat period (float frames) from the onset autocorrelation:
+    windowed autocorrelation averaged over the track, weighted by a log-normal
+    prior around `start_bpm` (one octave wide) — the same scoring librosa's
+    tempo() uses, with a parabolic sub-lag refinement of the peak."""
+    fps = SR / HOP
+    default = fps * 60.0 / start_bpm
+    win = min(384, len(onset))
+    if win < 64:
+        return default
+    step = max(1, win // 4)
+    hann = np.hanning(win)
+    nfft = 1 << int(np.ceil(np.log2(2 * win)))
+    acc = np.zeros(win)
+    cnt = 0
+    for a in range(0, max(1, len(onset) - win + 1), step):
+        x = onset[a:a + win].astype(np.float64) * hann
+        sp = np.fft.rfft(x, nfft)
+        ac = np.fft.irfft(sp * np.conj(sp))[:win]
+        m = np.abs(ac).max()
+        if m > 1e-12:
+            acc += ac / m
+            cnt += 1
+    if cnt == 0:
+        return default
+    acc /= cnt
+    lags = np.arange(1, win)
+    bpm = 60.0 * fps / lags
+    ok = (bpm >= 30.0) & (bpm <= 300.0)
+    prior = -0.5 * ((np.log2(bpm) - np.log2(start_bpm)) / 1.0) ** 2
+    score = np.where(ok, np.log1p(1e6 * np.maximum(acc[1:], 0.0)) + prior, -np.inf)
+    i = int(np.argmax(score))
+    lag = float(lags[i])
+    if 0 < i < len(score) - 1 and np.isfinite(score[i - 1]) and np.isfinite(score[i + 1]):
+        a_, b_, c_ = score[i - 1], score[i], score[i + 1]
+        d = a_ - 2 * b_ + c_
+        if d < -1e-9:
+            lag += float(np.clip(0.5 * (a_ - c_) / d, -0.5, 0.5))
+    return lag
+
+
+def _beat_dp(onset, period, tightness=100.0, trim=True):
+    """Beat frames from an onset envelope for a given period (frames)."""
+    n = len(onset)
+    if n < 8 or period < 2:
+        return np.zeros(0, dtype=int), np.zeros(n)
+    sd = float(onset.std())
+    env = onset / sd if sd > 1e-9 else onset.astype(np.float64)
+    env = env.astype(np.float64)
+    p = int(round(period))
+    win = np.exp(-0.5 * (np.arange(-p, p + 1) * 32.0 / period) ** 2)
+    local = np.convolve(env, win, mode="same")
+
+    lags = np.arange(max(1, int(round(period / 2.0))), int(round(2.0 * period)) + 1)
+    pen = tightness * (np.log(lags / period)) ** 2
+    lo_l, hi_l = int(lags[0]), int(lags[-1])
+    cum = np.zeros(n)
+    back = np.full(n, -1, dtype=np.int64)
+    first = True
+    thresh = 0.01 * float(local.max())
+    for i in range(n):
+        a, b = i - hi_l, i - lo_l            # candidate predecessors a..b (inclusive)
+        if b < 0:
+            cum[i] = local[i]
+            continue
+        lo = max(a, 0)
+        cand = cum[lo:b + 1] - pen[(i - np.arange(lo, b + 1)) - lo_l]
+        j = int(np.argmax(cand))
+        if first and local[i] < thresh:
+            cum[i] = local[i]
+            continue
+        cum[i] = local[i] + cand[j]
+        back[i] = lo + j
+        first = False
+
+    # last beat: the last local max of the cumulative score that is not weak
+    mx = np.zeros(n, dtype=bool)
+    mx[1:-1] = (cum[1:-1] > cum[:-2]) & (cum[1:-1] >= cum[2:])
+    mx[-1] = n > 1 and cum[-1] > cum[-2]
+    if not mx.any():
+        return np.zeros(0, dtype=int), local
+    med = float(np.median(cum[mx]))
+    cand = np.nonzero(mx & (cum * 2.0 > med))[0]
+    if len(cand) == 0:
+        return np.zeros(0, dtype=int), local
+    beats = [int(cand[-1])]
+    while back[beats[-1]] >= 0:
+        beats.append(int(back[beats[-1]]))
+    beats = np.array(beats[::-1], dtype=int)
+
+    if trim and len(beats) > 2:
+        sm = np.convolve(local[beats], np.hanning(5), mode="same")
+        th = 0.5 * float(np.sqrt((sm ** 2).mean()))
+        s = 0
+        while s < len(beats) and sm[s] <= th:
+            s += 1
+        e = len(beats)
+        while e > s and sm[e - 1] <= th:
+            e -= 1
+        beats = beats[s:e]
+    return beats, local
+
+
+def _beat_track(onset, start_bpm=120.0, bpm=None, tightness=100.0, trim=True):
+    """-> (period_frames, beat_frames). Pass `bpm` to skip tempo estimation."""
+    fps = SR / HOP
+    period = fps * 60.0 / bpm if bpm else _estimate_period(onset, start_bpm)
+    return period, _beat_dp(onset, period, tightness, trim)[0]
+
+
+# ───────────────────────── meter ─────────────────────────
 def _z(x):
     x = np.asarray(x, dtype=np.float64)
     s = x.std()
     return (x - x.mean()) / s if s > 1e-9 else np.zeros_like(x)
 
 
-# ───────────────────────── meter ─────────────────────────
+def _sync_median(chroma, frames):
+    """Median of chroma over each beat segment (last one runs to the end)."""
+    n = chroma.shape[1]
+    out = np.empty((chroma.shape[0], len(frames)), dtype=np.float64)
+    for i, s in enumerate(frames):
+        e = int(frames[i + 1]) if i + 1 < len(frames) else n
+        seg = chroma[:, int(s):max(e, int(s) + 1)]
+        out[:, i] = np.median(seg, axis=1)
+    return out
+
+
 def _beat_accent(onset, onset_low, chroma, beat_frames):
     """One accent value per beat: how 'strong' that beat is, combining the
     broadband onset, the bass onset and the harmonic (chord) change there."""
@@ -213,8 +443,8 @@ def _beat_accent(onset, onset_low, chroma, beat_frames):
 
     change = np.zeros(n)
     try:
-        cb = librosa.util.sync(chroma, beat_frames, aggregate=np.median, pad=False)
-        cb = librosa.util.normalize(cb, norm=2, axis=0)
+        cb = _sync_median(chroma, beat_frames)
+        cb = cb / np.maximum(np.sqrt((cb ** 2).sum(axis=0, keepdims=True)), 1e-12)
         k = cb.shape[1]
         if k >= 2:
             sim = np.sum(cb[:, :-1] * cb[:, 1:], axis=0)    # seg i vs seg i+1 → change at beat i+1
@@ -322,28 +552,42 @@ def _key_from_profile(profile, tuning):
     }
 
 
-def _chroma_profile(seg, tuning, T):
-    hop = 2048                                  # must be a multiple of 2**(n_octaves-1)
-    with T("chroma_cqt"):
-        chroma = librosa.feature.chroma_cqt(y=seg, sr=SR, hop_length=hop, tuning=tuning, n_chroma=12)
-        rms = librosa.feature.rms(y=seg, frame_length=4096, hop_length=hop)[0]
-    t = min(chroma.shape[1], len(rms))
-    w = rms[:t] + 1e-9
-    return (chroma[:, :t] * w).sum(axis=1) / w.sum()
+def _chroma_profile(seg, tuning, T, harmonic=False):
+    """Energy-weighted chroma profile of `seg`. STFT chroma with a long window
+    (bass notes need the frequency resolution). With harmonic=True a median-
+    filter HPSS first strips drum energy (percussive = vertical ridges)."""
+    n_fft, hop = 4096, 2048
+    seg = seg.astype(np.float32, copy=False)
+    yp, n_total = _pad_center(seg, n_fft, hop)
+    cfb = _chroma_fb(n_fft, tuning, octave_weight=False, fmin=60.0, fmax=2400.0)
+    kmax = int(np.searchsorted(np.linspace(0.0, SR / 2.0, n_fft // 2 + 1), 2400.0)) + 1
+    with T("STFT chroma"):
+        P = np.empty((kmax, n_total), dtype=np.float32)
+        for f0 in range(0, n_total, 512):
+            f1 = min(f0 + 512, n_total)
+            X = _stft_frames(yp, n_fft, hop, f0, f1)[:kmax]
+            P[:, f0:f1] = X.real ** 2 + X.imag ** 2
+    if harmonic:
+        with T("harmonic separation (median-filter HPSS)"):
+            mag = np.sqrt(P)
+            H = median_filter(mag, size=(1, 9), mode="reflect")        # smooth over time -> sustained tones
+            Pc = median_filter(mag, size=(17, 1), mode="reflect")      # smooth over frequency -> clicks / drums
+            P = P * (H >= 2.0 * Pc)
+    with T("chroma fold + weighting"):
+        chroma = cfb[:, :kmax] @ P
+        w = np.sqrt(P.sum(axis=0)) + 1e-9                          # frame loudness
+        frame = chroma / np.maximum(chroma.sum(axis=0, keepdims=True), 1e-12)
+        return (frame * w[None, :]).sum(axis=1) / w.sum()
 
 
 def stage_key(y, tuning=0.0, refine=False):
     """Key detection. Two passes so the answer shows up fast:
-      quick  - CQT chroma straight from the mix (HPSS skipped): ~1 s
-      refine - harmonic/percussive separation on a 60 s excerpt first, which
-               removes drum energy from the chroma but costs several seconds."""
+      quick  - STFT chroma straight from the mix
+      refine - median-filter harmonic/percussive separation on a 60 s excerpt
+               first, which removes drum energy from the chroma"""
     T = Timer()
-    if refine:
-        with T("harmonic separation (HPSS, 60 s)"):
-            seg = librosa.effects.harmonic(_centre(y, 60), margin=2.0)
-    else:
-        seg = _centre(y, KEY_MAX_SECONDS)
-    profile = _chroma_profile(seg, tuning, T)
+    seg = _centre(y, 60 if refine else KEY_MAX_SECONDS)
+    profile = _chroma_profile(seg, tuning, T, harmonic=bool(refine))
     with T("key profile match"):
         key = _key_from_profile(profile, tuning)
     if key:
@@ -352,6 +596,58 @@ def stage_key(y, tuning=0.0, refine=False):
 
 
 # ───────────────────────── beats / tempo ─────────────────────────
+ONSET_LATENCY_FRAMES = 1.0     # a flux peak lands ~n_fft/4 BEFORE the attack's own frame; calibrated on click/kick audio
+
+
+def _frames_to_time(frames):
+    return (np.asarray(frames, dtype=np.float64) + ONSET_LATENCY_FRAMES) * HOP / SR
+
+
+def stage_beats(y):
+    """PRIORITY stage: beat grid + tempo. Playback waits for this one only.
+    Returns the result plus a small `state` (onset envelopes, chroma) that the
+    later stages reuse, so nothing is recomputed."""
+    if y.size < SR * 8:
+        return {"error": "track is too short to analyse"}
+    if float(np.max(np.abs(y))) < 1e-4:
+        return {"error": "track is silent"}
+    T = Timer()
+    y = np.ascontiguousarray(y, dtype=np.float32)
+    with T("tuning estimate"):
+        try:
+            tuning = _estimate_tuning(_centre(y, 30))
+        except Exception:
+            tuning = 0.0
+    with T("STFT + mel + chroma"):
+        mel, chroma = _features(y, tuning)
+    with T("onset envelope"):
+        onset = _onset_strength(mel)
+        onset_low = _onset_strength(mel[:LOW_MELS])
+    with T("beat tracker (DP)"):
+        period, frames = _beat_track(onset, start_bpm=120.0, tightness=100.0, trim=True)
+        tempo_raw = SR / HOP * 60.0 / period
+        frames = np.asarray(frames, dtype=int)
+        frames = frames[frames < min(len(onset), chroma.shape[1])]
+    with T("beat refine + tempo"):
+        beat_times = _frames_to_time(_refine_frames(onset, frames))
+        data = {"durationSec": round(y.size / SR, 2), "beats": [], "tempo": None}
+        if len(beat_times) >= 4:
+            bpm, stability = _bpm_from_beats(beat_times, tempo_raw)
+            strength = float(onset[frames].mean() / (onset.mean() + 1e-9))
+            data["tempo"] = {
+                "bpm": round(bpm, 2), "bpmRaw": round(tempo_raw, 2),
+                "stability": round(stability, 3),       # 1 = metronomic
+                "beatStrength": round(strength, 2),     # >1: beats sit on onset peaks
+                "alt": [round(bpm / 2.0, 1), round(bpm * 2.0, 1)],
+                "variable": False,
+            }
+            data["beats"] = [round(float(t), 3) for t in beat_times]
+    state = {"onset": onset.astype(np.float32), "onset_low": onset_low.astype(np.float32),
+             "chroma": chroma.astype(np.float32), "tuning": tuning, "tempo_raw": tempo_raw,
+             "beat_times": [float(t) for t in beat_times]}
+    return {"data": data, "state": state, "steps": T.steps, "sec": T.total()}
+
+
 def _refine_frames(onset, frames):
     """Sub-frame beat positions (parabolic interpolation of the onset peak) so
     clicks aren't quantised to the 23 ms hop."""
@@ -379,54 +675,6 @@ def _bpm_from_beats(beat_times, fallback):
     if len(beat_times) < 8 or abs(bpm - fallback) / fallback > 0.06:
         bpm = fallback
     return float(bpm), max(0.0, 1.0 - cv * 4.0)
-
-
-def stage_beats(y):
-    """PRIORITY stage: beat grid + tempo. Playback waits for this one only.
-    Returns the result plus a small `state` (onset envelopes, chroma) that the
-    later stages reuse, so nothing is recomputed."""
-    if y.size < SR * 8:
-        return {"error": "track is too short to analyse"}
-    if float(np.max(np.abs(y))) < 1e-4:
-        return {"error": "track is silent"}
-    T = Timer()
-    y = np.ascontiguousarray(y, dtype=np.float32)
-    with T("tuning estimate"):
-        try:
-            ex = _centre(y, 30)
-            tuning = _estimate_tuning(ex)
-        except Exception:
-            tuning = 0.0
-    with T("STFT + mel + chroma"):
-        mel, chroma = _features(y, tuning)
-    with T("onset envelope"):
-        mel_db = librosa.power_to_db(mel, ref=np.max)
-        onset = librosa.onset.onset_strength(S=mel_db, sr=SR, hop_length=HOP)
-        onset_low = librosa.onset.onset_strength(S=mel_db[:LOW_MELS], sr=SR, hop_length=HOP)
-    with T("beat tracker (DP)"):
-        tempo_raw, frames = librosa.beat.beat_track(
-            onset_envelope=onset, sr=SR, hop_length=HOP, start_bpm=120.0, tightness=100, trim=True)
-        tempo_raw = float(np.atleast_1d(tempo_raw)[0])
-        frames = np.asarray(frames, dtype=int)
-        frames = frames[frames < min(len(onset), chroma.shape[1])]
-    with T("beat refine + tempo"):
-        beat_times = librosa.frames_to_time(_refine_frames(onset, frames), sr=SR, hop_length=HOP)
-        data = {"durationSec": round(y.size / SR, 2), "beats": [], "tempo": None}
-        if len(beat_times) >= 4:
-            bpm, stability = _bpm_from_beats(beat_times, tempo_raw)
-            strength = float(onset[frames].mean() / (onset.mean() + 1e-9))
-            data["tempo"] = {
-                "bpm": round(bpm, 2), "bpmRaw": round(tempo_raw, 2),
-                "stability": round(stability, 3),       # 1 = metronomic
-                "beatStrength": round(strength, 2),     # >1: beats sit on onset peaks
-                "alt": [round(bpm / 2.0, 1), round(bpm * 2.0, 1)],
-                "variable": False,
-            }
-            data["beats"] = [round(float(t), 3) for t in beat_times]
-    state = {"onset": onset.astype(np.float32), "onset_low": onset_low.astype(np.float32),
-             "chroma": chroma.astype(np.float32), "tuning": tuning, "tempo_raw": tempo_raw,
-             "beat_times": [float(t) for t in beat_times]}
-    return {"data": data, "state": state, "steps": T.steps, "sec": T.total()}
 
 
 # ───────────────────────── tempo changes ─────────────────────────
@@ -496,8 +744,7 @@ def _beats_in(onset, a, b, bpm):
     a, b = max(0, int(a)), min(len(onset), int(b))
     if b - a < 40:
         return np.zeros(0, dtype=int)
-    _, fr = librosa.beat.beat_track(onset_envelope=onset[a:b], sr=SR, hop_length=HOP,
-                                    bpm=float(bpm), tightness=100, trim=False)
+    _, fr = _beat_track(onset[a:b], bpm=float(bpm), tightness=100.0, trim=False)
     return np.asarray(fr, dtype=int) + a
 
 
@@ -572,7 +819,7 @@ def stage_sections(state, duration):
         for a, b, bpm0 in runs:
             fr = _beats_in(onset, a - pad, b + pad, bpm0)
             core = fr[(fr >= a) & (fr < b)]
-            tt = librosa.frames_to_time(_refine_frames(onset, core), sr=SR, hop_length=HOP)
+            tt = _frames_to_time(_refine_frames(onset, core))
             bpm, _ = _bpm_from_beats(tt, bpm0)
             secs.append({"a": a, "b": b, "bpm": bpm, "frames": fr})
 
@@ -605,7 +852,7 @@ def stage_sections(state, duration):
             lo, hi = cuts[i], cuts[i + 1]
             fr = s["frames"]
             fr = fr[(fr >= lo) & (fr < hi)]
-            tt = librosa.frames_to_time(_refine_frames(onset, fr), sr=SR, hop_length=HOP)
+            tt = _frames_to_time(_refine_frames(onset, fr))
             core = tt[2:-2] if len(tt) >= 10 else tt        # edge beats straddle the junction
             bpm, stab = _bpm_from_beats(core, s["bpm"])
             out_secs.append({"start": round(float(lo * HOP / SR), 2), "end": round(float(hi * HOP / SR), 2),
@@ -671,7 +918,7 @@ def analyze_mono(y):
     """All stages back to back (tests / CLI). The server runs them as separate
     pool jobs instead so results can be pushed as soon as each one finishes."""
     if not AVAILABLE:
-        return {"status": "unavailable", "reason": f"librosa is not installed ({IMPORT_ERROR})"}
+        return {"status": "unavailable", "reason": f"numpy/scipy are not installed ({IMPORT_ERROR})"}
     t0 = time.perf_counter()
     y = np.ascontiguousarray(y, dtype=np.float32)
     b = stage_beats(y)

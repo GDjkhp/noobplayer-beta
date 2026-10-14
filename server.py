@@ -120,9 +120,9 @@ from cryptography.x509.oid import NameOID
 
 import config
 if getattr(config, "LIBROSA_ENABLED", True):
-    import analysis   # librosa beat / tempo / meter / key analysis (see analysis.py) — degrades to "unavailable" if librosa is missing
+    import analysis   # beat / tempo / meter / key analysis (numpy + scipy only, see analysis.py) — degrades to "unavailable" if they are missing
 else:
-    # Disabled in config.py: don't even import librosa (slow, and heavy on RAM).
+    # Disabled in config.py: don't import the analysis module at all.
     import types as _types
     analysis = _types.SimpleNamespace(AVAILABLE=False, IMPORT_ERROR="disabled", DISABLED=True)
 from dotenv import load_dotenv
@@ -296,7 +296,7 @@ def _get_analysis_pool():
     if not getattr(config, "LIBROSA_USE_PROCESS", True):
         return None
     if _analysis_pool_broken >= 2:
-        raise RuntimeError("librosa worker processes keep crashing — analysis disabled until the server restarts")
+        raise RuntimeError("analysis worker processes keep crashing — analysis disabled until the server restarts")
     if _analysis_pool is None:
         import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
@@ -310,9 +310,8 @@ def _get_analysis_pool():
         _analysis_pool = ProcessPoolExecutor(
             max_workers=n, mp_context=multiprocessing.get_context("spawn"),
             initializer=analysis.worker_init)
-        # Spawn + warm every worker now (librosa's first call costs ~10-20 s of
-        # JIT), so the first real track doesn't pay for it. Memory is roughly
-        # 300-400 MB per worker: lower LIBROSA_WORKERS on a small box.
+        # Spawn every worker now so the first real track doesn't pay for the
+        # process start (numpy + scipy import, ~100 MB per worker).
         for _ in range(n):
             _analysis_pool.submit(analysis.ping)
     return _analysis_pool
@@ -715,7 +714,7 @@ class LobbyRelay:
             return
         if not analysis.AVAILABLE:
             self._analysis[key] = {"status": "unavailable", "complete": True,
-                                   "reason": f"librosa is not installed ({analysis.IMPORT_ERROR})"}
+                                   "reason": f"numpy/scipy are not installed ({analysis.IMPORT_ERROR})"}
             return
         if cache is None:
             self._analysis[key] = {"status": "unsupported", "complete": True,
