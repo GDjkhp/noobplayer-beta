@@ -142,3 +142,7 @@ PASSWORD_MAX_FAILS = 8           # wrong guesses allowed per (client IP, lobby).
 PASSWORD_FAIL_WINDOW = 60        # ...within this many seconds, then 429 until it cools off
 
 LIBROSA_USE_PROCESS = True
+LIBROSA_PREWARM = True
+LIBROSA_GATE_PLAYBACK = True
+LIBROSA_WORKERS = 0
+LIBROSA_GATE_SECONDS = 40

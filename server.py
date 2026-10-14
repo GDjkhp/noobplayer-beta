@@ -254,6 +254,11 @@ async def startup():
     # whole process, since REST/Socket.IO/the frontend all work fine
     # without it — only live lobby audio depends on it.
     asyncio.create_task(start_quic_server())
+    if analysis.AVAILABLE and getattr(config, "LIBROSA_PREWARM", True):
+        try:
+            _get_analysis_pool()
+        except Exception:
+            traceback.print_exc()
 
 
 @app.after_serving
@@ -281,9 +286,14 @@ def _get_analysis_pool():
     if _analysis_pool is None:
         import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
+        n = int(getattr(config, "LIBROSA_WORKERS", 0)) or max(1, min(3, os.cpu_count() or 2))
         _analysis_pool = ProcessPoolExecutor(
-            max_workers=1, mp_context=multiprocessing.get_context("spawn"),
+            max_workers=n, mp_context=multiprocessing.get_context("spawn"),
             initializer=analysis.worker_init)
+        # Spawn + warm every worker now (librosa's first call costs ~10-20 s of
+        # JIT), so the first real track doesn't pay for it.
+        for _ in range(n):
+            _analysis_pool.submit(analysis.ping)
     return _analysis_pool
 
 
@@ -653,53 +663,195 @@ class LobbyRelay:
         # uses, so beat times are in exact track time. See ensure_analysis.
         self._analysis = {}
         self._analysis_tasks = {}
+        self._beats_events = {}     # key -> asyncio.Event, set once the BPM stage is done (or can't be)
 
     # ---- librosa analysis ---------------------------------------------
     def ensure_analysis(self, track, cache):
-        """Start (once per track) the librosa analysis of `track`'s PCM.
+        """Start (once per track) the staged librosa analysis of `track`'s PCM.
         `cache` is its PcmCache, or None if the track isn't cacheable (live
         stream / too long) — those are reported as unsupported."""
         key = (track or {}).get("encoded")
         if not key or key in self._analysis:
             return
         if not analysis.AVAILABLE:
-            self._analysis[key] = {"status": "unavailable",
+            self._analysis[key] = {"status": "unavailable", "complete": True,
                                    "reason": f"librosa is not installed ({analysis.IMPORT_ERROR})"}
             return
         if cache is None:
-            self._analysis[key] = {"status": "unsupported",
+            self._analysis[key] = {"status": "unsupported", "complete": True,
                                    "reason": "live streams and very long tracks are not analysed"}
             return
-        self._analysis[key] = {"status": "pending"}
+        self._analysis[key] = {"status": "pending", "phase": "download", "complete": False,
+                               "stages": {}, "timings": {}}
+        self._beats_events[key] = asyncio.Event()
         self._analysis_tasks[key] = asyncio.create_task(self._run_analysis(key, cache))
 
-    async def _run_analysis(self, key, cache):
+    async def _publish(self, key, stage, data=None, timing=None, **extra):
+        """Record a finished stage and push it to the lobby over the socket."""
+        e = self._analysis.get(key)
+        if e is None:
+            return
+        if data is not None or stage in ("meter", "key", "sections"):
+            e["stages"][stage] = data
+        if timing is not None:
+            e["timings"][stage] = timing
+        e.update(extra)
         try:
+            await broadcast(self.lobby, "analysis", {
+                "encoded": key, "stage": stage, "data": data, "timing": timing,
+                "status": e.get("status"), "phase": e.get("phase"), "complete": e.get("complete", False),
+                "reason": e.get("reason"),
+            })
+        except Exception:
+            traceback.print_exc()
+
+    async def _job(self, name, t0, fn, *args):
+        """Run one analysis stage in the worker pool. Returns (result, timing)."""
+        loop = asyncio.get_running_loop()
+        submitted = time.monotonic()
+        res = await loop.run_in_executor(_get_analysis_pool(), fn, *args)
+        done = time.monotonic()
+        timing = {"sec": round(res.get("sec", done - submitted), 3) if isinstance(res, dict) else round(done - submitted, 3),
+                  "steps": (res.get("steps") if isinstance(res, dict) else None) or [],
+                  "startedAt": round(submitted - t0, 2), "doneAt": round(done - t0, 2),
+                  "wall": round(done - submitted, 2)}
+        return res, timing
+
+    async def _run_analysis(self, key, cache):
+        t0 = time.monotonic()
+        ev = self._beats_events.get(key)
+        try:
+            # ---- download (the relay's own PCM cache; shared with playback)
             while not cache.done:
                 if cache.failed or (cache.task is not None and cache.task.done()):
                     # Download died or was cancelled (track skipped / preload
                     # dropped): forget it so a later play can try again.
                     self._analysis.pop(key, None)
                     return
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.1)
+            await self._publish(key, "download", timing={"sec": round(time.monotonic() - t0, 2), "steps": [],
+                                                         "startedAt": 0, "doneAt": round(time.monotonic() - t0, 2), "wall": round(time.monotonic() - t0, 2)},
+                                phase="decode")
+            # ---- decode: 48k stereo s16 -> 22.05k mono float
+            td = time.monotonic()
             mono = await asyncio.to_thread(analysis.pcm_to_mono, cache.buf)
-            pool = _get_analysis_pool()
-            result = await asyncio.get_running_loop().run_in_executor(pool, analysis.analyze_mono, mono)
-            self._analysis[key] = result
+            ds = round(time.monotonic() - td, 3)
+            await self._publish(key, "decode", timing={"sec": ds, "steps": [{"name": "resample to 22.05 kHz mono", "sec": ds}],
+                                                       "startedAt": round(td - t0, 2), "doneAt": round(time.monotonic() - t0, 2), "wall": ds},
+                                phase="beats")
+
+            # ---- 1. beats + tempo: the only stage playback waits for
+            res, tm = await self._job("beats", t0, analysis.stage_beats, mono)
+            if "error" in res:
+                self._analysis[key].update(status="error", complete=True, reason=res["error"], phase="done")
+                await self._publish(key, "beats", None, tm)
+                return
+            state = res["state"]
+            bdata = res["data"]
+            self._analysis[key].update(status="ready", phase="refine", durationSec=bdata["durationSec"])
+            await self._publish(key, "beats", bdata, tm)
+            if ev:
+                ev.set()
+
+            beats = bdata["beats"]
+
+            # ---- 2. tempo sections || quick key (parallel workers)
+            async def sections_stage():
+                if not beats:
+                    return None
+                r, t = await self._job("sections", t0, analysis.stage_sections, state, bdata["durationSec"])
+                return r, t
+
+            async def key_stage():
+                r, t = await self._job("key", t0, analysis.stage_key, mono, state["tuning"], False)
+                await self._publish(key, "key", r["data"], t)
+
+            async def run_safe(coro, name):
+                try:
+                    return await coro
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    traceback.print_exc()
+                    await self._publish(key, name, None, None, **{name + "Error": f"{type(e).__name__}: {e}"})
+                    return None
+
+            sec_out, _ = await asyncio.gather(run_safe(sections_stage(), "sections"), run_safe(key_stage(), "key"))
+            sections = None
+            if sec_out:
+                sres, st = sec_out
+                sd = sres["data"]
+                sections = sd["sections"]
+                await self._publish(key, "sections", sd, st)
+                if sd.get("changed"):
+                    beats = sd["beats"]
+
+            # ---- 3. meter on the final beat grid
+            async def meter_stage():
+                if not beats:
+                    await self._publish(key, "meter", None)
+                    return
+                r, t = await self._job("meter", t0, analysis.stage_meter, state, beats, sections)
+                await self._publish(key, "meter", r["data"], t)
+
+            # ---- 4. refined key (HPSS, slow) — runs alongside the meter
+            async def key_refine_stage():
+                r, t = await self._job("key-refine", t0, analysis.stage_key, mono, state["tuning"], True)
+                if r["data"]:
+                    await self._publish(key, "key", r["data"], None)
+                e = self._analysis.get(key)
+                if e is not None:
+                    e["timings"]["key-refine"] = t
+                    await self._publish(key, "key-refine", None, t)
+
+            await asyncio.gather(run_safe(meter_stage(), "meter"), run_safe(key_refine_stage(), "key-refine"))
+
+            total = round(time.monotonic() - t0, 2)
+            await self._publish(key, "done", None, None, complete=True, phase="done", totalSec=total)
         except asyncio.CancelledError:
             self._analysis.pop(key, None)
             raise
         except Exception as e:
             traceback.print_exc()
-            self._analysis[key] = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
+            if key in self._analysis:
+                self._analysis[key].update(status="error", complete=True, phase="done",
+                                           reason=f"{type(e).__name__}: {e}")
+                await self._publish(key, "error", None, None)
         finally:
+            if ev:
+                ev.set()                 # never leave playback waiting on a dead analysis
             self._analysis_tasks.pop(key, None)
             # Bound memory: drop the oldest finished entries.
-            done = [k for k, v in self._analysis.items() if v.get("status") != "pending"]
+            done = [k for k, v in self._analysis.items() if v.get("complete")]
             for k in done[:max(0, len(done) - ANALYSIS_KEEP)]:
                 self._analysis.pop(k, None)
+                self._beats_events.pop(k, None)
+
+    async def wait_for_beats(self, track, my_generation):
+        """Hold playback until the BPM/beat stage of `track` is done (bounded,
+        and abandoned if the session moves on). No-op when the analysis is
+        already there, can't run, or LIBROSA_GATE_PLAYBACK is off."""
+        if not getattr(config, "LIBROSA_GATE_PLAYBACK", True):
+            return
+        key = (track or {}).get("encoded")
+        ev = self._beats_events.get(key)
+        if ev is None or ev.is_set():
+            return
+        limit = float(getattr(config, "LIBROSA_GATE_SECONDS", 40))
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < limit:
+            if self.generation != my_generation:
+                return
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=0.25)
+                return
+            except asyncio.TimeoutError:
+                pass
+        print(f"[relay {self.lobby.code}] BPM analysis not ready after {limit:.0f}s — playing anyway")
 
     def analysis_for(self, track):
+        """Snapshot of everything computed so far (for a client that just
+        joined / changed track; live updates come over the `analysis` socket event)."""
         key = (track or {}).get("encoded")
         a = self._analysis.get(key)
         if a is None:
@@ -1267,6 +1419,11 @@ class LobbyRelay:
         self.ensure_preload()
 
         if cache is not None:
+            # BPM first: hold the first frame until beats/tempo are known (the
+            # lobby anchor is corrected at the first frame, so nothing drifts).
+            await self.wait_for_beats(track, my_generation)
+            if self.generation != my_generation:
+                return "interrupted"
             target = self._pos_to_offset(position_ms)
             if await self._cache_wait(cache, target + PCM_FRAME_BYTES * 10, my_generation):
                 off = target

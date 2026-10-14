@@ -454,28 +454,50 @@ const Debug = {
     if (this._waveHistory.length > WAVE_MAX_COLS) this._waveHistory.shift();
   },
 
-  /* ───────── Librosa info card ─────────
-     Server-side analysis (see analysis.py) fetched by librosa.js. The slow
-     fields (BPM, key, ...) refresh with render(); the beat counter runs off the
-     waveform loop so it follows the audio instead of lagging by up to 280ms. */
+  /* ───────── Librosa analysis card ─────────
+     Server-side analysis (see analysis.py) pushed over the lobby socket and
+     kept by librosa.js. Stages arrive one by one, so cards fill in as they
+     land. The beat counter and the BPM follow the audio from the waveform
+     loop (not render()) so they don't lag by up to 280ms. */
   _libChipsSig: '',
   _libCur: -1,
+  _libBpmShown: '',
+  _libTlSig: '',
+
+  _fmtBpm(x) { return String(Number(Number(x).toFixed(1))); },
 
   _updateLibCount() {
     const el = document.getElementById('lib-count');
     if (!el) return;
     const L = Librosa;
     const ready = L.ready();
-    const m = ready ? L.beatsPerBar() : 0;
+    const m = ready && L.meterKnown() ? L.beatsPerBar() : 0;
     const sig = String(m);
     if (sig !== this._libChipsSig) {
       this._libChipsSig = sig; this._libCur = -1;
       el.innerHTML = m
         ? Array.from({ length: m }, (_, k) => `<span class="lib-chip" data-k="${k + 1}">${k + 1}/${m}</span>`).join('<span class="lib-arrow">→</span>')
-        : '<span class="lib-none">—</span>';
+        : `<span class="lib-none">${ready ? 'detecting time signature…' : '—'}</span>`;
     }
+    const pos = S.player && S.player.getPositionMs ? S.player.getPositionMs() : 0;
+
+    // BPM follows tempo changes: the number is the section being heard now.
+    const bpmEl = document.getElementById('lib-bpm-num'), secEl = document.getElementById('lib-sec');
+    if (bpmEl) {
+      const cur = ready ? L.bpmAt(pos) : null;
+      const txt = cur ? this._fmtBpm(cur.bpm) : '—';
+      const secTxt = cur && cur.n > 1 ? `tempo section ${cur.idx + 1}/${cur.n}` : '';
+      const key = txt + '|' + secTxt;
+      if (key !== this._libBpmShown) {
+        this._libBpmShown = key;
+        bpmEl.textContent = txt;
+        if (secEl) secEl.textContent = secTxt;
+        bpmEl.classList.remove('flash'); void bpmEl.offsetWidth; if (cur && cur.n > 1) bpmEl.classList.add('flash');
+      }
+    }
+
     if (!m) return;
-    const cur = S.player && S.player.getPositionMs ? L.current(S.player.getPositionMs()) : null;
+    const cur = L.current(pos);
     const k = cur ? cur.count : 0;
     if (k === this._libCur) return;
     this._libCur = k;
@@ -491,47 +513,102 @@ const Debug = {
     const lbl = b.querySelector('.lbl'); if (lbl) lbl.textContent = on ? 'Metronome: On' : 'Metronome: Off';
   },
 
+  _libStatusText() {
+    const L = Librosa;
+    const phases = { download: 'downloading audio…', decode: 'decoding…', beats: 'detecting BPM…', refine: 'refining…' };
+    switch (L.status) {
+      case 'idle': return 'nothing playing';
+      case 'loading': return 'waiting for server…';
+      case 'analyzing': return phases[L.phase] || 'analysing…';
+      case 'ready': {
+        if (L.complete) { const e = L.cur; return e && e.totalSec ? `done · ${e.totalSec}s` : 'done'; }
+        return 'BPM ready · refining sections, meter, key…';
+      }
+      case 'unsupported': return 'not analysed';
+      case 'unavailable': return 'librosa unavailable';
+      default: return L.status;
+    }
+  },
+
+  _stageLabels: {
+    download: 'Download PCM', decode: 'Decode / resample', beats: 'Beats + BPM', sections: 'Tempo sections',
+    meter: 'Time signature', key: 'Key (quick)', 'key-refine': 'Key (HPSS refine)',
+  },
+
+  // Timeline of the stages (bars show when each ran, so parallel stages overlap)
+  // plus the per-step costs inside each, slowest highlighted.
+  _renderLibTimings() {
+    const el = document.getElementById('dbg-lib-timings');
+    if (!el) return;
+    const L = Librosa, tm = L.available() ? L.timings() : {};
+    const e = L.cur;
+    const sig = (e ? e._v : '') + '|' + L.forEncoded;
+    if (sig === this._libTlSig) return;
+    this._libTlSig = sig;
+    const names = Object.keys(this._stageLabels).filter(k => tm[k]);
+    if (!names.length) { el.innerHTML = '<div class="lib-none">no timings yet</div>'; return; }
+    const end = Math.max(...names.map(k => tm[k].doneAt || 0), 0.001);
+    const esc = (s) => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    let slowest = null;
+    for (const k of names) for (const st of tm[k].steps || []) if (!slowest || st.sec > slowest.sec) slowest = { ...st, stage: k };
+    el.innerHTML = names.map(k => {
+      const t = tm[k], l = (t.startedAt || 0) / end * 100, w = Math.max(0.8, ((t.doneAt || 0) - (t.startedAt || 0)) / end * 100);
+      const steps = (t.steps || []).slice().sort((a, b) => b.sec - a.sec);
+      const top = steps.length ? steps[0].sec : 0;
+      const stepHtml = steps.length > 1 || (steps.length === 1 && steps[0].name)
+        ? `<div class="lib-tl-steps">${steps.map(s => `<span class="${s.sec === top && s.sec >= 0.5 ? 'slow' : ''}">${esc(s.name)} ${s.sec.toFixed(2)}s</span>`).join('')}</div>` : '';
+      return `<div class="lib-tl-row"><span class="lib-tl-name">${this._stageLabels[k]}</span>`
+        + `<span class="lib-tl-track"><i style="left:${l.toFixed(1)}%;width:${w.toFixed(1)}%"></i></span>`
+        + `<span class="lib-tl-sec">${(t.wall != null ? t.wall : t.sec).toFixed(2)}s</span></div>${stepHtml}`;
+    }).join('') + (slowest ? `<div class="lib-tl-note">slowest step: <b>${esc(slowest.name)}</b> (${slowest.sec.toFixed(2)}s)</div>` : '');
+  },
+
   _renderLibrosa() {
     const L = Librosa;
     L.sync();
     this._updateMetroBtn();
 
     const statusEl = document.getElementById('dbg-lib-status');
-    const bpmEl = document.getElementById('lib-bpm-num');
     const cardsEl = document.getElementById('dbg-lib-cards');
     if (!statusEl) return;
 
     if (!L.available()) {
       statusEl.textContent = '';
-      bpmEl.textContent = '—';
       this._setCards(cardsEl, [['Status', 'lobby mode only']]);
+      this._renderLibTimings();
       return;
     }
-    const labels = { idle: 'nothing playing', loading: 'loading…', analyzing: 'analysing track…', ready: 'ready',
-      unsupported: 'not analysed', unavailable: 'librosa unavailable', error: 'error' };
-    statusEl.textContent = `(${labels[L.status] || L.status})`;
+    statusEl.textContent = `(${this._libStatusText()})`;
+    this._renderLibTimings();
 
     if (!L.ready()) {
-      bpmEl.textContent = '—';
-      this._setCards(cardsEl, [['Status', labels[L.status] || L.status], ...(L.message ? [['Reason', L.message]] : [])]);
+      this._setCards(cardsEl, [['Status', this._libStatusText()], ...(L.message ? [['Reason', L.message]] : [])]);
       return;
     }
-    const d = L.data, t = d.tempo, m = d.meter, k = d.key;
+    const t = L.tempo(), m = L.meter(), k = L.key(), secs = L.sections(), beats = L.beatsMs;
     const pct = (x) => Math.round((x || 0) * 100) + '%';
-    bpmEl.textContent = t ? String(Number(t.bpm.toFixed(1))) : '—';
-    this._setCards(cardsEl, [
-      ['Time signature', m ? `${m.label} · ${pct(m.confidence)} sure` : '—'],
-      ['Subdivision', m ? m.subdivision : '—'],
-      ['Key / scale', k ? `${k.name} · ${pct(k.confidence)} sure` : (d.keyError ? 'failed' : '—')],
-      ['Scale notes', k ? k.scale.join(' ') : '—'],
-      ['Relative key', k ? k.relative : '—'],
+    const pending = (v, has) => has ? v : (L.complete ? '—' : 'analysing…');
+    const cards = [
+      ['Tempo', t ? (t.variable ? `varies ${this._fmtBpm(t.min)}–${this._fmtBpm(t.max)} bpm` : `${this._fmtBpm(t.bpm)} bpm (constant)`) : '—'],
+    ];
+    if (L.hasTempoChanges() && secs) {
+      secs.forEach((s, i) => cards.push([`Section ${i + 1}`, `${this._fmtBpm(s.bpm)} bpm · ${this._fmtTime2(s.start)}–${this._fmtTime2(s.end)}`]));
+    }
+    cards.push(
+      ['Time signature', pending(m ? `${m.label} · ${pct(m.confidence)} sure` : '—', !!m)],
+      ['Subdivision', pending(m ? m.subdivision : '—', !!m)],
+      ['Key / scale', pending(k ? `${k.name} · ${pct(k.confidence)} sure${k.refined ? '' : ' (quick)'}` : '—', !!k)],
+      ['Scale notes', pending(k ? k.scale.join(' ') : '—', !!k)],
+      ['Relative key', pending(k ? k.relative : '—', !!k)],
       ['Tempo steadiness', t ? pct(t.stability) : '—'],
       ['Alt. tempo (½× / 2×)', t ? `${t.alt[0]} / ${t.alt[1]} bpm` : '—'],
-      ['Beats tracked', String(d.beats.length)],
+      ['Beats tracked', String(beats ? beats.length : 0)],
       ['Tuning', k ? `${k.tuningCents > 0 ? '+' : ''}${k.tuningCents} cents` : '—'],
-      ['Analysis time', `${d.analysisSec}s`],
-    ]);
+    );
+    this._setCards(cardsEl, cards);
   },
+
+  _fmtTime2(sec) { sec = Math.max(0, Math.round(sec)); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; },
 
   /* ───────── buffered waveform ─────────
      Second strip, drawn under the stream waveform. Where the strip above
@@ -716,11 +793,17 @@ const Debug = {
         if (!b) continue;
         const x = startX + i * colW;
         if (x < -2 || x > cssW + 2) continue;
+        if (b.secBpm) {                       // tempo change: cyan line + new BPM
+          ctx.fillStyle = 'rgba(34,211,238,.95)';
+          ctx.fillRect(x, 0, 2, cssH);
+          ctx.textBaseline = 'top'; ctx.fillText(`${Number(b.secBpm.toFixed(1))} bpm`, Math.min(Math.max(x + 22, 24), cssW - 24), 2);
+          ctx.textBaseline = 'bottom';
+        }
         const down = b.count === 1;
         ctx.fillStyle = down ? 'rgba(251,191,36,.9)' : 'rgba(244,114,182,.55)';
         ctx.fillRect(x, down ? 2 : cssH * 0.18, down ? 2 : 1, down ? cssH - 4 : cssH * 0.64);
         ctx.fillStyle = down ? 'rgba(251,191,36,.95)' : 'rgba(244,114,182,.8)';
-        ctx.fillText(String(b.count), Math.min(Math.max(x, 8), cssW - 8), cssH - 3);
+        if (b.count) ctx.fillText(String(b.count), Math.min(Math.max(x, 8), cssW - 8), cssH - 3);
       }
     }
   },
@@ -919,20 +1002,21 @@ const Debug = {
 
         <div class="dbg-section" id="dbg-librosa-section">
           <div class="dbg-section-title">
-            Librosa info <span class="dbg-lane-hint">server-side beat / meter / key analysis · lobby mode only</span>
+            Librosa analysis <span class="dbg-lane-hint">server-side beat / tempo / meter / key analysis · lobby mode only</span>
             <span class="dbg-count" id="dbg-lib-status"></span>
             <button class="qa" id="dbg-metro-btn" title="Click track on every detected beat (accented on beat 1)"><span class="material-symbols-outlined">music_note</span><span class="lbl">Metronome: Off</span></button>
           </div>
           <div class="lib-hero">
-            <div class="lib-bpm"><span id="lib-bpm-num">—</span><span class="lib-bpm-unit">bpm</span></div>
+            <div class="lib-bpm"><span id="lib-bpm-num">—</span><span class="lib-bpm-unit">bpm</span><span class="lib-sec" id="lib-sec"></span></div>
             <div class="lib-count" id="lib-count"><span class="lib-none">—</span></div>
           </div>
           <div class="dbg-grid" id="dbg-lib-cards"></div>
+          <div class="lib-tl" id="dbg-lib-timings"></div>
         </div>
 
         <div class="dbg-section">
           <div class="dbg-section-title">
-            Stream waveform <span class="dbg-lane-hint">scrolling · beats from Librosa info (amber = bar start)</span>
+            Stream waveform <span class="dbg-lane-hint">scrolling · beats from Librosa analysis (amber = bar start, cyan = tempo change)</span>
             <div class="dbg-seg-toggle" id="dbg-seg-toggle">
               <button class="dbg-seg-btn on" data-seg="off">Off</button>
               <button class="dbg-seg-btn" data-seg="seconds">Seconds</button>
