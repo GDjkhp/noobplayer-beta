@@ -67,13 +67,34 @@ KK_MINOR = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69,
 METER_PRIORS = {2: 0.80, 3: 0.92, 4: 1.00, 5: 0.55, 6: 0.60, 7: 0.50}
 
 
+def lower_priority():
+    """Make this process yield to the relay. os.nice() does not exist on
+    Windows, where an un-niced worker competes with the 20 ms pacing loop and
+    makes the audio stutter."""
+    try:
+        os.nice(10)
+        return
+    except Exception:
+        pass
+    try:
+        import sys
+        if sys.platform == "win32":
+            import ctypes
+            k = ctypes.windll.kernel32
+            k.SetPriorityClass(k.GetCurrentProcess(), 0x00004000)   # BELOW_NORMAL_PRIORITY_CLASS
+    except Exception:
+        pass
+
+
 def worker_init():
     """Initializer for the analysis process pool: be nice to the relay, and pay
     librosa's first-call JIT cost (~9 s) before the first real track."""
     try:
-        os.nice(10)
+        import faulthandler
+        faulthandler.enable()          # a native crash prints a traceback instead of vanishing
     except Exception:
         pass
+    lower_priority()
     try:
         warmup()
     except Exception:
@@ -91,9 +112,29 @@ def warmup():
     db = librosa.power_to_db(mel, ref=np.max)
     on = librosa.onset.onset_strength(S=db, sr=SR, hop_length=HOP)
     librosa.beat.beat_track(onset_envelope=on, sr=SR, hop_length=HOP, tightness=100)
-    librosa.estimate_tuning(y=y, sr=SR)
-    librosa.feature.chroma_cqt(y=y, sr=SR, hop_length=2048)
+    _estimate_tuning(y)
+    librosa.feature.chroma_cqt(y=y, sr=SR, hop_length=2048, tuning=0.0)
     librosa.effects.harmonic(y, margin=2.0)
+
+
+def _estimate_tuning(y):
+    """Tuning offset in fractions of a semitone (-0.5..0.5) from spectral peaks.
+    Same idea as librosa.estimate_tuning, but pure numpy: librosa's version goes
+    through a numba gufunc (piptrack) that hard-crashes the interpreter with an
+    access violation on some Windows/numba installs."""
+    n_fft = 4096
+    S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=2048))
+    freqs = librosa.fft_frequencies(sr=SR, n_fft=n_fft)
+    a, b, c = S[:-2], S[1:-1], S[2:]
+    thr = 0.1 * S.max(axis=0, keepdims=True)
+    f_mid = freqs[1:-1, None]
+    mask = (b > a) & (b >= c) & (b > thr) & (f_mid >= 150.0) & (f_mid < 4000.0)
+    if not mask.any():
+        return 0.0
+    denom = a - 2.0 * b + c
+    shift = np.where(denom < -1e-12, 0.5 * (a - c) / np.where(denom == 0, 1.0, denom), 0.0)
+    pitch = (np.arange(1, S.shape[0] - 1)[:, None] + np.clip(shift, -0.5, 0.5)) * (SR / n_fft)
+    return float(librosa.pitch_tuning(pitch[mask], resolution=0.01, bins_per_octave=12))
 
 
 def ping():
@@ -353,7 +394,7 @@ def stage_beats(y):
     with T("tuning estimate"):
         try:
             ex = _centre(y, 30)
-            tuning = float(librosa.estimate_tuning(y=ex, sr=SR))
+            tuning = _estimate_tuning(ex)
         except Exception:
             tuning = 0.0
     with T("STFT + mel + chroma"):

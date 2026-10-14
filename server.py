@@ -279,22 +279,53 @@ async def shutdown():
 _analysis_pool = None
 
 
+_analysis_pool_broken = 0        # how many times the worker pool died under us
+
+
 def _get_analysis_pool():
+    """The worker pool, or None to run stages in a plain thread instead
+    (only when config LIBROSA_USE_PROCESS = False). If the workers keep dying
+    this raises instead of falling back to a thread: a native crash in a thread
+    would take the whole server (and every lobby's relay) down with it."""
     global _analysis_pool
     if not getattr(config, "LIBROSA_USE_PROCESS", True):
         return None
+    if _analysis_pool_broken >= 2:
+        raise RuntimeError("librosa worker processes keep crashing — analysis disabled until the server restarts")
     if _analysis_pool is None:
         import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
-        n = int(getattr(config, "LIBROSA_WORKERS", 0)) or max(1, min(3, os.cpu_count() or 2))
+        n = int(getattr(config, "LIBROSA_WORKERS", 0)) or 2
+        # One BLAS/OpenMP/numba thread per worker (children inherit this env):
+        # otherwise each worker spreads over every core and starves the relay.
+        th = str(int(getattr(config, "LIBROSA_THREADS", 1)) or 1)
+        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                    "NUMBA_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            os.environ[var] = th
         _analysis_pool = ProcessPoolExecutor(
             max_workers=n, mp_context=multiprocessing.get_context("spawn"),
             initializer=analysis.worker_init)
         # Spawn + warm every worker now (librosa's first call costs ~10-20 s of
-        # JIT), so the first real track doesn't pay for it.
+        # JIT), so the first real track doesn't pay for it. Memory is roughly
+        # 300-400 MB per worker: lower LIBROSA_WORKERS on a small box.
         for _ in range(n):
             _analysis_pool.submit(analysis.ping)
     return _analysis_pool
+
+
+def _reset_analysis_pool(dead=None):
+    """Drop the dead pool. `dead` is the pool the failing job used: if it was
+    already replaced (a parallel job got there first) nothing more to do."""
+    global _analysis_pool, _analysis_pool_broken
+    if dead is not None and dead is not _analysis_pool:
+        return
+    _analysis_pool_broken += 1
+    p, _analysis_pool = _analysis_pool, None
+    if p is not None:
+        try:
+            p.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
 
 
 ANALYSIS_KEEP = 12   # finished analyses remembered per lobby (LRU-ish)
@@ -707,9 +738,22 @@ class LobbyRelay:
 
     async def _job(self, name, t0, fn, *args):
         """Run one analysis stage in the worker pool. Returns (result, timing)."""
+        from concurrent.futures.process import BrokenProcessPool
         loop = asyncio.get_running_loop()
         submitted = time.monotonic()
-        res = await loop.run_in_executor(_get_analysis_pool(), fn, *args)
+        res = None
+        for attempt in range(3):
+            pool = _get_analysis_pool()
+            try:
+                res = await loop.run_in_executor(pool, fn, *args)
+                break
+            except BrokenProcessPool:
+                # A worker died (killed by the OS for memory, or crashed). The
+                # executor is unusable after that, so replace it and retry; after
+                # two deaths stages run in a thread inside the server instead.
+                _reset_analysis_pool(pool)
+                print(f"[analysis] worker process died during '{name}' (see the faulthandler trace above); "
+                      + ("retrying with a fresh pool" if _analysis_pool_broken < 2 else "giving up on analysis until restart"))
         done = time.monotonic()
         timing = {"sec": round(res.get("sec", done - submitted), 3) if isinstance(res, dict) else round(done - submitted, 3),
                   "steps": (res.get("steps") if isinstance(res, dict) else None) or [],
