@@ -119,7 +119,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 import config
-if getattr(config, "LIBROSA_ENABLED", True):
+if getattr(config, "AUDIO_ANALYSIS_ENABLED", True):
     import analysis   # beat / tempo / meter / key analysis (numpy + scipy only, see analysis.py) — degrades to "unavailable" if they are missing
 else:
     # Disabled in config.py: don't import the analysis module at all.
@@ -259,7 +259,7 @@ async def startup():
     # whole process, since REST/Socket.IO/the frontend all work fine
     # without it — only live lobby audio depends on it.
     asyncio.create_task(start_quic_server())
-    if analysis.AVAILABLE and getattr(config, "LIBROSA_PREWARM", True):
+    if analysis.AVAILABLE and getattr(config, "AUDIO_ANALYSIS_PREWARM", True):
         try:
             _get_analysis_pool()
         except Exception:
@@ -276,11 +276,11 @@ async def shutdown():
         _analysis_pool.shutdown(wait=False, cancel_futures=True)
 
 
-# ── librosa analysis worker ────────────────────────────────────────────
+# ── audio analysis worker ────────────────────────────────────────────
 # Beat tracking / chroma / CQT are CPU heavy and partly pure-Python, so a
 # thread would contend for the GIL with the 20ms relay pacing loop. A single
 # low-priority worker PROCESS (spawned lazily) keeps the relay unaffected.
-# Set LIBROSA_USE_PROCESS = False in config.py to use a plain thread instead.
+# Set AUDIO_ANALYSIS_USE_PROCESS = False in config.py to use a plain thread instead.
 _analysis_pool = None
 
 
@@ -289,21 +289,21 @@ _analysis_pool_broken = 0        # how many times the worker pool died under us
 
 def _get_analysis_pool():
     """The worker pool, or None to run stages in a plain thread instead
-    (only when config LIBROSA_USE_PROCESS = False). If the workers keep dying
+    (only when config AUDIO_ANALYSIS_USE_PROCESS = False). If the workers keep dying
     this raises instead of falling back to a thread: a native crash in a thread
     would take the whole server (and every lobby's relay) down with it."""
     global _analysis_pool
-    if not getattr(config, "LIBROSA_USE_PROCESS", True):
+    if not getattr(config, "AUDIO_ANALYSIS_USE_PROCESS", True):
         return None
     if _analysis_pool_broken >= 2:
         raise RuntimeError("analysis worker processes keep crashing — analysis disabled until the server restarts")
     if _analysis_pool is None:
         import multiprocessing
         from concurrent.futures import ProcessPoolExecutor
-        n = int(getattr(config, "LIBROSA_WORKERS", 0)) or 2
-        # One BLAS/OpenMP/numba thread per worker (children inherit this env):
+        n = int(getattr(config, "AUDIO_ANALYSIS_WORKERS", 0)) or 2
+        # One BLAS/OpenMP thread per worker (children inherit this env):
         # otherwise each worker spreads over every core and starves the relay.
-        th = str(int(getattr(config, "LIBROSA_THREADS", 1)) or 1)
+        th = str(int(getattr(config, "AUDIO_ANALYSIS_THREADS", 1)) or 1)
         for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
                     "NUMBA_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
             os.environ[var] = th
@@ -692,7 +692,7 @@ class LobbyRelay:
         self._debug_subscribers = set()   # sids
         self._debug_task = None
 
-        # ---- librosa analysis -----------------------------------------
+        # ---- audio analysis -----------------------------------------
         # encoded track id -> result dict (status pending|ready|error|
         # unsupported|unavailable). Fed from the same PcmCache the seek cache
         # uses, so beat times are in exact track time. See ensure_analysis.
@@ -700,9 +700,9 @@ class LobbyRelay:
         self._analysis_tasks = {}
         self._beats_events = {}     # key -> asyncio.Event, set once the BPM stage is done (or can't be)
 
-    # ---- librosa analysis ---------------------------------------------
+    # ---- audio analysis ---------------------------------------------
     def ensure_analysis(self, track, cache):
-        """Start (once per track) the staged librosa analysis of `track`'s PCM.
+        """Start (once per track) the staged audio analysis of `track`'s PCM.
         `cache` is its PcmCache, or None if the track isn't cacheable (live
         stream / too long) — those are reported as unsupported."""
         key = (track or {}).get("encoded")
@@ -710,7 +710,7 @@ class LobbyRelay:
             return
         if getattr(analysis, "DISABLED", False):
             self._analysis[key] = {"status": "disabled", "complete": True,
-                                   "reason": "librosa analysis is turned off (LIBROSA_ENABLED = False in config.py)"}
+                                   "reason": "audio analysis is turned off (AUDIO_ANALYSIS_ENABLED = False in config.py)"}
             return
         if not analysis.AVAILABLE:
             self._analysis[key] = {"status": "unavailable", "complete": True,
@@ -882,14 +882,14 @@ class LobbyRelay:
     async def wait_for_beats(self, track, my_generation):
         """Hold playback until the BPM/beat stage of `track` is done (bounded,
         and abandoned if the session moves on). No-op when the analysis is
-        already there, can't run, or LIBROSA_GATE_PLAYBACK is off."""
-        if not getattr(config, "LIBROSA_GATE_PLAYBACK", True):
+        already there, can't run, or AUDIO_ANALYSIS_GATE_PLAYBACK is off."""
+        if not getattr(config, "AUDIO_ANALYSIS_GATE_PLAYBACK", True):
             return
         key = (track or {}).get("encoded")
         ev = self._beats_events.get(key)
         if ev is None or ev.is_set():
             return
-        limit = float(getattr(config, "LIBROSA_GATE_SECONDS", 40))
+        limit = float(getattr(config, "AUDIO_ANALYSIS_GATE_SECONDS", 40))
         t0 = time.monotonic()
         while time.monotonic() - t0 < limit:
             if self.generation != my_generation:
@@ -3001,7 +3001,7 @@ async def lobby_history(code):
 
 @app.route("/api/lobby/<code>/analysis", methods=["GET"])
 async def lobby_analysis(code):
-    """librosa analysis (beats / tempo / meter / key) of the CURRENT track.
+    """audio analysis (beats / tempo / meter / key) of the CURRENT track.
     `status` is pending|none while it is still being computed, so clients just
     poll. Members only (same as the other per-lobby reads)."""
     lobby = get_lobby_or_404(code)

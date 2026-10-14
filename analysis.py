@@ -1,11 +1,9 @@
 """
-Music analysis for the lobby relay — NumPy + SciPy only (no librosa, no numba).
-
-Why no librosa: its steady-state cost is small, but every fresh process pays
-~10-20 s of numba JIT and ~400 MB of RAM, and a few of its numba kernels hard-
-crash some Windows installs. Everything here is plain vectorised NumPy/SciPy
-(the DSP maths is ported from librosa's well-known algorithms), so a worker
-starts in a fraction of a second and uses ~100 MB.
+Audio analysis for the lobby relay — NumPy + SciPy only (no JIT, no heavy
+audio frameworks): a worker starts in a fraction of a second and stays small.
+The DSP is the standard textbook toolkit — Slaney mel filterbank, spectral-flux
+onset envelope, autocorrelation tempo with a log-normal prior, Ellis (2007)
+dynamic-programming beat tracking, Krumhansl-Schmuckler key profiles.
 
 Input is the raw PCM the relay already caches per track (s16le / 48 kHz /
 stereo, see PcmCache in server.py). Nothing here knows about Quart or the
@@ -163,7 +161,7 @@ def pcm_to_mono(buf):
     return np.concatenate(out) if out else np.zeros(0, np.float32)
 
 
-# ───────────────────────── DSP primitives (ported from librosa) ─────────────────────────
+# ───────────────────────── DSP primitives ─────────────────────────
 _CACHE = {}
 
 
@@ -309,8 +307,8 @@ def _estimate_tuning(y):
 def _estimate_period(onset, start_bpm=120.0):
     """Global beat period (float frames) from the onset autocorrelation:
     windowed autocorrelation averaged over the track, weighted by a log-normal
-    prior around `start_bpm` (one octave wide) — the same scoring librosa's
-    tempo() uses, with a parabolic sub-lag refinement of the peak."""
+    prior around `start_bpm` (one octave wide) — standard autocorrelation
+    tempo scoring, with a parabolic sub-lag refinement of the peak."""
     fps = SR / HOP
     default = fps * 60.0 / start_bpm
     win = min(384, len(onset))
@@ -890,21 +888,15 @@ def stage_meter(state, beat_times, sections=None):
         sub, ratio = _subdivision(onset, frames)
     label = f"{m * 3}/8" if sub == "triple" and m in (2, 3, 4) else f"{m}/4"
 
-    # Bar lines per tempo section: each section re-finds where its bars start.
-    phases = [{"beat": 0, "phase": int(phase)}]
-    if sections and len(sections) > 1:
-        phases = []
-        for s in sections:
-            a, b = int(s["startBeat"]), int(s["startBeat"]) + int(s["beats"])
-            seg = accent[a:b] if b <= len(accent) else accent[a:]
-            if len(seg) >= 2 * m:
-                means = [seg[p::m].mean() for p in range(m)]
-                phases.append({"beat": a, "phase": int(np.argmax(means))})
-            else:
-                prev = phases[-1] if phases else {"beat": 0, "phase": int(phase)}
-                phases.append({"beat": a, "phase": int((prev["phase"] + (a - prev["beat"])) % m)})
+    # Bars always START on the first beat of the track and of every tempo
+    # section, so the count reads 1/N 2/N ... from the very first beat. The
+    # accent heuristic's own guess at where the downbeat really sits is kept as
+    # `detectedPhase` (beats after the first beat); the client's anchor buttons
+    # let the user shift the "1" by hand.
+    starts = [int(x["startBeat"]) for x in sections] if sections and len(sections) > 1 else [0]
+    phases = [{"beat": a, "phase": 0} for a in starts]
     return {"data": {
-        "beatsPerBar": int(m), "label": label, "downbeatPhase": int(phase), "phases": phases,
+        "beatsPerBar": int(m), "label": label, "downbeatPhase": 0, "detectedPhase": int(phase), "phases": phases,
         "confidence": round(conf, 3), "subdivision": sub, "tripleRatio": round(ratio, 2), "scores": scores,
     }, "steps": T.steps, "sec": T.total()}
 

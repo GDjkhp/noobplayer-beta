@@ -1,6 +1,6 @@
 'use strict';
 /* ═══════════════════════════════════════════
-   Librosa — client side of the server's librosa analysis (see analysis.py).
+   Audio analysis — client side of the server's audio analysis (see analysis.py).
 
    Lobby mode only. The server analyses each track once, in stages, and PUSHES
    every finished stage over the lobby socket as an `analysis` event:
@@ -27,7 +27,7 @@
    times are in the same track clock because the server analyses the PCM from
    position 0.
 ═══════════════════════════════════════════ */
-const Librosa = {
+const AudioAnalysis = {
   store: {},             // encoded id -> entry { status, phase, complete, stages, timings, reason, _v }
   order: [],             // LRU of ids in store
   forEncoded: null,      // encoded id of the current track
@@ -42,6 +42,7 @@ const Librosa = {
   beatsMs: null, _medianMs: 0, _secStartMs: null, _phases: null,
 
   metronomeOn: false,
+  _shifts: {},           // manual 1/4 anchor shift (in beats) per encoded track
   _ctx: null, _gain: null, _timer: null,
   _lastClickIdx: -1, _lastPos: 0,
 
@@ -222,7 +223,28 @@ const Librosa = {
     if (!m || !ph) return 0;
     let p = ph[0];
     for (let k = 1; k < ph.length; k++) { if (ph[k].beat <= idx) p = ph[k]; else break; }
-    return (((idx - p.beat - p.phase) % m) + m) % m + 1;
+    return (((idx - p.beat - p.phase - this.anchorShift()) % m) + m) % m + 1;
+  },
+
+  // Manual alignment: positive moves the 1/4 anchor later (to the right).
+  anchorShift() {
+    const k = this.forEncoded;
+    if (k == null) return 0;
+    if (this._shifts[k] === undefined) {
+      let v = 0;
+      try { v = parseInt(localStorage.getItem('aa-anchor:' + k), 10) || 0; } catch (e) {}
+      this._shifts[k] = v;
+    }
+    return this._shifts[k];
+  },
+  shiftAnchor(delta) {
+    const k = this.forEncoded;
+    if (k == null) return 0;
+    const m = this.beatsPerBar() || 1;
+    const v = ((((this.anchorShift() + delta) % m) + m) % m);
+    this._shifts[k] = v;
+    try { if (v) localStorage.setItem('aa-anchor:' + k, String(v)); else localStorage.removeItem('aa-anchor:' + k); } catch (e) {}
+    return v;
   },
 
   _secStartAt(idx) {            // is beat idx the first beat of a tempo section (not the first section)?
@@ -255,7 +277,7 @@ const Librosa = {
   toggleMetronome() {
     if (!this.available()) { toast('The metronome is only available in lobby mode', 'warn'); return false; }
     if (!this.metronomeOn && (this.status === 'disabled' || this.status === 'unavailable')) {
-      toast(this.status === 'disabled' ? 'Librosa analysis is disabled on this server' : 'Librosa is not available on this server', 'warn'); return false;
+      toast(this.status === 'disabled' ? 'Audio analysis is disabled on this server' : 'Audio analysis is not available on this server', 'warn'); return false;
     }
     this.metronomeOn = !this.metronomeOn;
     if (this.metronomeOn) {

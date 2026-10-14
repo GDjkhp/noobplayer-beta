@@ -442,54 +442,54 @@ const Debug = {
         }
       } catch (_) {}
     }
-    // Beat markers (lobby mode, librosa analysis): note when a beat boundary
+    // Beat markers (lobby mode, audio analysis): note when a beat boundary
     // passed since the previous column, using the audible track position.
     let beat = null;
-    if (typeof Librosa !== 'undefined' && Librosa.ready() && S.player && S.player.getPositionMs) {
+    if (typeof AudioAnalysis !== 'undefined' && AudioAnalysis.ready() && S.player && S.player.getPositionMs) {
       const pos = S.player.getPositionMs();
-      beat = Librosa.crossing(this._wavePrevPos, pos);
+      beat = AudioAnalysis.crossing(this._wavePrevPos, pos);
       this._wavePrevPos = pos;
     } else this._wavePrevPos = 0;
     this._waveHistory.push({ amp, ts: performance.now(), beat });
     if (this._waveHistory.length > WAVE_MAX_COLS) this._waveHistory.shift();
   },
 
-  /* ───────── Librosa analysis card ─────────
+  /* ───────── Audio analysis card ─────────
      Server-side analysis (see analysis.py) pushed over the lobby socket and
-     kept by librosa.js. Stages arrive one by one, so cards fill in as they
+     kept by audio-analysis.js. Stages arrive one by one, so cards fill in as they
      land. The beat counter and the BPM follow the audio from the waveform
      loop (not render()) so they don't lag by up to 280ms. */
-  _libChipsSig: '',
-  _libCur: -1,
-  _libBpmShown: '',
-  _libTlSig: '',
+  _aaChipsSig: '',
+  _aaCur: -1,
+  _aaBpmShown: '',
+  _aaTlSig: '',
 
   _fmtBpm(x) { return String(Number(Number(x).toFixed(1))); },
 
   _updateLibCount() {
-    const el = document.getElementById('lib-count');
+    const el = document.getElementById('aa-count');
     if (!el) return;
-    const L = Librosa;
+    const L = AudioAnalysis;
     const ready = L.ready();
     const m = ready && L.meterKnown() ? L.beatsPerBar() : 0;
     const sig = String(m);
-    if (sig !== this._libChipsSig) {
-      this._libChipsSig = sig; this._libCur = -1;
+    if (sig !== this._aaChipsSig) {
+      this._aaChipsSig = sig; this._aaCur = -1;
       el.innerHTML = m
-        ? Array.from({ length: m }, (_, k) => `<span class="lib-chip" data-k="${k + 1}">${k + 1}/${m}</span>`).join('<span class="lib-arrow">→</span>')
-        : `<span class="lib-none">${ready ? 'detecting time signature…' : '—'}</span>`;
+        ? Array.from({ length: m }, (_, k) => `<span class="aa-chip" data-k="${k + 1}">${k + 1}/${m}</span>`).join('<span class="aa-arrow">→</span>')
+        : `<span class="aa-none">${ready ? 'detecting time signature…' : '—'}</span>`;
     }
     const pos = S.player && S.player.getPositionMs ? S.player.getPositionMs() : 0;
 
     // BPM follows tempo changes: the number is the section being heard now.
-    const bpmEl = document.getElementById('lib-bpm-num'), secEl = document.getElementById('lib-sec');
+    const bpmEl = document.getElementById('aa-bpm-num'), secEl = document.getElementById('aa-sec');
     if (bpmEl) {
       const cur = ready ? L.bpmAt(pos) : null;
       const txt = cur ? this._fmtBpm(cur.bpm) : '—';
       const secTxt = cur && cur.n > 1 ? `tempo section ${cur.idx + 1}/${cur.n}` : '';
       const key = txt + '|' + secTxt;
-      if (key !== this._libBpmShown) {
-        this._libBpmShown = key;
+      if (key !== this._aaBpmShown) {
+        this._aaBpmShown = key;
         bpmEl.textContent = txt;
         if (secEl) secEl.textContent = secTxt;
         bpmEl.classList.remove('flash'); void bpmEl.offsetWidth; if (cur && cur.n > 1) bpmEl.classList.add('flash');
@@ -499,22 +499,26 @@ const Debug = {
     if (!m) return;
     const cur = L.current(pos);
     const k = cur ? cur.count : 0;
-    if (k === this._libCur) return;
-    this._libCur = k;
-    el.querySelectorAll('.lib-chip').forEach(c => c.classList.toggle('on', Number(c.dataset.k) === k));
+    if (k === this._aaCur) return;
+    this._aaCur = k;
+    el.querySelectorAll('.aa-chip').forEach(c => c.classList.toggle('on', Number(c.dataset.k) === k));
   },
 
   _updateMetroBtn() {
     const b = document.getElementById('dbg-metro-btn');
     if (!b) return;
-    const on = Librosa.metronomeOn;
+    const on = AudioAnalysis.metronomeOn;
     b.classList.toggle('on', on);
-    b.disabled = !Librosa.available();
+    b.disabled = !AudioAnalysis.available();
     const lbl = b.querySelector('.lbl'); if (lbl) lbl.textContent = on ? 'Metronome: On' : 'Metronome: Off';
+    const ok = AudioAnalysis.meterKnown();
+    for (const id of ['dbg-anchor-left', 'dbg-anchor-right']) { const a = document.getElementById(id); if (a) a.disabled = !ok; }
+    const av = document.getElementById('aa-anchor-val');
+    if (av) { const v = AudioAnalysis.anchorShift(); av.textContent = v ? ('+' + v) : '0'; }
   },
 
-  _libStatusText() {
-    const L = Librosa;
+  _aaStatusText() {
+    const L = AudioAnalysis;
     const phases = { download: 'downloading audio…', decode: 'decoding…', beats: 'detecting BPM…', refine: 'refining…' };
     switch (L.status) {
       case 'idle': return 'nothing playing';
@@ -525,7 +529,7 @@ const Debug = {
         return 'BPM ready · refining sections, meter, key…';
       }
       case 'unsupported': return 'not analysed';
-      case 'unavailable': return 'librosa unavailable';
+      case 'unavailable': return 'audio analysis unavailable';
       case 'disabled': return 'disabled in server config';
       default: return L.status;
     }
@@ -538,16 +542,16 @@ const Debug = {
 
   // Timeline of the stages (bars show when each ran, so parallel stages overlap)
   // plus the per-step costs inside each, slowest highlighted.
-  _renderLibTimings() {
-    const el = document.getElementById('dbg-lib-timings');
+  _renderAaTimings() {
+    const el = document.getElementById('dbg-aa-timings');
     if (!el) return;
-    const L = Librosa, tm = L.available() ? L.timings() : {};
+    const L = AudioAnalysis, tm = L.available() ? L.timings() : {};
     const e = L.cur;
     const sig = (e ? e._v : '') + '|' + L.forEncoded;
-    if (sig === this._libTlSig) return;
-    this._libTlSig = sig;
+    if (sig === this._aaTlSig) return;
+    this._aaTlSig = sig;
     const names = Object.keys(this._stageLabels).filter(k => tm[k]);
-    if (!names.length) { el.innerHTML = '<div class="lib-none">no timings yet</div>'; return; }
+    if (!names.length) { el.innerHTML = '<div class="aa-none">no timings yet</div>'; return; }
     const end = Math.max(...names.map(k => tm[k].doneAt || 0), 0.001);
     const esc = (s) => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
     let slowest = null;
@@ -557,33 +561,33 @@ const Debug = {
       const steps = (t.steps || []).slice().sort((a, b) => b.sec - a.sec);
       const top = steps.length ? steps[0].sec : 0;
       const stepHtml = steps.length > 1 || (steps.length === 1 && steps[0].name)
-        ? `<div class="lib-tl-steps">${steps.map(s => `<span class="${s.sec === top && s.sec >= 0.5 ? 'slow' : ''}">${esc(s.name)} ${s.sec.toFixed(2)}s</span>`).join('')}</div>` : '';
-      return `<div class="lib-tl-row"><span class="lib-tl-name">${this._stageLabels[k]}</span>`
-        + `<span class="lib-tl-track"><i style="left:${l.toFixed(1)}%;width:${w.toFixed(1)}%"></i></span>`
-        + `<span class="lib-tl-sec">${(t.wall != null ? t.wall : t.sec).toFixed(2)}s</span></div>${stepHtml}`;
-    }).join('') + (slowest ? `<div class="lib-tl-note">slowest step: <b>${esc(slowest.name)}</b> (${slowest.sec.toFixed(2)}s)</div>` : '');
+        ? `<div class="aa-tl-steps">${steps.map(s => `<span class="${s.sec === top && s.sec >= 0.5 ? 'slow' : ''}">${esc(s.name)} ${s.sec.toFixed(2)}s</span>`).join('')}</div>` : '';
+      return `<div class="aa-tl-row"><span class="aa-tl-name">${this._stageLabels[k]}</span>`
+        + `<span class="aa-tl-track"><i style="left:${l.toFixed(1)}%;width:${w.toFixed(1)}%"></i></span>`
+        + `<span class="aa-tl-sec">${(t.wall != null ? t.wall : t.sec).toFixed(2)}s</span></div>${stepHtml}`;
+    }).join('') + (slowest ? `<div class="aa-tl-note">slowest step: <b>${esc(slowest.name)}</b> (${slowest.sec.toFixed(2)}s)</div>` : '');
   },
 
-  _renderLibrosa() {
-    const L = Librosa;
+  _renderAudioAnalysis() {
+    const L = AudioAnalysis;
     L.sync();
     this._updateMetroBtn();
 
-    const statusEl = document.getElementById('dbg-lib-status');
-    const cardsEl = document.getElementById('dbg-lib-cards');
+    const statusEl = document.getElementById('dbg-aa-status');
+    const cardsEl = document.getElementById('dbg-aa-cards');
     if (!statusEl) return;
 
     if (!L.available()) {
       statusEl.textContent = '';
       this._setCards(cardsEl, [['Status', 'lobby mode only']]);
-      this._renderLibTimings();
+      this._renderAaTimings();
       return;
     }
-    statusEl.textContent = `(${this._libStatusText()})`;
-    this._renderLibTimings();
+    statusEl.textContent = `(${this._aaStatusText()})`;
+    this._renderAaTimings();
 
     if (!L.ready()) {
-      this._setCards(cardsEl, [['Status', this._libStatusText()], ...(L.message ? [['Reason', L.message]] : [])]);
+      this._setCards(cardsEl, [['Status', this._aaStatusText()], ...(L.message ? [['Reason', L.message]] : [])]);
       return;
     }
     const t = L.tempo(), m = L.meter(), k = L.key(), secs = L.sections(), beats = L.beatsMs;
@@ -784,7 +788,7 @@ const Debug = {
       ctx.fillRect(x, midY - h, Math.max(1, colW - 0.4), h * 2);
     }
 
-    // Beat markers from the librosa analysis: bar downbeats (count 1) are
+    // Beat markers from the audio analysis: bar downbeats (count 1) are
     // amber and tall, the other beats pink; each is labelled with its count.
     if (opts.beats) {
       ctx.font = '9px ui-monospace, monospace';
@@ -1001,23 +1005,24 @@ const Debug = {
 
         <div class="dbg-grid" id="dbg-cards"></div>
 
-        <div class="dbg-section" id="dbg-librosa-section">
+        <div class="dbg-section" id="dbg-audio-section">
           <div class="dbg-section-title">
-            Librosa analysis <span class="dbg-lane-hint">server-side beat / tempo / meter / key analysis · lobby mode only</span>
-            <span class="dbg-count" id="dbg-lib-status"></span>
+            Audio analysis <span class="dbg-lane-hint">server-side beat / tempo / meter / key analysis · lobby mode only</span>
+            <span class="dbg-count" id="dbg-aa-status"></span>
+            <span class="aa-anchor" title="Move the 1/4 anchor (bar start) left or right to realign the count"><button class="qa" id="dbg-anchor-left"><span class="material-symbols-outlined">chevron_left</span></button><span class="aa-anchor-lbl">1/4 anchor <b id="aa-anchor-val">0</b></span><button class="qa" id="dbg-anchor-right"><span class="material-symbols-outlined">chevron_right</span></button></span>
             <button class="qa" id="dbg-metro-btn" title="Click track on every detected beat (accented on beat 1)"><span class="material-symbols-outlined">music_note</span><span class="lbl">Metronome: Off</span></button>
           </div>
-          <div class="lib-hero">
-            <div class="lib-bpm"><span id="lib-bpm-num">—</span><span class="lib-bpm-unit">bpm</span><span class="lib-sec" id="lib-sec"></span></div>
-            <div class="lib-count" id="lib-count"><span class="lib-none">—</span></div>
+          <div class="aa-hero">
+            <div class="aa-bpm"><span id="aa-bpm-num">—</span><span class="aa-bpm-unit">bpm</span><span class="aa-sec" id="aa-sec"></span></div>
+            <div class="aa-count" id="aa-count"><span class="aa-none">—</span></div>
           </div>
-          <div class="dbg-grid" id="dbg-lib-cards"></div>
-          <div class="lib-tl" id="dbg-lib-timings"></div>
+          <div class="dbg-grid" id="dbg-aa-cards"></div>
+          <div class="aa-tl" id="dbg-aa-timings"></div>
         </div>
 
         <div class="dbg-section">
           <div class="dbg-section-title">
-            Stream waveform <span class="dbg-lane-hint">scrolling · beats from Librosa analysis (amber = bar start, cyan = tempo change)</span>
+            Stream waveform <span class="dbg-lane-hint">scrolling · beats from Audio analysis (amber = bar start, cyan = tempo change)</span>
             <div class="dbg-seg-toggle" id="dbg-seg-toggle">
               <button class="dbg-seg-btn on" data-seg="off">Off</button>
               <button class="dbg-seg-btn" data-seg="seconds">Seconds</button>
@@ -1080,7 +1085,10 @@ const Debug = {
       </div>
     `;
     document.getElementById('dbg-clear').addEventListener('click', () => this.clear());
-    document.getElementById('dbg-metro-btn').addEventListener('click', () => { Librosa.toggleMetronome(); this._updateMetroBtn(); });
+    const _shift = d => { AudioAnalysis.shiftAnchor(d); this._aaCur = -1; this._updateMetroBtn(); };
+    document.getElementById('dbg-anchor-left').addEventListener('click', () => _shift(-1));
+    document.getElementById('dbg-anchor-right').addEventListener('click', () => _shift(1));
+    document.getElementById('dbg-metro-btn').addEventListener('click', () => { AudioAnalysis.toggleMetronome(); this._updateMetroBtn(); });
     document.getElementById('dbg-seg-toggle').addEventListener('click', (e) => {
       const btn = e.target.closest('.dbg-seg-btn');
       if (!btn) return;
@@ -1092,7 +1100,7 @@ const Debug = {
   /* ───────── DOM: render (cheap, throttled to ~3.5fps by the caller) ───────── */
   render() {
     if (!this._built) return;
-    this._renderLibrosa();
+    this._renderAudioAnalysis();
     this._renderCards();
     this._renderNetTable();
     this._renderNodelinkTable();

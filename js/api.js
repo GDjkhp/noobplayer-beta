@@ -208,7 +208,7 @@ const LobbyAPI = {
     return res.json();
   },
 
-  // librosa analysis (beats / tempo / meter / key) of the lobby's current
+  // audio analysis (beats / tempo / meter / key) of the lobby's current
   // track. status is 'pending'/'none' until the server has finished; poll.
   async analysis(code, clientId) {
     const res = await fetch(`${this.base()}/api/lobby/${code}/analysis?clientId=${encodeURIComponent(clientId)}`);
