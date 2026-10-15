@@ -2413,6 +2413,18 @@ async def index():
     return await send_from_directory(STATIC_DIR, "index.html")
 
 
+# The About tab renders README.md client-side (js/about.js), so the README is
+# the single source of truth. It's whitelisted by exact name rather than
+# allowing every .md at the project root.
+@app.route("/README.md")
+async def readme():
+    return await send_from_directory(STATIC_DIR, "README.md", mimetype="text/markdown")
+
+@app.route("/robots.txt")
+async def robots():
+    return await send_from_directory(STATIC_DIR, "robots.txt", mimetype="text/plain")
+
+
 # The catch-all below serves the frontend out of the project root, which is
 # also where the server's own files live — so it would happily hand out
 # .env / config.py (containing NODELINK_PASSWORD) and skins.json (containing every

@@ -1246,3 +1246,26 @@ body.pad-active.pad-tabs-focused .pane :focus {
   .lib-chev { grid-area: chev; margin-right: 0; }
   .lib-sub { padding-left: 12px; }
 }
+
+
+/* ───────── About tab (rendered README) ───────── */
+#about-body { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 24px 32px; }
+.md { color: var(--text); line-height: 1.65; font-size: 14px; max-width: 760px; }
+.md h1, .md h2, .md h3 { font-family: var(--fn); margin: 1.4em 0 .5em; line-height: 1.25; }
+.md h1 { font-size: 26px; margin-top: 0; }
+.md h2 { font-size: 18px; padding-bottom: 6px; border-bottom: 1px solid var(--brd); }
+.md h3 { font-size: 15px; }
+.md p, .md ul, .md ol, .md pre, .md blockquote { margin: 0 0 1em; }
+.md ul, .md ol { padding-left: 1.4em; }
+.md li { margin: .25em 0; }
+.md a { color: var(--accent); text-decoration: none; word-break: break-word; }
+.md a:hover { text-decoration: underline; }
+.md strong { color: var(--text); font-weight: 700; }
+.md code { font-family: var(--fm); font-size: .9em; background: var(--surf2); border: 1px solid var(--brd); border-radius: 4px; padding: 1px 5px; }
+.md pre { background: var(--surf2); border: 1px solid var(--brd); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+.md pre code { background: none; border: 0; padding: 0; }
+.md blockquote { border-left: 3px solid var(--brd2); padding: 2px 14px; color: var(--muted); }
+.md hr { border: 0; border-top: 1px solid var(--brd); margin: 1.5em 0; }
+.md table { border-collapse: collapse; margin: 0 0 1em; }
+.md th, .md td { border: 1px solid var(--brd); padding: 6px 10px; }
+.md img { max-width: 100%; }

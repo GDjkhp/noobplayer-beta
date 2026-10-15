@@ -166,6 +166,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (b.dataset.tab === 'library') Library.render();
     if (b.dataset.tab === 'skins') Skins.renderTab();
     if (b.dataset.tab === 'bindings') Bindings.renderTab();
+    if (b.dataset.tab === 'about') About.render();
     // The visualizer burns a rAF loop, so it's started on entering the tab
     // and stopped on leaving rather than running behind hidden panes.
     if (b.dataset.tab === 'viz') Viz.renderTab(); else Viz.stop();

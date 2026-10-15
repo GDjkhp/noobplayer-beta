@@ -1,7 +1,6 @@
 quart
 quart-cors
 aiohttp
-aiortc
 av
 numpy
 uvicorn
