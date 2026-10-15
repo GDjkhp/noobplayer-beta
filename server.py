@@ -144,9 +144,17 @@ app = cors(app, allow_origin="*", allow_methods=["GET", "POST", "OPTIONS"], allo
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 asgi_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
-NL_HOST = config.NODELINK_HOST.rstrip("/")
-NL_PASS = config.NODELINK_PASSWORD
-load_dotenv()
+# NodeLink credentials live in .env (never in config.py, never in git).
+# Loaded from the project root explicitly so it works no matter which
+# directory uvicorn is started from.
+load_dotenv(Path(__file__).resolve().parent / ".env")
+NL_HOST = (os.environ.get("NODELINK_HOST") or "").strip().rstrip("/")
+NL_PASS = os.environ.get("NODELINK_PASSWORD") or ""
+if not NL_HOST or not NL_PASS:
+    raise SystemExit(
+        "Missing NodeLink credentials: set NODELINK_HOST and NODELINK_PASSWORD "
+        "in the .env file next to server.py (see .env.example)."
+    )
 
 
 http_session: aiohttp.ClientSession | None = None
@@ -2407,7 +2415,7 @@ async def index():
 
 # The catch-all below serves the frontend out of the project root, which is
 # also where the server's own files live — so it would happily hand out
-# config.py (containing NODELINK_PASSWORD) and skins.json (containing every
+# .env / config.py (containing NODELINK_PASSWORD) and skins.json (containing every
 # author's edit token) to anyone who asked for them by name. Only the
 # directories and file types the browser actually needs get through.
 STATIC_ALLOWED_DIRS = ("css/", "js/", "assets/", "img/", "fonts/")

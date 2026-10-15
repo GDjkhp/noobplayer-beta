@@ -1,14 +1,11 @@
 """
 Configuration for the NodeLink lobby server.
 
-Set your NodeLink node's credentials here. The Flask server proxies all
-NodeLink API calls (search, stream, lyrics, meaning) using these
-credentials, so browser clients in Server Mode never need to know them.
+NodeLink credentials (NODELINK_HOST / NODELINK_PASSWORD) are NOT set here —
+they live in the .env file next to server.py (copy .env.example to .env).
+The server proxies all NodeLink API calls (search, stream, lyrics, meaning)
+using them, so browser clients in Server Mode never need to know them.
 """
-
-# ── NodeLink node ──
-NODELINK_HOST = "https://nodelink.gdjkhp.com:443"
-NODELINK_PASSWORD = "youshallnotpass"
 
 # ── Flask server ──
 FLASK_HOST = "0.0.0.0"
@@ -41,7 +38,7 @@ QUIC_OPUS_BITRATE = 160000
 
 # The IP address browsers should actually open the WebTransport session
 # to, when this deployment sits behind a real domain name (like a
-# Hostinger VPS fronted by Traefik/DNS — NODELINK_HOST above being a
+# Hostinger VPS fronted by Traefik/DNS — NODELINK_HOST (in .env) being a
 # hostname is exactly this situation).
 #
 # WebTransport's serverCertificateHashes pinning (see the cert note

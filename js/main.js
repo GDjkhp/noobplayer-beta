@@ -160,6 +160,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (b.dataset.tab === 'chat') document.getElementById('chat-badge').textContent = '';
     if (b.dataset.tab === 'config') UI.renderConfigTab();
     if (b.dataset.tab === 'downloads') Downloads.render();
+    if (b.dataset.tab === 'library') Library.render();
     if (b.dataset.tab === 'skins') Skins.renderTab();
     if (b.dataset.tab === 'bindings') Bindings.renderTab();
     // The visualizer burns a rAF loop, so it's started on entering the tab
@@ -325,6 +326,7 @@ document.addEventListener('DOMContentLoaded', () => {
   VKeyboard.init();
   Pad.init();
   Downloads.init();
+  Library.init();
   Main.autoStart();
 
   /* ───────── Leave-on-close ─────────

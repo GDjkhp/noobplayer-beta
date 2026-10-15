@@ -120,6 +120,7 @@
     <!-- RIGHT: TABS -->
     <div id="right">
       <div id="tabs">
+        <button class="tab" data-tab="library"><span class="material-symbols-outlined">library_music</span>Library <span id="lib-badge"></span></button>
         <button class="tab" data-tab="search"><span class="material-symbols-outlined">search</span>Search</button>
         <button class="tab" data-tab="queue"><span class="material-symbols-outlined">queue_music</span>Queue <span id="q-badge"></span></button>
         <button class="tab" data-tab="downloads"><span class="material-symbols-outlined">download</span>Downloads <span id="dl-badge"></span></button>
@@ -130,6 +131,20 @@
         <button class="tab" data-tab="bindings"><span class="material-symbols-outlined">sports_esports</span>Bindings</button>
         <button class="tab on" data-tab="config"><span class="material-symbols-outlined">settings</span>Config</button>
         <button class="tab" data-tab="debug"><span class="material-symbols-outlined">bug_report</span>Debug</button>
+      </div>
+
+      <div class="pane" id="pane-library">
+        <div id="lib-bar">
+          <input id="lib-in" type="text" placeholder="Paste track, album or playlist links to save…" autocomplete="off" readonly onfocus="this.removeAttribute('readonly');">
+          <button id="btn-lib-add">Add</button>
+        </div>
+        <div id="lib-hdr">
+          <span id="lib-info">Library empty</span>
+          <input id="lib-filter" type="text" placeholder="Filter…" autocomplete="off">
+          <button class="qa" id="btn-lib-qall" title="Add everything shown to the queue"><span class="material-symbols-outlined">playlist_add</span>Queue All</button>
+          <button class="qa" id="btn-lib-sall" title="Shuffle everything shown, then add it to the queue"><span class="material-symbols-outlined">shuffle</span>Shuffle Add All</button>
+        </div>
+        <div id="lib-list"></div>
       </div>
 
       <div class="pane" id="pane-search">
@@ -560,6 +575,7 @@
 <script src="js/api.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/downloads.js"></script>
+<script src="js/library.js"></script>
 <script src="js/skins.js"></script>
 <script src="js/visualizer.js"></script>
 <script src="js/ui.js"></script>

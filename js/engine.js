@@ -678,8 +678,18 @@ const Engine = {
   // per track, letting the server do the current-track/queue split and
   // broadcast once. In standalone mode there's no network call either way
   // (it's all local state), so this just loops addToQueue for that case.
-  async addAllToQueue(tracks) {
+  // opts.shuffle randomises the order first ("Shuffle Add") — the shuffle
+  // happens here, before the tracks go out, so it works the same in lobby
+  // and standalone mode and doesn't disturb what is already in the queue.
+  async addAllToQueue(tracks, opts = {}) {
     if (!tracks || !tracks.length) return;
+    if (opts.shuffle) {
+      tracks = tracks.slice();
+      for (let i = tracks.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [tracks[i], tracks[j]] = [tracks[j], tracks[i]];
+      }
+    }
     if (S.mode === 'server') {
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/add_bulk', { clientId: S.lobby.clientId, tracks });
@@ -687,7 +697,7 @@ const Engine = {
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
-    for (const t of tracks) await this.addToQueue(t);
+    for (const t of tracks) await this.addToQueue(t, { silent: true });
   },
 
   async removeFromQueue(i) {

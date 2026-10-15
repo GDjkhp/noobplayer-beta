@@ -427,7 +427,7 @@ const UI = {
       let data, tracks = [], banner = '';
       const bannerCss = 'padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px';
       const actions = `
-          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button>
+          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button><button class="add-btn" id="btn-shuf-all" style="opacity:1" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span>Shuffle Add</button>
           <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every track listed"><span class="material-symbols-outlined">download</span>Download All</button>`;
 
       if (multi) {
@@ -457,12 +457,15 @@ const UI = {
       if (!data || data.loadType === 'empty') { res.innerHTML = `<div class="empty"><p>No results found</p></div>`; return; }
       if (data.loadType === 'error') { res.innerHTML = `<div class="empty"><p>Error: ${esc(data.data?.message || 'Unknown')}</p></div>`; return; }
 
+      let plMeta = null;
       if (data.loadType === 'playlist') {
         tracks = data.data.tracks;
+        plMeta = { name: data.data.info?.name || 'Playlist', source: id, artwork: data.data.pluginInfo?.artworkUrl || '', author: data.data.pluginInfo?.author || '' };
         banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
           <span style="color:var(--text);font-weight:600">${esc(data.data.info?.name || 'Playlist')}</span>
           <span>${tracks.length} tracks</span>
-          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button>
+          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button><button class="add-btn" id="btn-shuf-all" style="opacity:1" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span>Shuffle Add</button>
+          <button class="add-btn" id="btn-lib-save" style="opacity:1" title="Save this playlist to your library"><span class="material-symbols-outlined">bookmark_add</span>Save</button>
           <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every track in this playlist"><span class="material-symbols-outlined">download</span>Download All</button>
         </div>`;
       } else if (data.loadType === 'search') {
@@ -477,7 +480,7 @@ const UI = {
       if (!banner && tracks.length > 1) {
         banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
           <span>${tracks.length} results</span>
-          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button>
+          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button><button class="add-btn" id="btn-shuf-all" style="opacity:1" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span>Shuffle Add</button>
           <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every result"><span class="material-symbols-outlined">download</span>Download All</button>
         </div>`;
       }
@@ -496,6 +499,7 @@ const UI = {
           <div class="si-acts">
             <button class="add-btn pnow" data-a="play" data-i="${i}" title="Play" ${locked?'disabled':''}><span class="material-symbols-outlined">play_arrow</span><span class="lbl">Play</span></button>
             <button class="add-btn" data-a="q" data-i="${i}" title="Add to queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">Queue</span></button>
+            <button class="add-btn" data-a="save" data-i="${i}" title="Save to library"><span class="material-symbols-outlined">bookmark_add</span><span class="lbl">Save</span></button>
             <button class="add-btn" data-a="dl" data-i="${i}" title="Download this track"><span class="material-symbols-outlined">download</span><span class="lbl">Download</span></button>
           </div>
           <span class="si-d">${fmt(t.info.length)}</span>
@@ -509,6 +513,7 @@ const UI = {
           const t = S.searchResults[parseInt(btn.dataset.i)];
           if (!t) return;
           if (btn.dataset.a === 'dl') { UI.openDownloadMenu(btn, t); return; }
+          if (btn.dataset.a === 'save') { Library.addTrack(t); return; }
           // Something is already loaded (playing OR paused): Play on a search
           // result queues it instead of replacing the current track.
           if (btn.dataset.a === 'play' && S.current) {
@@ -535,6 +540,21 @@ const UI = {
         addAll.disabled = false;
         addAll.innerHTML = prevLabel;
       });
+
+      const shufAll = document.getElementById('btn-shuf-all');
+      if (shufAll) shufAll.addEventListener('click', async () => {
+        shufAll.disabled = true;
+        const prevLabel = shufAll.innerHTML;
+        shufAll.textContent = 'Adding…';
+        await Engine.addAllToQueue(tracks, { shuffle: true });
+        toast(`Shuffle-added ${tracks.length} tracks`, 'success');
+        UI.switchTab('queue');
+        shufAll.disabled = false;
+        shufAll.innerHTML = prevLabel;
+      });
+
+      const libSave = document.getElementById('btn-lib-save');
+      if (libSave && plMeta) libSave.addEventListener('click', () => Library.addCollection({ ...plMeta, tracks }));
 
       const dlAll = document.getElementById('btn-dl-all');
       if (dlAll) dlAll.addEventListener('click', e => { e.stopPropagation(); UI.openDownloadMenu(dlAll, tracks); });

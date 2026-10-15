@@ -1158,7 +1158,7 @@ body.pad-active.pad-tabs-focused .pane :focus {
   .si > .si-th, .si > .si-nth { grid-area: th; }
   .si-meta { grid-area: meta; }
   .si-d { grid-area: dur; }
-  .si-acts { grid-area: acts; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .si-acts { grid-area: acts; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
   .si-acts .add-btn { justify-content: center; padding: 7px 0; }
   .si-acts .add-btn .lbl { display: none; }                 /* icons only */
   .si-acts .add-btn .material-symbols-outlined { font-size: 20px; }
@@ -1216,3 +1216,33 @@ body.pad-active.pad-tabs-focused .pane :focus {
 .aa-anchor .qa { padding: 2px 6px; }
 .aa-anchor-lbl { font-size: 11px; opacity: .8; white-space: nowrap; }
 .aa-anchor-lbl b { font-variant-numeric: tabular-nums; }
+
+/* ═══════════════ Library tab ═══════════════ */
+#lib-bar { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
+#lib-in { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text); font-family: var(--fn); font-size: 14px; padding: 8px 16px; outline: none; transition: border-color .2s, box-shadow .2s; }
+#lib-in:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+#lib-in::placeholder { color: var(--muted); }
+#btn-lib-add { background: var(--accent); color: #05050f; border: none; border-radius: var(--sh-full); font-family: var(--fn); font-weight: 700; font-size: 12px; letter-spacing: .02em; text-transform: uppercase; padding: 8px 20px; cursor: pointer; box-shadow: var(--ev1); transition: opacity .2s, box-shadow .2s; flex-shrink: 0; white-space: nowrap; }
+#btn-lib-add:hover { opacity: .9; box-shadow: var(--ev2); }
+#btn-lib-add:disabled { opacity: .5; cursor: wait; }
+#lib-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); flex-shrink: 0; flex-wrap: wrap; }
+#lib-info { flex: 1; min-width: 90px; font-family: var(--fm); font-size: 10px; color: var(--muted); }
+#lib-filter { width: 130px; background: var(--bg); border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text); font-family: var(--fm); font-size: 11px; padding: 5px 12px; outline: none; }
+#lib-filter:focus { border-color: var(--accent); }
+#lib-list { flex: 1; overflow-y: auto; min-height: 0; }
+.lib-item { border-bottom: 1px solid transparent; }
+.lib-item.open { border-bottom-color: var(--brd); }
+.lib-item.col > .lib-row { cursor: pointer; }
+.lib-chev { font-size: 18px; color: var(--muted); flex-shrink: 0; margin-right: -4px; }
+.lib-sub { padding: 0 0 6px 34px; }
+.lib-trow { cursor: default; }
+.lib-trow .si-th, .lib-trow .si-nth { width: 34px; height: 34px; }
+.lib-del:hover { background: var(--red, #e5484d); border-color: var(--red, #e5484d); }
+/* touch screens have no hover — keep the row actions visible */
+@media (hover: none) { .lib-acts, .lib-trow .si-acts { opacity: 1; } }
+
+@media (max-width: 1000px) and (orientation: portrait) {
+  .lib-item.col > .lib-row { grid-template-columns: auto auto minmax(0, 1fr) auto; grid-template-areas: "chev th meta dur" "acts acts acts acts"; }
+  .lib-chev { grid-area: chev; margin-right: 0; }
+  .lib-sub { padding-left: 12px; }
+}
