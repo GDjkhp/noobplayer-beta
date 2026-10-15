@@ -1013,7 +1013,7 @@ const Debug = {
           <div class="dbg-section-title">
             Audio analysis <span class="dbg-lane-hint">server-side beat / tempo / meter / key analysis · lobby mode only</span>
             <span class="dbg-count" id="dbg-aa-status"></span>
-            <span class="aa-anchor" title="Move the 1/4 anchor (bar start) left or right to realign the count"><button class="qa" id="dbg-anchor-left"><span class="material-symbols-outlined">chevron_left</span></button><span class="aa-anchor-lbl">1/4 anchor <b id="aa-anchor-val">0</b></span><button class="qa" id="dbg-anchor-right"><span class="material-symbols-outlined">chevron_right</span></button></span>
+            <span class="aa-anchor" title="Move the bar anchor left or right to realign the count"><button class="qa" id="dbg-anchor-left"><span class="material-symbols-outlined">chevron_left</span></button><span class="aa-anchor-lbl">bar anchor <b id="aa-anchor-val">0</b></span><button class="qa" id="dbg-anchor-right"><span class="material-symbols-outlined">chevron_right</span></button></span>
             <button class="qa" id="dbg-metro-btn" title="Click track on every detected beat (accented on beat 1)"><span class="material-symbols-outlined">music_note</span><span class="lbl">Metronome: Off</span></button>
           </div>
           <div class="aa-hero">

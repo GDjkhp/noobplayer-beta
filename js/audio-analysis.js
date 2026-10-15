@@ -42,7 +42,7 @@ const AudioAnalysis = {
   beatsMs: null, _medianMs: 0, _secStartMs: null, _phases: null,
 
   metronomeOn: false,
-  _shifts: {},           // manual 1/4 anchor shift (in beats) per encoded track
+  _shifts: {},           // manual bar anchor shift (in beats) per encoded track
   _ctx: null, _gain: null, _timer: null,
   _lastClickIdx: -1, _lastPos: 0,
 
@@ -226,7 +226,7 @@ const AudioAnalysis = {
     return (((idx - p.beat - p.phase - this.anchorShift()) % m) + m) % m + 1;
   },
 
-  // Manual alignment: positive moves the 1/4 anchor later (to the right).
+  // Manual alignment: positive moves the bar anchor later (to the right).
   anchorShift() {
     const k = this.forEncoded;
     if (k == null) return 0;
