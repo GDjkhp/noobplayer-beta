@@ -414,16 +414,49 @@ const UI = {
     const isUrl = raw.startsWith('http://') || raw.startsWith('https://');
     const id = (isUrl || !src) ? raw : src + raw;
 
+    // Several links separated by whitespace/commas: resolve every one and merge
+    // (songs, albums and playlists can be mixed). Anything else is a normal query.
+    const parts = raw.split(/[\s,]+/).filter(Boolean);
+    const links = [...new Set(parts)];
+    const multi = parts.length > 1 && parts.every(p => /^https?:\/\/\S+$/i.test(p));
+
     const res = document.getElementById('sres');
-    res.innerHTML = `<div class="empty"><div class="dots"><span></span><span></span><span></span></div><p>Searching…</p></div>`;
+    res.innerHTML = `<div class="empty"><div class="dots"><span></span><span></span><span></span></div><p>${multi ? `Loading ${links.length} links…` : 'Searching…'}</p></div>`;
 
     try {
-      const data = await Backend.loadtracks(id);
+      let data, tracks = [], banner = '';
+      const bannerCss = 'padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px';
+      const actions = `
+          <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button>
+          <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every track listed"><span class="material-symbols-outlined">download</span>Download All</button>`;
+
+      if (multi) {
+        const settled = await Promise.allSettled(links.map(l => Backend.loadtracks(l)));
+        const seen = new Set();
+        let failed = 0;
+        for (const r of settled) {
+          const d = r.status === 'fulfilled' ? r.value : null;
+          let list = [];
+          if (d && d.loadType === 'playlist') list = d.data.tracks || [];
+          else if (d && d.loadType === 'search') list = d.data || [];
+          else if (d && d.loadType === 'track') list = [d.data];
+          else failed++;
+          for (const t of list) {
+            const key = t.encoded || (t.info && (t.info.uri || t.info.identifier));
+            if (key && seen.has(key)) continue;
+            if (key) seen.add(key);
+            tracks.push(t);
+          }
+        }
+        if (failed) toast(`${failed} of ${links.length} links could not be loaded`, 'warn');
+        banner = `<div style="${bannerCss}"><span style="color:var(--text);font-weight:600">${links.length} links</span><span>${tracks.length} tracks</span>${actions}</div>`;
+        data = { loadType: tracks.length ? 'multi' : 'empty' };
+      } else {
+        data = await Backend.loadtracks(id);
+      }
       if (!data || data.loadType === 'empty') { res.innerHTML = `<div class="empty"><p>No results found</p></div>`; return; }
       if (data.loadType === 'error') { res.innerHTML = `<div class="empty"><p>Error: ${esc(data.data?.message || 'Unknown')}</p></div>`; return; }
 
-      let tracks = [];
-      let banner = '';
       if (data.loadType === 'playlist') {
         tracks = data.data.tracks;
         banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
