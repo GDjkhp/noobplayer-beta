@@ -550,14 +550,16 @@ const Debug = {
     const sig = (e ? e._v : '') + '|' + L.forEncoded;
     if (sig === this._aaTlSig) return;
     this._aaTlSig = sig;
-    const names = Object.keys(this._stageLabels).filter(k => tm[k]);
+    // download / decode are I/O, not analysis: shown as their own cards, not here
+    const names = Object.keys(this._stageLabels).filter(k => tm[k] && k !== 'download' && k !== 'decode');
     if (!names.length) { el.innerHTML = '<div class="aa-none">no timings yet</div>'; return; }
-    const end = Math.max(...names.map(k => tm[k].doneAt || 0), 0.001);
+    const t0 = Math.min(...names.map(k => tm[k].startedAt || 0));
+    const end = Math.max(Math.max(...names.map(k => tm[k].doneAt || 0)) - t0, 0.001);
     const esc = (s) => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
     let slowest = null;
     for (const k of names) for (const st of tm[k].steps || []) if (!slowest || st.sec > slowest.sec) slowest = { ...st, stage: k };
     el.innerHTML = names.map(k => {
-      const t = tm[k], l = (t.startedAt || 0) / end * 100, w = Math.max(0.8, ((t.doneAt || 0) - (t.startedAt || 0)) / end * 100);
+      const t = tm[k], l = ((t.startedAt || 0) - t0) / end * 100, w = Math.max(0.8, ((t.doneAt || 0) - (t.startedAt || 0)) / end * 100);
       const steps = (t.steps || []).slice().sort((a, b) => b.sec - a.sec);
       const top = steps.length ? steps[0].sec : 0;
       const stepHtml = steps.length > 1 || (steps.length === 1 && steps[0].name)
@@ -610,6 +612,8 @@ const Debug = {
       ['Beats tracked', String(beats ? beats.length : 0)],
       ['Tuning', k ? `${k.tuningCents > 0 ? '+' : ''}${k.tuningCents} cents` : '—'],
     );
+    const tm = L.timings() || {}, sec = (x) => x ? `${(x.wall != null ? x.wall : x.sec).toFixed(2)}s` : '—';
+    cards.push(['Download PCM', sec(tm.download)], ['Decode / resample', sec(tm.decode)]);
     this._setCards(cardsEl, cards);
   },
 

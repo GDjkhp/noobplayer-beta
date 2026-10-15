@@ -1182,7 +1182,7 @@ body.pad-active.pad-tabs-focused .pane :focus {
   .qi-bs .qib .material-symbols-outlined { font-size: 20px; }
 }
 /* ── Debug › Audio analysis ── */
-#dbg-metro-btn { margin-left: auto; }
+#dbg-metro-btn { margin-left: 0; }
 #dbg-metro-btn.on { background: var(--st-focus); border-color: var(--accent); color: var(--accent); }
 .aa-hero { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; margin: 4px 0 12px; }
 .aa-bpm { display: flex; align-items: baseline; gap: 6px; }
@@ -1212,7 +1212,7 @@ body.pad-active.pad-tabs-focused .pane :focus {
 .aa-tl-note { margin-top: 4px; opacity: .75; }
 @media (max-width: 600px) { .aa-tl-row { grid-template-columns: 100px 1fr 50px; } .aa-tl-steps { padding-left: 0; } }
 
-.aa-anchor { display: inline-flex; align-items: center; gap: 4px; margin-right: 8px; }
+.aa-anchor { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; margin-right: 8px; }
 .aa-anchor .qa { padding: 2px 6px; }
 .aa-anchor-lbl { font-size: 11px; opacity: .8; white-space: nowrap; }
 .aa-anchor-lbl b { font-variant-numeric: tabular-nums; }
