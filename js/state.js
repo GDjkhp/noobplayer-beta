@@ -23,7 +23,7 @@ const S = {
   // authoritative Lobby.gapless (see Engine._lobbySync) — the host
   // changes it through the same /gapless control endpoint as loop mode
   // and autoplay, same pattern as the block above. In standalone mode
-  // this client owns it outright, persisted in localStorage under
+  // this client owns it outright, persisted in the Store (IndexedDB) under
   // 'nl_gapless' so the choice survives a reload. Defaults ON either
   // way — toggle off via the player's Gapless button (see
   // UI.updateGaplessButton / Engine.toggleGapless).
@@ -62,7 +62,7 @@ const S = {
 
   // Skins — look-and-feel customisation (see skins.js). `active` is the
   // skin currently painted onto the page, `mine` are the ones saved in this
-  // browser's localStorage, `gallery` is the last fetched public list.
+  // browser's Store (IndexedDB), `gallery` is the last fetched public list.
   skins: {
     active: null,
     activeId: null,

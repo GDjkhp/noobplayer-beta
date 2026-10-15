@@ -52,7 +52,7 @@ const Lobby = {
           // second participant would just displace us as host (a fresh
           // join, new clientId, same as any other participant).
           if (S.mode === 'server' && S.lobby.active && item.dataset.code === S.lobby.code) { toast("You're already in this lobby", 'info', 1800); return; }
-          const displayName = localStorage.getItem('nl_display_name') || 'Guest';
+          const displayName = Store.getItem('nl_display_name') || 'Guest';
           await this.join(item.dataset.code, displayName);
         });
       });
@@ -73,7 +73,7 @@ const Lobby = {
     if (!code) { toast('Enter a lobby code', 'warn'); input.focus(); return; }
     btn.disabled = true;
     try {
-      const displayName = localStorage.getItem('nl_display_name') || 'Guest';
+      const displayName = Store.getItem('nl_display_name') || 'Guest';
       const ok = await this.join(code, displayName, passInput ? passInput.value : '');
       if (ok) { input.value = ''; if (passInput) passInput.value = ''; }
     } finally { btn.disabled = false; }
@@ -147,7 +147,7 @@ const Lobby = {
     S.lobby.isHost = isHost;
     S.lobby.displayName = displayName;
     S.lobby.password = password || '';
-    localStorage.setItem('nl_display_name', displayName);
+    Store.setItem('nl_display_name', displayName);
 
     Main.enterApp();
     document.getElementById('hdr-standalone').style.display = 'none';
@@ -424,7 +424,7 @@ const Lobby = {
     try {
       const r = await LobbyAPI.rename(S.lobby.code, S.lobby.clientId, displayName);
       S.lobby.displayName = r.displayName;
-      localStorage.setItem('nl_display_name', r.displayName);
+      Store.setItem('nl_display_name', r.displayName);
       return true;
     } catch (e) { toast(`Error: ${e.message}`, 'error'); return false; }
   },
@@ -485,8 +485,9 @@ const Lobby = {
   leaveBeacon() {
     if (S.mode !== 'server' || !S.lobby.active || !S.lobby.code || !S.lobby.clientId) return;
     // Host closing the page as the last member: keep the lobby so it can be
-    // loaded again from Saved Sessions (localStorage writes are synchronous,
-    // so they survive the page going away).
+    // loaded again from Saved Sessions. Store.setItem starts its IndexedDB
+    // write immediately (no batching), which is as close to synchronous as
+    // IndexedDB gets during pagehide.
     Sessions.autosaveIfLastHost('page-closed');
     try {
       const url = `${Backend.serverUrl}/api/lobby/${S.lobby.code}/leave`;
@@ -526,7 +527,7 @@ const Lobby = {
   // moment later.
   async leave(opts = {}) {
     const { autoRejoin = true, noAutosave = false } = opts;
-    const displayName = S.lobby.displayName || localStorage.getItem('nl_display_name') || 'Guest';
+    const displayName = S.lobby.displayName || Store.getItem('nl_display_name') || 'Guest';
     // A deliberate leave must stop any reconnect loop, and a host leaving as
     // the last member keeps the lobby in Saved Sessions.
     if (!noAutosave) Sessions.autosaveIfLastHost('host-left');
@@ -554,7 +555,7 @@ const Lobby = {
     UI.updateLoopButton(); UI.updateQueueHeader();
 
     if (autoRejoin) {
-      const lobbyName = localStorage.getItem('nl_lobby_name') || 'New Lobby';
+      const lobbyName = Store.getItem('nl_lobby_name') || 'New Lobby';
       await this.create(lobbyName, false, displayName);   // _enterLobby leaves whatever tab was open as-is
       return;
     }

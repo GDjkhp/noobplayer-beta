@@ -3,7 +3,7 @@
    Sessions + Heal
 
    Sessions — the "Saved Sessions" card. A snapshot of a lobby (code, name,
-   settings, queue, history, smart pool, current track + position) lives in localStorage,
+   settings, queue, history, smart pool, current track + position) lives in the Store (IndexedDB),
    one per lobby code; saving again with the same code overwrites it. Lobbies
    with no current track, queue, history or smart pool are never saved. The host's
    browser autosaves when:
@@ -23,10 +23,10 @@ const Sessions = {
   KEY: 'nl_sessions',
   MAX: 20,
 
-  /* ───────── storage (localStorage can throw or be full) ───────── */
+  /* ───────── storage (Store: IndexedDB, falls back to localStorage) ───────── */
   _read() {
     try {
-      const v = JSON.parse(localStorage.getItem(this.KEY) || '{}');
+      const v = JSON.parse(Store.getItem(this.KEY) || '{}');
       return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
     } catch (_) { return {}; }
   },
@@ -36,7 +36,7 @@ const Sessions = {
     for (let tries = 0; tries < 6; tries++) {
       const out = {};
       entries.forEach(e => { out[e.code] = e; });
-      try { localStorage.setItem(this.KEY, JSON.stringify(out)); return true; }
+      try { Store.setItem(this.KEY, JSON.stringify(out)); return true; }
       catch (_) { entries = entries.slice(0, Math.max(1, Math.floor(entries.length / 2))); }
     }
     return false;
@@ -66,7 +66,7 @@ const Sessions = {
       // The password lives only in the host's own browser; restore needs it to protect the rebuilt lobby.
       password: S.lobby.isHost ? (S.lobby.password || '') : '',
       hasPassword: !!st.hasPassword,
-      displayName: S.lobby.displayName || localStorage.getItem('nl_display_name') || 'Guest',
+      displayName: S.lobby.displayName || Store.getItem('nl_display_name') || 'Guest',
       loopMode: st.loopMode,
       autoplay: st.autoplay,
       gapless: st.gapless,
@@ -307,7 +307,7 @@ const Heal = {
     while (this.active && this._run === run) {
       this._busy = true;
       try {
-        const name = S.lobby.displayName || localStorage.getItem('nl_display_name') || 'Guest';
+        const name = S.lobby.displayName || Store.getItem('nl_display_name') || 'Guest';
         let r;
         try {
           r = await LobbyAPI.rejoin(S.lobby.code, S.lobby.clientId, name, S.lobby.password);
@@ -366,7 +366,7 @@ const Heal = {
     const run = ++this._run;
     this._banner(`Loading ${snap.code}…`);
 
-    const name = localStorage.getItem('nl_display_name') || snap.displayName || 'Guest';
+    const name = Store.getItem('nl_display_name') || snap.displayName || 'Guest';
     try {
       if (S.mode === 'server' && S.lobby.active) await Lobby.leave({ autoRejoin: false });
     } catch (_) {}

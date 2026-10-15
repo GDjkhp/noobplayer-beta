@@ -83,7 +83,7 @@ const Backend = {
 const LobbyAPI = {
   base() { return Backend.serverUrl; },
 
-  // Persistent per-browser user id: generated once, kept in localStorage, and
+  // Persistent per-browser user id: generated once, kept in the persistent Store (IndexedDB), and
   // sent on every create/join/rejoin/restore. It is what tags a user's queued
   // tracks and what a ban sticks to, so it survives leaving and rejoining
   // (the per-join clientId does not). Falls back to a per-page-load id when
@@ -92,12 +92,12 @@ const LobbyAPI = {
   userId() {
     if (this._uid) return this._uid;
     let id = null;
-    try { id = localStorage.getItem('nl_user_id'); } catch (_) {}
+    try { id = Store.getItem('nl_user_id'); } catch (_) {}
     if (!/^[0-9a-f]{32}$/.test(id || '')) {
       const b = new Uint8Array(16);
       (window.crypto || window.msCrypto).getRandomValues(b);
       id = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
-      try { localStorage.setItem('nl_user_id', id); } catch (_) {}
+      try { Store.setItem('nl_user_id', id); } catch (_) {}
     }
     return (this._uid = id);
   },

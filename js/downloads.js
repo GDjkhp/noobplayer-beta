@@ -14,7 +14,7 @@
 
    The audio is held in memory until the file is complete, then handed to the
    browser as a normal download. Finished entries (not in-flight ones) are
-   remembered in localStorage so the tab survives a reload.
+   remembered in the Store (IndexedDB) so the tab survives a reload.
 ═══════════════════════════════════════════ */
 const Downloads = {
   KEY: 'nl_downloads',
@@ -32,7 +32,7 @@ const Downloads = {
   /* ───────── lifecycle ───────── */
   init() {
     try {
-      const saved = JSON.parse(localStorage.getItem(this.KEY) || '[]');
+      const saved = JSON.parse(Store.getItem(this.KEY) || '[]');
       if (Array.isArray(saved)) {
         saved.forEach(s => {
           if (!s || !['done', 'error', 'canceled'].includes(s.status)) return;
@@ -51,7 +51,7 @@ const Downloads = {
         .map(i => ({ encoded: i.encoded, title: i.title, author: i.author, artwork: i.artwork, length: i.length,
                      format: i.format, status: i.status, size: i.size, error: i.error,
                      addedAt: i.addedAt, finishedAt: i.finishedAt }));
-      localStorage.setItem(this.KEY, JSON.stringify(fin));
+      Store.setItem(this.KEY, JSON.stringify(fin));
     } catch (_) {}
   },
 

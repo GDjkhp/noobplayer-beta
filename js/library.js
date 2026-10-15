@@ -1,8 +1,12 @@
 'use strict';
 /* ═══════════════════════════════════════════
    Library — saved tracks, albums and playlists, kept in this browser's
-   localStorage so they can be queued (or shuffle-queued) without searching
-   again. Backs the Library tab (the first tab).
+   IndexedDB (one record per library item, so adding/removing one item only
+   rewrites that item) so they can be queued (or shuffle-queued) without
+   searching again. Backs the Library tab (the first tab).
+
+   Older versions kept the library in localStorage ('nl_library'); that data is
+   migrated into IndexedDB automatically on first load.
 
    Everything is stored as a "library item":
      { id, kind: 'track' | 'collection', name, author, artwork,
@@ -19,13 +23,14 @@ const Library = {
   _open: new Set(),   // ids of expanded collections
   _filter: '',
 
-  /* ───────── persistence ───────── */
-  init() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(this.KEY) || '[]');
-      if (Array.isArray(saved)) this.items = saved.filter(i => i && i.id && Array.isArray(i.tracks) && i.tracks.length);
-    } catch (_) { this.items = []; }
+  /* ───────── persistence (IndexedDB) ───────── */
+  DB_NAME: 'nl_library_db',
+  STORE: 'items',
+  _db: null,
+  _ready: null,
+  _persistWarned: false,
 
+  init() {
     const $ = id => document.getElementById(id);
     $('btn-lib-add').addEventListener('click', () => this.addFromInput());
     $('lib-in').addEventListener('keydown', e => { if (e.key === 'Enter') this.addFromInput(); });
@@ -33,15 +38,109 @@ const Library = {
     $('btn-lib-qall').addEventListener('click', () => this._bulk(this._visibleTracks(), false, 'library'));
     $('btn-lib-sall').addEventListener('click', () => this._bulk(this._visibleTracks(), true, 'library'));
     $('lib-list').addEventListener('click', e => this._onListClick(e));
+    $('btn-lib-export').addEventListener('click', () => this.exportJson());
+    $('btn-lib-import').addEventListener('click', () => $('lib-import-file').click());
+    $('lib-import-file').addEventListener('change', async e => {
+      const f = e.target.files && e.target.files[0];
+      e.target.value = '';          // so picking the same file twice still fires
+      if (f) await this.importFile(f);
+    });
+    this.render();
+    this._ready = this._load();
+  },
+
+  _openDb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) { reject(new Error('IndexedDB is not available')); return; }
+      const req = indexedDB.open(this.DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(this.STORE)) db.createObjectStore(this.STORE, { keyPath: 'id' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('could not open IndexedDB'));
+      req.onblocked = () => reject(new Error('IndexedDB is blocked by another tab'));
+    });
+  },
+
+  // Runs fn(store) inside one transaction and resolves when it commits.
+  _tx(mode, fn) {
+    return new Promise((resolve, reject) => {
+      if (!this._db) { reject(new Error('library storage is not available')); return; }
+      const tx = this._db.transaction(this.STORE, mode);
+      let out;
+      tx.oncomplete = () => resolve(out);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('transaction aborted'));
+      out = fn(tx.objectStore(this.STORE), tx);
+    });
+  },
+
+  async _load() {
+    try {
+      this._db = await this._openDb();
+      const stored = await new Promise((resolve, reject) => {
+        const all = [];
+        this._tx('readonly', st => {
+          const req = st.getAll();
+          req.onsuccess = () => all.push(...req.result);
+        }).then(() => resolve(all), reject);
+      });
+
+      // One-time migration from the old localStorage-based library (store.js has
+      // already moved that key into the Store, so it is read from there).
+      let legacy = [];
+      try {
+        const raw = Store.getItem('nl_library');
+        if (raw) legacy = JSON.parse(raw);
+      } catch (_) { legacy = []; }
+      legacy = Array.isArray(legacy) ? legacy.filter(i => i && i.id && Array.isArray(i.tracks) && i.tracks.length) : [];
+      const have = new Set(stored.map(i => i.id));
+      const toMove = legacy.filter(i => !have.has(i.id));
+      if (toMove.length) {
+        await this._tx('readwrite', st => toMove.forEach(i => st.put(i)));
+        stored.push(...toMove);
+      }
+      if (legacy.length || Store.getItem('nl_library') !== null) {
+        try { Store.removeItem('nl_library'); } catch (_) {}
+        if (toMove.length) toast(`Moved ${toMove.length} library item${toMove.length !== 1 ? 's' : ''} to IndexedDB`, 'info', 2500);
+      }
+
+      // Anything added while we were loading is already in this.items — merge, newest first.
+      const known = new Set(this.items.map(i => i.id));
+      const loaded = stored.filter(i => i && i.id && Array.isArray(i.tracks) && i.tracks.length && !known.has(i.id));
+      this.items = [...this.items, ...loaded].sort((a, b) => (b.added || 0) - (a.added || 0));
+    } catch (e) {
+      this._db = null;
+      console.error('Library storage error:', e);
+      if (!this._persistWarned) {
+        this._persistWarned = true;
+        toast('Library storage is unavailable in this browser — saves will last only until you close the page', 'warn', 6000);
+      }
+    }
     this.render();
   },
 
-  _save() {
-    try { localStorage.setItem(this.KEY, JSON.stringify(this.items)); return true; }
-    catch (e) {
-      toast('Could not save the library — browser storage is full', 'error');
-      return false;
+  // Writes happen in the background; the in-memory list (what's rendered) is
+  // updated first. If a write fails, onFail() lets the caller undo the change.
+  async _persist(item, onFail) {
+    try {
+      await this._ready;
+      if (!this._db) return;   // no storage → memory-only (already warned)
+      await this._tx('readwrite', st => st.put(JSON.parse(JSON.stringify(item))));
+    } catch (e) {
+      console.error('Library save failed:', e);
+      toast('Could not save to library storage — ' + (e && e.name === 'QuotaExceededError' ? 'the browser is out of space' : 'write failed'), 'error', 5000);
+      if (onFail) onFail();
     }
+  },
+
+  async _unpersist(id) {
+    try {
+      await this._ready;
+      if (!this._db) return;
+      await this._tx('readwrite', st => st.delete(id));
+    } catch (e) { console.error('Library delete failed:', e); }
   },
 
   /* ───────── helpers ───────── */
@@ -80,6 +179,12 @@ const Library = {
     return this._uniq(this.items.filter(i => this._matches(i)).flatMap(i => i.tracks));
   },
 
+  _dropFromMemory(id) {
+    this.items = this.items.filter(i => i.id !== id);
+    this._open.delete(id);
+    this.render();
+  },
+
   /* ───────── adding ───────── */
   hasTrack(t) { const k = this._key(t); return !!k && this.items.some(i => i.kind === 'track' && this._key(i.tracks[0]) === k); },
 
@@ -91,8 +196,9 @@ const Library = {
       name: track.info.title, author: track.info.author, artwork: track.info.artworkUrl || '',
       source: track.info.uri || '', tracks: [this._slim(track)], added: Date.now(),
     });
-    if (!this._save()) { this.items.shift(); return false; }
+    const item = this.items[0];
     this.render();
+    this._persist(item, () => this._dropFromMemory(item.id));
     if (!quiet) toast(`Saved to library: ${track.info.title}`, 'success', 2000);
     return true;
   },
@@ -111,8 +217,9 @@ const Library = {
       artwork: artwork || tracks[0].info.artworkUrl || '',
       source: source || '', tracks: tracks.map(t => this._slim(t)), added: Date.now(),
     });
-    if (!this._save()) { this.items.shift(); return false; }
+    const item = this.items[0];
     this.render();
+    this._persist(item, () => this._dropFromMemory(item.id));
     if (!quiet) toast(`Saved to library: ${name || 'collection'} (${tracks.length} tracks)`, 'success', 2200);
     return true;
   },
@@ -176,7 +283,9 @@ const Library = {
       if (!tracks.length) { toast('Could not refresh — nothing came back', 'warn'); return; }
       const delta = tracks.length - item.tracks.length;
       item.tracks = tracks.map(t => this._slim(t));
-      if (this._save()) { this.render(); toast(`Refreshed ${item.name} (${delta >= 0 ? '+' : ''}${delta})`, 'success', 2200); }
+      this.render();
+      this._persist(item);
+      toast(`Refreshed ${item.name} (${delta >= 0 ? '+' : ''}${delta})`, 'success', 2200);
     } catch (e) { toast(`Refresh failed: ${e.message}`, 'error'); }
   },
 
@@ -185,8 +294,92 @@ const Library = {
     if (i < 0) return;
     const [gone] = this.items.splice(i, 1);
     this._open.delete(id);
-    this._save(); this.render();
+    this._unpersist(id); this.render();
     toast(`Removed ${gone.name} from library`, 'info', 1800);
+  },
+
+  /* ───────── export / import ───────── */
+  FORMAT: 'noobplayer-library',
+
+  exportJson() {
+    if (!this.items.length) { toast('Library is empty — nothing to export', 'warn'); return; }
+    const payload = { format: this.FORMAT, version: 1, exported: new Date().toISOString(), items: this.items };
+    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `noobplayer-library-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    toast(`Exported ${this.items.length} item${this.items.length !== 1 ? 's' : ''}`, 'success', 2200);
+  },
+
+  // Validates one imported item and returns a clean copy, or null if unusable.
+  _sanitize(raw) {
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.tracks)) return null;
+    const str = (v, max = 500) => (typeof v === 'string' ? v.slice(0, max) : '');
+    const tracks = this._uniq(raw.tracks.filter(t =>
+      t && typeof t === 'object' && typeof t.encoded === 'string' && t.encoded &&
+      t.info && typeof t.info === 'object' && typeof t.info.title === 'string'
+    ).map(t => this._slim(t)));
+    if (!tracks.length) return null;
+    const kind = raw.kind === 'collection' ? 'collection' : 'track';
+    const first = tracks[0].info;
+    return {
+      id: str(raw.id, 60) || this._newId(),
+      kind: kind === 'track' ? 'track' : 'collection',
+      name: str(raw.name) || first.title,
+      author: str(raw.author) || str(first.author),
+      artwork: str(raw.artwork, 2000) || str(first.artworkUrl, 2000),
+      source: str(raw.source, 2000),
+      tracks: kind === 'track' ? [tracks[0]] : tracks,
+      added: Number.isFinite(raw.added) ? raw.added : Date.now(),
+    };
+  },
+
+  async importFile(file) {
+    if (file.size > 200 * 1024 * 1024) { toast('That file is too large to be a library export', 'error'); return; }
+    let data;
+    try { data = JSON.parse(await file.text()); }
+    catch (_) { toast('That file is not valid JSON', 'error'); return; }
+    const list = Array.isArray(data) ? data : (data && data.format === this.FORMAT ? data.items : null);
+    if (!Array.isArray(list)) { toast('That does not look like a Noobplayer library export', 'error'); return; }
+
+    const fresh = [];
+    let skipped = 0, invalid = 0;
+    const ids = new Set(this.items.map(i => i.id));
+    for (const raw of list) {
+      const item = this._sanitize(raw);
+      if (!item) { invalid++; continue; }
+      const dup = this.items.some(i =>
+        i.id === item.id ||
+        (item.kind === 'track' && i.kind === 'track' && this._key(i.tracks[0]) === this._key(item.tracks[0])) ||
+        (item.kind === 'collection' && item.source && i.kind === 'collection' && i.source === item.source)
+      ) || fresh.some(i => i.id === item.id);
+      if (dup) { skipped++; continue; }
+      if (ids.has(item.id)) item.id = this._newId();
+      ids.add(item.id);
+      fresh.push(item);
+    }
+    if (!fresh.length) {
+      toast(invalid || skipped ? `Nothing new to import (${skipped} already here${invalid ? `, ${invalid} unreadable` : ''})` : 'The file has no items', 'info', 3500);
+      return;
+    }
+
+    // Oldest first, so unshift-ing keeps the newest at the top like everywhere else.
+    fresh.sort((a, b) => a.added - b.added).forEach(it => this.items.unshift(it));
+    this.items.sort((a, b) => (b.added || 0) - (a.added || 0));
+    this.render();
+    try {
+      await this._ready;
+      if (this._db) await this._tx('readwrite', st => fresh.forEach(it => st.put(JSON.parse(JSON.stringify(it)))));
+      toast(`Imported ${fresh.length} item${fresh.length !== 1 ? 's' : ''}${skipped ? ` · ${skipped} already here` : ''}${invalid ? ` · ${invalid} unreadable` : ''}`, 'success', 3500);
+    } catch (e) {
+      console.error('Library import failed:', e);
+      const gone = new Set(fresh.map(i => i.id));
+      this.items = this.items.filter(i => !gone.has(i.id));
+      this.render();
+      toast('Import failed — ' + (e && e.name === 'QuotaExceededError' ? 'the browser is out of space' : 'could not write to storage'), 'error', 5000);
+    }
   },
 
   /* ───────── queueing ───────── */
@@ -226,7 +419,7 @@ const Library = {
     const badge = document.getElementById('lib-badge');
     if (badge) badge.textContent = this.items.length ? `(${this.items.length})` : '';
     const none = !this.items.length;
-    ['btn-lib-qall', 'btn-lib-sall'].forEach(id => { document.getElementById(id).disabled = none; });
+    ['btn-lib-qall', 'btn-lib-sall', 'btn-lib-export'].forEach(id => { document.getElementById(id).disabled = none; });
 
     if (none) {
       list.innerHTML = `<div class="empty"><span class="material-symbols-outlined">library_music</span><p>Paste a link above, or tap the bookmark on any search result,<br>to keep tracks, albums and playlists here</p></div>`;

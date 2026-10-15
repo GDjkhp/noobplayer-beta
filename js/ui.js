@@ -332,6 +332,7 @@ const UI = {
           <button class="qib" data-qa="up"   data-qi="${i}" title="Move up" ${(locked||i===0)?'disabled':''}><span class="material-symbols-outlined">keyboard_arrow_up</span></button>
           <button class="qib" data-qa="dn"   data-qi="${i}" title="Move down" ${(locked||i===S.queue.length-1)?'disabled':''}><span class="material-symbols-outlined">keyboard_arrow_down</span></button>
           <button class="qib" data-qa="link" data-qi="${i}" title="Open track link" ${t.info.uri?'':'disabled'}><span class="material-symbols-outlined">open_in_new</span></button>
+          <button class="qib" data-qa="save" data-qi="${i}" title="Save to library"><span class="material-symbols-outlined">bookmark_add</span></button>
           <button class="qib dl" data-qa="dl" data-qi="${i}" title="Download"><span class="material-symbols-outlined">download</span></button>
           <button class="qib del" data-qa="rm" data-qi="${i}" title="${canRemove ? 'Remove' : 'Only the host can remove other people\u2019s tracks'}" ${canRemove?'':'disabled'}><span class="material-symbols-outlined">close</span></button>
         </div>
@@ -360,6 +361,7 @@ const UI = {
         } else if (a === 'up' && i > 0) { Engine.moveQueueItem(i, i - 1); }
         else if (a === 'dn' && i < S.queue.length - 1) { Engine.moveQueueItem(i, i + 1); }
         else if (a === 'rm') Engine.removeFromQueue(i);
+        else if (a === 'save') Library.addTrack(S.queue[i]);
         else if (a === 'dl') UI.openDownloadMenu(btn, S.queue[i]);
         else if (a === 'link') UI.openTrackLink(S.queue[i]);
       });
@@ -778,21 +780,21 @@ const UI = {
      Display name + default lobby name live here now, instead of being
      retyped on Join/Create every time (those tabs are gone — lobbies are
      created automatically on startup/leave, see Main.autoStart and
-     Lobby.leave). Just two localStorage-backed fields that future lobby
+     Lobby.leave). Just two Store-backed (IndexedDB) fields that future lobby
      creations/joins read from. */
   renderUserSettings() {
     const nameInput = document.getElementById('us-display-name');
     const lobbyInput = document.getElementById('us-lobby-name');
     if (!nameInput || !lobbyInput) return;
-    if (document.activeElement !== nameInput) nameInput.value = localStorage.getItem('nl_display_name') || '';
-    if (document.activeElement !== lobbyInput) lobbyInput.value = localStorage.getItem('nl_lobby_name') || '';
+    if (document.activeElement !== nameInput) nameInput.value = Store.getItem('nl_display_name') || '';
+    if (document.activeElement !== lobbyInput) lobbyInput.value = Store.getItem('nl_lobby_name') || '';
   },
 
   async saveUserSettings() {
     const name = document.getElementById('us-display-name').value.trim();
     const lobbyName = document.getElementById('us-lobby-name').value.trim();
-    if (name) localStorage.setItem('nl_display_name', name);
-    if (lobbyName) localStorage.setItem('nl_lobby_name', lobbyName);
+    if (name) Store.setItem('nl_display_name', name);
+    if (lobbyName) Store.setItem('nl_lobby_name', lobbyName);
 
     // Current Lobby no longer has its own name/display-name fields — this
     // is the only place either value is entered, so if we're in a lobby
@@ -889,8 +891,8 @@ const UI = {
     if (mode === 'default') Lobby.chooseDefaultServer(); else Lobby.chooseCustomServer(url);
     this.updateServerUrlDisplay();
 
-    const displayName = localStorage.getItem('nl_display_name') || 'Guest';
-    const lobbyName = localStorage.getItem('nl_lobby_name') || 'New Lobby';
+    const displayName = Store.getItem('nl_display_name') || 'Guest';
+    const lobbyName = Store.getItem('nl_lobby_name') || 'New Lobby';
     await Lobby.create(lobbyName, false, displayName);
     this.setConfigMode('lobby');
     this.renderConfigTab();

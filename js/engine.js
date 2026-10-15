@@ -181,7 +181,7 @@ const Engine = {
 
   _selfRequester() {
     const name = (S.mode === 'server' && S.lobby.displayName)
-      || localStorage.getItem('nl_display_name') || 'You';
+      || Store.getItem('nl_display_name') || 'You';
     return { id: LobbyAPI.userId(), name };
   },
 
@@ -883,7 +883,7 @@ const Engine = {
   // toggles it through a control endpoint and it's mirrored to everyone
   // via state, exactly like loop mode / autoplay (see Engine._lobbySync).
   // Defaults OFF either way; the standalone side is persisted in
-  // localStorage so the choice survives a reload.
+  // the Store (IndexedDB) so the choice survives a reload.
   async toggleGapless() {
     if (S.mode === 'server') {
       if (!UI.canControl()) { toast('Only the host or a DJ can change gapless playback', 'warn'); return; }
@@ -895,7 +895,7 @@ const Engine = {
       return;
     }
     S.gaplessEnabled = !S.gaplessEnabled;
-    try { localStorage.setItem('nl_gapless', S.gaplessEnabled ? '1' : '0'); } catch (_) {}
+    try { Store.setItem('nl_gapless', S.gaplessEnabled ? '1' : '0'); } catch (_) {}
     if (S.gaplessEnabled) this._ensurePreload(); else this._cancelPreload();
     UI.updateGaplessButton();
     toast(`Gapless playback: ${S.gaplessEnabled ? 'ON' : 'OFF'}`, 'info', 1500);

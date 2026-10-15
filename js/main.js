@@ -22,18 +22,18 @@ const Main = {
   async autoStart() {
     Lobby.chooseDefaultServer();
     UI.updateServerUrlDisplay();
-    let displayName = localStorage.getItem('nl_display_name');
+    let displayName = Store.getItem('nl_display_name');
     if (!displayName) {
       displayName = `Guest${Math.floor(1000 + Math.random() * 9000)}`;
-      localStorage.setItem('nl_display_name', displayName);
+      Store.setItem('nl_display_name', displayName);
     }
     // Gapless defaults ON: no stored preference yet reads as on, an
     // explicit '0' (the person turned it off before) is respected.
     try {
-      const stored = localStorage.getItem('nl_gapless');
+      const stored = Store.getItem('nl_gapless');
       S.gaplessEnabled = stored === null ? true : stored === '1';
     } catch (_) {}
-    const lobbyName = localStorage.getItem('nl_lobby_name') || 'New Lobby';
+    const lobbyName = Store.getItem('nl_lobby_name') || 'New Lobby';
     await Lobby.create(lobbyName, false, displayName);
   },
 
@@ -62,7 +62,10 @@ const Main = {
   },
 };
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // Persistent storage (IndexedDB, see store.js) has to be loaded before
+  // anything below reads a saved skin, binding, name or session.
+  await Store.ready;
   // Before anything else paints: reapplies whatever skin was active last
   // session, so there's no flash of the stock theme on load.
   Skins.init();

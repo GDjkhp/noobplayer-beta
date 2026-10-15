@@ -232,7 +232,7 @@ const AudioAnalysis = {
     if (k == null) return 0;
     if (this._shifts[k] === undefined) {
       let v = 0;
-      try { v = parseInt(localStorage.getItem('aa-anchor:' + k), 10) || 0; } catch (e) {}
+      try { v = parseInt(Store.getItem('aa-anchor:' + k), 10) || 0; } catch (e) {}
       this._shifts[k] = v;
     }
     return this._shifts[k];
@@ -243,7 +243,7 @@ const AudioAnalysis = {
     const m = this.beatsPerBar() || 1;
     const v = ((((this.anchorShift() + delta) % m) + m) % m);
     this._shifts[k] = v;
-    try { if (v) localStorage.setItem('aa-anchor:' + k, String(v)); else localStorage.removeItem('aa-anchor:' + k); } catch (e) {}
+    try { if (v) Store.setItem('aa-anchor:' + k, String(v)); else Store.removeItem('aa-anchor:' + k); } catch (e) {}
     return v;
   },
 

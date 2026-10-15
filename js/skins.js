@@ -9,8 +9,8 @@
    a single <style> tag, done. Nothing rebuilds, nothing reloads.
 
    Three places a skin can live:
-     - applied   : painted onto the page right now (localStorage nl_skin_active)
-     - mine      : saved in this browser (localStorage nl_skins)
+     - applied   : painted onto the page right now (Store key nl_skin_active)
+     - mine      : saved in this browser (Store key nl_skins)
      - gallery   : published to the server for anyone to install (SkinAPI)
 
    On the free-form CSS: it's filtered here AND on the server (see
@@ -115,17 +115,17 @@ const Skins = {
     // Reapply whatever was active last session before first paint of the
     // player, so there's no flash of the stock theme.
     try {
-      const raw = localStorage.getItem(LS_ACTIVE);
+      const raw = Store.getItem(LS_ACTIVE);
       if (raw) {
         const skin = this.normalize(JSON.parse(raw));
         S.skins.active = skin;
         S.skins.activeId = skin._id || null;
         this.apply(skin, { persist: false });
       }
-    } catch (_) { localStorage.removeItem(LS_ACTIVE); }
+    } catch (_) { Store.removeItem(LS_ACTIVE); }
 
     try {
-      const draft = localStorage.getItem(LS_DRAFT);
+      const draft = Store.getItem(LS_DRAFT);
       S.skins.draft = draft ? this.normalize(JSON.parse(draft)) : this.normalize(S.skins.active || {});
     } catch (_) { S.skins.draft = this.normalize({}); }
   },
@@ -214,7 +214,7 @@ const Skins = {
     S.skins.active = skin;
     S.skins.activeId = skin._id || null;
     if (persist) {
-      try { localStorage.setItem(LS_ACTIVE, JSON.stringify(skin)); } catch (_) {}
+      try { Store.setItem(LS_ACTIVE, JSON.stringify(skin)); } catch (_) {}
     }
   },
 
@@ -230,7 +230,7 @@ const Skins = {
     this._ensureStyleEl().textContent = '';
     S.skins.active = null;
     S.skins.activeId = null;
-    localStorage.removeItem(LS_ACTIVE);
+    Store.removeItem(LS_ACTIVE);
     toast('Back to the default look', 'info', 1500);
   },
 
@@ -303,18 +303,18 @@ const Skins = {
 
   loadLibrary() {
     try {
-      const raw = localStorage.getItem(LS_LIBRARY);
+      const raw = Store.getItem(LS_LIBRARY);
       S.skins.mine = raw ? JSON.parse(raw).map(s => this.normalize(s)) : [];
     } catch (_) { S.skins.mine = []; }
   },
 
   saveLibrary() {
-    try { localStorage.setItem(LS_LIBRARY, JSON.stringify(S.skins.mine)); }
+    try { Store.setItem(LS_LIBRARY, JSON.stringify(S.skins.mine)); }
     catch (_) { toast('Browser storage is full — could not save skin', 'error'); }
   },
 
   saveDraft() {
-    try { localStorage.setItem(LS_DRAFT, JSON.stringify(S.skins.draft)); } catch (_) {}
+    try { Store.setItem(LS_DRAFT, JSON.stringify(S.skins.draft)); } catch (_) {}
   },
 
   saveCurrent() {
@@ -347,7 +347,7 @@ const Skins = {
     if (!SkinAPI.available()) { toast('No server configured — publishing needs one', 'warn'); return; }
     const draft = this.normalize(S.skins.draft);
     if (!draft.author) {
-      const who = prompt('Publish as:', localStorage.getItem('nl_display_name') || 'Anonymous');
+      const who = prompt('Publish as:', Store.getItem('nl_display_name') || 'Anonymous');
       if (!who) return;
       draft.author = who.slice(0, 24);
       document.getElementById('skin-author').value = draft.author;

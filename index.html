@@ -143,6 +143,9 @@
           <input id="lib-filter" type="text" placeholder="Filter…" autocomplete="off">
           <button class="qa" id="btn-lib-qall" title="Add everything shown to the queue"><span class="material-symbols-outlined">playlist_add</span>Queue All</button>
           <button class="qa" id="btn-lib-sall" title="Shuffle everything shown, then add it to the queue"><span class="material-symbols-outlined">shuffle</span>Shuffle Add All</button>
+          <button class="qa" id="btn-lib-export" title="Download your whole library as a JSON file"><span class="material-symbols-outlined">upload_file</span>Export</button>
+          <button class="qa" id="btn-lib-import" title="Merge a previously exported library file into this one"><span class="material-symbols-outlined">file_open</span>Import</button>
+          <input type="file" id="lib-import-file" accept=".json,application/json" hidden>
         </div>
         <div id="lib-list"></div>
       </div>
@@ -571,6 +574,7 @@
 <script src="js/pcm-player.js"></script>
 <script src="js/webtransport-player.js"></script>
 <script src="js/utils.js"></script>
+<script src="js/store.js"></script>
 <script src="js/state.js"></script>
 <script src="js/api.js"></script>
 <script src="js/engine.js"></script>

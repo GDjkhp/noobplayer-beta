@@ -7,7 +7,7 @@
    Every trigger path (keyboard, gamepad, the on-screen keyboard's own
    navigation) looks an action up here instead of hardcoding a
    key/button, so remapping one spot changes it everywhere. Custom
-   bindings persist in localStorage ('nl_keybinds' / 'nl_padbinds') and
+   bindings persist in the Store / IndexedDB ('nl_keybinds' / 'nl_padbinds') and
    survive a reload — "Reset to defaults" in the tab clears them back to
    the tables below.
 
@@ -152,9 +152,9 @@ const Bindings = {
   _comboKey(arr) { return [...arr].sort().join('+'); },
 
   load() {
-    try { this.keys = this._migrateKeys({ ...this.DEFAULT_KEYS, ...JSON.parse(localStorage.getItem('nl_keybinds') || '{}') }); }
+    try { this.keys = this._migrateKeys({ ...this.DEFAULT_KEYS, ...JSON.parse(Store.getItem('nl_keybinds') || '{}') }); }
     catch (_) { this.keys = { ...this.DEFAULT_KEYS }; }
-    try { this.pad = { ...this.DEFAULT_PAD, ...JSON.parse(localStorage.getItem('nl_padbinds') || '{}') }; }
+    try { this.pad = { ...this.DEFAULT_PAD, ...JSON.parse(Store.getItem('nl_padbinds') || '{}') }; }
     catch (_) { this.pad = { ...this.DEFAULT_PAD }; }
   },
   // Upgrades any binding saved by an earlier version of this file (a
@@ -175,8 +175,8 @@ const Bindings = {
     }
     return out;
   },
-  saveKeys() { try { localStorage.setItem('nl_keybinds', JSON.stringify(this.keys)); } catch (_) {} },
-  savePad()  { try { localStorage.setItem('nl_padbinds', JSON.stringify(this.pad)); } catch (_) {} },
+  saveKeys() { try { Store.setItem('nl_keybinds', JSON.stringify(this.keys)); } catch (_) {} },
+  savePad()  { try { Store.setItem('nl_padbinds', JSON.stringify(this.pad)); } catch (_) {} },
   resetKeys() { this.keys = { ...this.DEFAULT_KEYS }; this.saveKeys(); this.renderTab(); toast('Keyboard bindings reset', 'success', 1800); },
   resetPad()  { this.pad = { ...this.DEFAULT_PAD }; this.savePad(); this.renderTab(); toast('Controller bindings reset', 'success', 1800); },
 

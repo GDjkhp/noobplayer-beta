@@ -195,14 +195,14 @@ const Viz = {
   init() {
     this.loadLibrary();
     try {
-      const raw = localStorage.getItem(VIZ_LS_DRAFT);
+      const raw = Store.getItem(VIZ_LS_DRAFT);
       S.viz.draft = raw ? this.normalize(JSON.parse(raw)) : this.normalize({ name: '', code: VIZ_TEMPLATE });
     } catch (_) { S.viz.draft = this.normalize({ name: '', code: VIZ_TEMPLATE }); }
 
     try {
-      const raw = localStorage.getItem(VIZ_LS_ACTIVE);
+      const raw = Store.getItem(VIZ_LS_ACTIVE);
       if (raw) S.viz.active = this.normalize(JSON.parse(raw));
-    } catch (_) { localStorage.removeItem(VIZ_LS_ACTIVE); }
+    } catch (_) { Store.removeItem(VIZ_LS_ACTIVE); }
     if (!S.viz.active) S.viz.active = this.normalize(VIZ_BUILTINS[0]);
 
     window.addEventListener('message', e => this._onFrameMessage(e));
@@ -312,7 +312,7 @@ canvas{display:block;width:100%;height:100%}</style>
     if (!stage) return;
     const v = this.normalize(visualizer || S.viz.active);
     S.viz.active = v;
-    try { localStorage.setItem(VIZ_LS_ACTIVE, JSON.stringify(v)); } catch (_) {}
+    try { Store.setItem(VIZ_LS_ACTIVE, JSON.stringify(v)); } catch (_) {}
 
     this.unmount();
     this._setError('');
@@ -538,18 +538,18 @@ canvas{display:block;width:100%;height:100%}</style>
 
   loadLibrary() {
     try {
-      const raw = localStorage.getItem(VIZ_LS_LIBRARY);
+      const raw = Store.getItem(VIZ_LS_LIBRARY);
       S.viz.mine = raw ? JSON.parse(raw).map(v => this.normalize(v)) : [];
     } catch (_) { S.viz.mine = []; }
   },
 
   saveLibrary() {
-    try { localStorage.setItem(VIZ_LS_LIBRARY, JSON.stringify(S.viz.mine)); }
+    try { Store.setItem(VIZ_LS_LIBRARY, JSON.stringify(S.viz.mine)); }
     catch (_) { toast('Browser storage is full — could not save', 'error'); }
   },
 
   saveDraft() {
-    try { localStorage.setItem(VIZ_LS_DRAFT, JSON.stringify(S.viz.draft)); } catch (_) {}
+    try { Store.setItem(VIZ_LS_DRAFT, JSON.stringify(S.viz.draft)); } catch (_) {}
   },
 
   saveCurrent() {
@@ -585,7 +585,7 @@ canvas{display:block;width:100%;height:100%}</style>
     if (!VizAPI.available()) { toast('No server configured — publishing needs one', 'warn'); return; }
     const d = this.normalize(S.viz.draft);
     if (!d.author) {
-      const who = prompt('Publish as:', localStorage.getItem('nl_display_name') || 'Anonymous');
+      const who = prompt('Publish as:', Store.getItem('nl_display_name') || 'Anonymous');
       if (!who) return;
       d.author = who.slice(0, 24);
       document.getElementById('viz-author').value = d.author;
