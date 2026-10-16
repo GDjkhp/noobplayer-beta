@@ -294,7 +294,9 @@ const UI = {
 
   /* ───────── Queue list ─────────
      Windowed + keyed. Only the first _qLimit rows exist in the DOM (100 to
-     start, +100 each time the list is scrolled near its bottom), and every
+     start, +100 each time the user scrolls to the end of what's rendered —
+     tracked against the BROWSER VIEWPORT with an IntersectionObserver on the
+     footer, see _qWatch), and every
      renderQueue() call RECONCILES that window instead of rebuilding it:
      rows are matched by a key (track + requester + nth occurrence), existing
      rows are kept as-is (so their album art never reloads), only genuinely
@@ -308,6 +310,9 @@ const UI = {
   _qRows: null,        // key -> row element (only rows currently in the DOM)
   _qDragFrom: null,
   _qDragOver: null,
+  _qMargin: 200,       // px before the footer actually enters the viewport that we start loading
+  _qIO: null,          // IntersectionObserver watching the footer vs. the viewport
+  _qSentinel: null,    // the footer element currently being watched
 
   renderQueue() {
     const count = S.queue.length;
@@ -364,7 +369,11 @@ const UI = {
       if (!more) { more = document.createElement('div'); more.className = 'q-more'; }
       more.textContent = `Showing ${shown} of ${count} — scroll for more`;
       if (more.parentNode !== el || more !== el.lastElementChild) el.appendChild(more);
-    } else if (more) more.remove();
+    } else if (more) {
+      more.remove(); more = null;   // null it: it must not be used as the insert anchor below
+      if (this._qIO) this._qIO.disconnect();
+      this._qSentinel = null;
+    }
 
     let anchor = more || null;
     for (let i = shown - 1; i >= 0; i--) {
@@ -383,16 +392,45 @@ const UI = {
 
     this.applyLockState();
 
-    // Tall viewport that the first chunk doesn't fill — keep loading.
-    if (shown < count && el.clientHeight > 0 && el.scrollHeight <= el.clientHeight + 400) {
-      requestAnimationFrame(() => this._qLoadMore());
-    }
+    // Make sure the footer is being tracked against the viewport.
+    if (more && more.parentNode === el) this._qWatch(more);
   },
 
   _qLoadMore() {
     if (this._qLimit >= S.queue.length) return;
     this._qLimit += this._QCHUNK;
     this.renderQueue();
+    // Re-arm: the new footer sits 100 rows further down. If it is STILL inside
+    // the viewport (very tall screen), observing it again reports it straight
+    // away and loads the next 100; otherwise it waits for the next scroll.
+    const s = this._qSentinel;
+    if (this._qIO && s && s.isConnected) { this._qIO.unobserve(s); this._qIO.observe(s); }
+    else requestAnimationFrame(() => this._qCheck());
+  },
+
+  // Tracks the "Showing N of M" footer against the browser viewport. The page
+  // (not #ql) is what scrolls in the sticky layouts, and an IntersectionObserver
+  // with root:null reports correctly either way — page scroll, #ql's own
+  // scroll, resize, or the Queue tab being shown/hidden.
+  _qWatch(more) {
+    if (this._qSentinel === more) return;
+    this._qSentinel = more;
+    if (!('IntersectionObserver' in window)) return;   // _qCheck + scroll listeners cover this
+    if (!this._qIO) {
+      this._qIO = new IntersectionObserver(entries => {
+        if (entries.some(en => en.isIntersecting)) this._qLoadMore();
+      }, { root: null, rootMargin: `0px 0px ${this._qMargin}px 0px` });
+    }
+    this._qIO.disconnect();
+    this._qIO.observe(more);
+  },
+
+  // Manual version of the same test (only used where IntersectionObserver is missing).
+  _qCheck() {
+    const m = this._qSentinel;
+    if (!m || !m.isConnected || this._qLimit >= S.queue.length) return;
+    const r = m.getBoundingClientRect();
+    if (r.height > 0 && r.top <= window.innerHeight + this._qMargin) this._qLoadMore();
   },
 
   // Indices (into seq) of a longest increasing subsequence, ignoring -1 (new rows).
@@ -510,10 +548,16 @@ const UI = {
       else if (a === 'link') UI.openTrackLink(S.queue[i]);
     });
 
-    // Progressive loading: next 100 when the user nears the bottom.
-    el.addEventListener('scroll', () => {
-      if (this._qLimit < S.queue.length && el.scrollTop + el.clientHeight >= el.scrollHeight - 400) this._qLoadMore();
-    }, { passive: true });
+    // Progressive loading: next 100 when the user reaches the end of the
+    // rendered rows. Normally handled by the IntersectionObserver (_qWatch);
+    // this is only the fallback for browsers without one.
+    if (!('IntersectionObserver' in window)) {
+      let raf = 0;
+      const check = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; this._qCheck(); }); };
+      window.addEventListener('scroll', check, { passive: true });
+      window.addEventListener('resize', check, { passive: true });
+      el.addEventListener('scroll', check, { passive: true });
+    }
 
     // HTML5 drag-and-drop reordering — dragging a row onto another row's
     // slot moves it there (Engine.moveQueueItem), which also covers
