@@ -396,6 +396,8 @@ body::after {
 .qi.cur { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .qi[draggable="true"] { cursor: grab; }
 .qi.dragging { opacity: .4; }
+.q-more { text-align: center; padding: 10px; font-family: var(--fm); font-size: 10px; color: var(--muted); cursor: pointer; }
+.q-more:hover { color: var(--text); }
 .qi.drag-over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .qi-drag { color: var(--muted2); font-size: 13px; flex-shrink: 0; cursor: grab; line-height: 1; opacity: 0; transition: opacity .15s; }
 .qi:hover .qi-drag, .qi:focus-within .qi-drag { opacity: 1; }

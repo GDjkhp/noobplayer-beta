@@ -292,6 +292,23 @@ const UI = {
     }, 100);
   },
 
+  /* ───────── Queue list ─────────
+     Windowed + keyed. Only the first _qLimit rows exist in the DOM (100 to
+     start, +100 each time the list is scrolled near its bottom), and every
+     renderQueue() call RECONCILES that window instead of rebuilding it:
+     rows are matched by a key (track + requester + nth occurrence), existing
+     rows are kept as-is (so their album art never reloads), only genuinely
+     new rows are built, vanished ones are removed, and moved ones are
+     repositioned with the fewest DOM moves (longest-increasing-subsequence).
+     Per-row state that depends on position (number, up/down enabled, lock
+     state) is patched in place, and only when it actually changed. Clicks and
+     drag-and-drop are delegated from #ql, wired once. */
+  _QCHUNK: 100,
+  _qLimit: 100,
+  _qRows: null,        // key -> row element (only rows currently in the DOM)
+  _qDragFrom: null,
+  _qDragOver: null,
+
   renderQueue() {
     const count = S.queue.length;
     document.getElementById('q-badge').textContent = count > 0 ? `(${count})` : '';
@@ -299,112 +316,240 @@ const UI = {
     this.updateLoopButton();
 
     const el = document.getElementById('ql');
+    if (!this._qRows) { this._qRows = new Map(); this._wireQueueEvents(el); }
+
     if (count === 0) {
-      el.innerHTML = `<div class="empty"><span class="material-symbols-outlined">queue_music</span><p>Queue is empty</p></div>`;
+      this._qRows.clear();
+      this._qLimit = this._QCHUNK;
+      if (!el.querySelector(':scope > .empty')) {
+        el.innerHTML = `<div class="empty"><span class="material-symbols-outlined">queue_music</span><p>Queue is empty</p></div>`;
+      }
       this.applyLockState();
       return;
     }
+    const emptyEl = el.querySelector(':scope > .empty');
+    if (emptyEl) emptyEl.remove();
+
     const locked = this.isLocked();
     const me = LobbyAPI.userId();
-    el.innerHTML = S.queue.map((t, i) => {
-      const thumb = t.info.artworkUrl
-        ? `<img class="qi-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
-        : `<div class="qi-nth"><span class="material-symbols-outlined">music_note</span></div>`;
-      // Anyone can pull a track they added themselves; only the host can
-      // pull someone else's. Same rule the server enforces on
-      // /queue/remove — this just stops the button lying about it.
-      const req = t.requester || null;
-      const mine = req && me && req.id === me;
-      const auto = req && req.id === '__auto__';
-      const canRemove = !locked || mine;
-      const chip = req
-        ? `<span class="qi-req ${auto ? 'auto' : ''} ${mine ? 'mine' : ''}" title="Added by ${esc(req.name)}">${auto ? '<span class="material-symbols-outlined chip-ico">auto_awesome</span>auto' : esc(req.name)}</span>`
-        : '';
-      return `<div class="qi" data-qi="${i}" draggable="${locked ? 'false' : 'true'}">
+    const shown = Math.min(count, this._qLimit);
+
+    // Keys for the visible window. "nth occurrence" keeps duplicate tracks distinct.
+    const seen = new Map();
+    const keys = new Array(shown);
+    for (let i = 0; i < shown; i++) {
+      const t = S.queue[i];
+      const base = (t.encoded || t.info?.identifier || '') + '|' + (t.requester?.id || '');
+      const n = seen.get(base) || 0;
+      seen.set(base, n + 1);
+      keys[i] = base + '#' + n;
+    }
+
+    // Drop rows that left the window / queue.
+    const want = new Set(keys);
+    for (const [k, row] of this._qRows) {
+      if (!want.has(k)) { row.remove(); this._qRows.delete(k); }
+    }
+
+    // Where each surviving row currently sits in the DOM.
+    const order = new Map();
+    let p = 0;
+    for (const c of el.children) if (c.classList.contains('qi')) order.set(c, p++);
+    const seq = keys.map(k => { const r = this._qRows.get(k); return r ? order.get(r) : -1; });
+    const stay = this._qLis(seq);   // rows in this set are already in the right relative order
+
+    // "Load more" footer, always last.
+    let more = el.querySelector(':scope > .q-more');
+    if (shown < count) {
+      if (!more) { more = document.createElement('div'); more.className = 'q-more'; }
+      more.textContent = `Showing ${shown} of ${count} — scroll for more`;
+      if (more.parentNode !== el || more !== el.lastElementChild) el.appendChild(more);
+    } else if (more) more.remove();
+
+    let anchor = more || null;
+    for (let i = shown - 1; i >= 0; i--) {
+      const t = S.queue[i];
+      let row = this._qRows.get(keys[i]);
+      if (!row) {
+        row = this._qBuildRow(t);
+        this._qRows.set(keys[i], row);
+        el.insertBefore(row, anchor);
+      } else if (!stay.has(i)) {
+        el.insertBefore(row, anchor);
+      }
+      this._qSyncRow(row, i, t, count, locked, me);
+      anchor = row;
+    }
+
+    this.applyLockState();
+
+    // Tall viewport that the first chunk doesn't fill — keep loading.
+    if (shown < count && el.clientHeight > 0 && el.scrollHeight <= el.clientHeight + 400) {
+      requestAnimationFrame(() => this._qLoadMore());
+    }
+  },
+
+  _qLoadMore() {
+    if (this._qLimit >= S.queue.length) return;
+    this._qLimit += this._QCHUNK;
+    this.renderQueue();
+  },
+
+  // Indices (into seq) of a longest increasing subsequence, ignoring -1 (new rows).
+  _qLis(seq) {
+    const tails = [], prev = new Array(seq.length).fill(-1), out = new Set();
+    for (let i = 0; i < seq.length; i++) {
+      const v = seq[i];
+      if (v < 0) continue;
+      let lo = 0, hi = tails.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (seq[tails[m]] < v) lo = m + 1; else hi = m; }
+      if (lo > 0) prev[i] = tails[lo - 1];
+      tails[lo] = i;
+    }
+    for (let k = tails.length ? tails[tails.length - 1] : -1; k >= 0; k = prev[k]) out.add(k);
+    return out;
+  },
+
+  // Builds the row for a track ONCE. Nothing in here depends on position or
+  // lock state — _qSyncRow fills those in.
+  _qBuildRow(t) {
+    const thumb = t.info.artworkUrl
+      ? `<img class="qi-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none'">`
+      : `<div class="qi-nth"><span class="material-symbols-outlined">music_note</span></div>`;
+    const req = t.requester || null;
+    const auto = req && req.id === '__auto__';
+    const chip = req
+      ? `<span class="qi-req ${auto ? 'auto' : ''}" title="Added by ${esc(req.name)}">${auto ? '<span class="material-symbols-outlined chip-ico">auto_awesome</span>auto' : esc(req.name)}</span>`
+      : '';
+    const tpl = document.createElement('div');
+    tpl.innerHTML = `<div class="qi">
         <span class="qi-drag material-symbols-outlined" title="Drag to reorder">drag_indicator</span>
-        <span class="qi-n">${i + 1}</span>${thumb}
+        <span class="qi-n"></span>${thumb}
         <div class="qi-m">
           <div class="qi-t">${esc(t.info.title)}</div>
           <div class="qi-a">${esc(t.info.author)}${chip}</div>
         </div>
         <div class="qi-bs">
-          <button class="qib" data-qa="play" data-qi="${i}" title="Play now" ${locked?'disabled':''}><span class="material-symbols-outlined">play_arrow</span></button>
-          <button class="qib" data-qa="up"   data-qi="${i}" title="Move up" ${(locked||i===0)?'disabled':''}><span class="material-symbols-outlined">keyboard_arrow_up</span></button>
-          <button class="qib" data-qa="dn"   data-qi="${i}" title="Move down" ${(locked||i===S.queue.length-1)?'disabled':''}><span class="material-symbols-outlined">keyboard_arrow_down</span></button>
-          <button class="qib" data-qa="link" data-qi="${i}" title="Open track link" ${t.info.uri?'':'disabled'}><span class="material-symbols-outlined">open_in_new</span></button>
-          <button class="qib" data-qa="save" data-qi="${i}" title="Save to library"><span class="material-symbols-outlined">bookmark_add</span></button>
-          <button class="qib dl" data-qa="dl" data-qi="${i}" title="Download"><span class="material-symbols-outlined">download</span></button>
-          <button class="qib del" data-qa="rm" data-qi="${i}" title="${canRemove ? 'Remove' : 'Only the host can remove other people\u2019s tracks'}" ${canRemove?'':'disabled'}><span class="material-symbols-outlined">close</span></button>
+          <button class="qib" data-qa="play" title="Play now"><span class="material-symbols-outlined">play_arrow</span></button>
+          <button class="qib" data-qa="up" title="Move up"><span class="material-symbols-outlined">keyboard_arrow_up</span></button>
+          <button class="qib" data-qa="dn" title="Move down"><span class="material-symbols-outlined">keyboard_arrow_down</span></button>
+          <button class="qib" data-qa="link" title="Open track link" ${t.info.uri ? '' : 'disabled'}><span class="material-symbols-outlined">open_in_new</span></button>
+          <button class="qib" data-qa="save" title="Save to library"><span class="material-symbols-outlined">bookmark_add</span></button>
+          <button class="qib dl" data-qa="dl" title="Download"><span class="material-symbols-outlined">download</span></button>
+          <button class="qib del" data-qa="rm"><span class="material-symbols-outlined">close</span></button>
         </div>
         <span class="qi-d">${fmt(t.info.length)}</span>
       </div>`;
-    }).join('');
-
-    el.querySelectorAll('.qib').forEach(btn => {
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        const i = parseInt(btn.dataset.qi);
-        const a = btn.dataset.qa;
-        if (a === 'play') {
-          // Lobby mode: jumping the queue means telling the server to drop
-          // that track from the shared queue and play it. Don't splice
-          // locally first — the next state broadcast would overwrite it
-          // anyway, and a mismatched index would remove the wrong track.
-          if (S.mode === 'server') {
-            const tr = S.queue[i];
-            Engine.removeFromQueue(i).then(() => Engine.playTrack(tr));
-            return;
-          }
-          if (S.current) S.history.push(S.current);
-          const [tr] = S.queue.splice(i, 1);
-          Engine.playTrack(tr);
-        } else if (a === 'up' && i > 0) { Engine.moveQueueItem(i, i - 1); }
-        else if (a === 'dn' && i < S.queue.length - 1) { Engine.moveQueueItem(i, i + 1); }
-        else if (a === 'rm') Engine.removeFromQueue(i);
-        else if (a === 'save') Library.addTrack(S.queue[i]);
-        else if (a === 'dl') UI.openDownloadMenu(btn, S.queue[i]);
-        else if (a === 'link') UI.openTrackLink(S.queue[i]);
-      });
-    });
-
-    this._wireQueueDragAndDrop(el, locked);
-    this.applyLockState();
+    const row = tpl.firstElementChild;
+    row._nEl = row.querySelector('.qi-n');
+    row._btn = {};
+    row.querySelectorAll('.qib').forEach(b => { row._btn[b.dataset.qa] = b; });
+    row._chip = row.querySelector('.qi-req');
+    row._sig = null;
+    return row;
   },
 
-  // HTML5 drag-and-drop reordering — dragging a queue item onto another
-  // one's slot moves it there (Engine.moveQueueItem), which also covers
-  // "swapping" two tracks: drag A onto B and A lands where B was.
-  _wireQueueDragAndDrop(el, locked) {
-    if (locked) return;
-    let dragFrom = null;
+  // Patches only what depends on position / lock state, and only if it changed.
+  _qSyncRow(row, i, t, count, locked, me) {
+    row._i = i;
+    const last = i === count - 1;
+    const sig = `${i}|${last ? 1 : 0}|${locked ? 1 : 0}|${me || ''}`;
+    if (row._sig === sig) return;
+    row._sig = sig;
 
-    el.querySelectorAll('.qi').forEach(item => {
-      item.addEventListener('dragstart', e => {
-        dragFrom = parseInt(item.dataset.qi);
-        item.classList.add('dragging');
-        e.dataTransfer.effectAllowed = 'move';
-        try { e.dataTransfer.setData('text/plain', String(dragFrom)); } catch (_) {}
-      });
-      item.addEventListener('dragend', () => {
-        item.classList.remove('dragging');
-        el.querySelectorAll('.qi').forEach(x => x.classList.remove('drag-over'));
-        dragFrom = null;
-      });
-      item.addEventListener('dragover', e => {
-        if (dragFrom === null) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        item.classList.add('drag-over');
-      });
-      item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
-      item.addEventListener('drop', e => {
-        e.preventDefault();
-        item.classList.remove('drag-over');
-        const to = parseInt(item.dataset.qi);
-        if (dragFrom === null || isNaN(to) || dragFrom === to) return;
-        Engine.moveQueueItem(dragFrom, to);
-        dragFrom = null;
-      });
+    row.dataset.qi = i;
+    row._nEl.textContent = i + 1;
+    row.draggable = !locked;
+    row.setAttribute('draggable', locked ? 'false' : 'true');
+
+    const b = row._btn;
+    b.play.disabled = locked;
+    b.up.disabled = locked || i === 0;
+    b.dn.disabled = locked || last;
+
+    // Anyone can pull a track they added themselves; only the host can pull
+    // someone else's — same rule the server enforces on /queue/remove.
+    const req = t.requester || null;
+    const mine = !!(req && me && req.id === me);
+    const canRemove = !locked || mine;
+    b.rm.disabled = !canRemove;
+    b.rm.title = canRemove ? 'Remove' : 'Only the host can remove other people\u2019s tracks';
+    if (row._chip) row._chip.classList.toggle('mine', mine);
+  },
+
+  // One set of delegated listeners for the whole list (wired once).
+  _wireQueueEvents(el) {
+    el.addEventListener('click', e => {
+      const more = e.target.closest('.q-more');
+      if (more) { this._qLoadMore(); return; }
+      const btn = e.target.closest('.qib');
+      if (!btn || btn.disabled) return;
+      const row = btn.closest('.qi');
+      if (!row) return;
+      e.stopPropagation();
+      const i = row._i;
+      const a = btn.dataset.qa;
+      if (a === 'play') {
+        // Lobby mode: jumping the queue means telling the server to drop
+        // that track from the shared queue and play it. Don't splice
+        // locally first — the next state broadcast would overwrite it
+        // anyway, and a mismatched index would remove the wrong track.
+        if (S.mode === 'server') {
+          const tr = S.queue[i];
+          Engine.removeFromQueue(i).then(() => Engine.playTrack(tr));
+          return;
+        }
+        if (S.current) S.history.push(S.current);
+        const [tr] = S.queue.splice(i, 1);
+        Engine.playTrack(tr);
+      } else if (a === 'up' && i > 0) { Engine.moveQueueItem(i, i - 1); }
+      else if (a === 'dn' && i < S.queue.length - 1) { Engine.moveQueueItem(i, i + 1); }
+      else if (a === 'rm') Engine.removeFromQueue(i);
+      else if (a === 'save') Library.addTrack(S.queue[i]);
+      else if (a === 'dl') UI.openDownloadMenu(btn, S.queue[i]);
+      else if (a === 'link') UI.openTrackLink(S.queue[i]);
+    });
+
+    // Progressive loading: next 100 when the user nears the bottom.
+    el.addEventListener('scroll', () => {
+      if (this._qLimit < S.queue.length && el.scrollTop + el.clientHeight >= el.scrollHeight - 400) this._qLoadMore();
+    }, { passive: true });
+
+    // HTML5 drag-and-drop reordering — dragging a row onto another row's
+    // slot moves it there (Engine.moveQueueItem), which also covers
+    // "swapping" two tracks: drag A onto B and A lands where B was.
+    const clearOver = () => { if (this._qDragOver) { this._qDragOver.classList.remove('drag-over'); this._qDragOver = null; } };
+    el.addEventListener('dragstart', e => {
+      const row = e.target.closest && e.target.closest('.qi');
+      if (!row || this.isLocked()) return;
+      this._qDragFrom = row._i;
+      row.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', String(row._i)); } catch (_) {}
+    });
+    el.addEventListener('dragend', e => {
+      const row = e.target.closest && e.target.closest('.qi');
+      if (row) row.classList.remove('dragging');
+      clearOver();
+      this._qDragFrom = null;
+    });
+    el.addEventListener('dragover', e => {
+      if (this._qDragFrom === null) return;
+      const row = e.target.closest && e.target.closest('.qi');
+      if (!row) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (this._qDragOver !== row) { clearOver(); row.classList.add('drag-over'); this._qDragOver = row; }
+    });
+    el.addEventListener('drop', e => {
+      const row = e.target.closest && e.target.closest('.qi');
+      clearOver();
+      if (!row || this._qDragFrom === null) return;
+      e.preventDefault();
+      const from = this._qDragFrom, to = row._i;
+      this._qDragFrom = null;
+      if (from === to || to === undefined) return;
+      Engine.moveQueueItem(from, to);
     });
   },
 

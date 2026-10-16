@@ -697,7 +697,15 @@ const Engine = {
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
-    for (const t of tracks) await this.addToQueue(t, { silent: true });
+    // Standalone: one push + one render (+ one preload check) for the whole
+    // batch. Going through addToQueue per track re-rendered the list and
+    // re-ran the preload prediction once per track — thousands of times for
+    // a big playlist, which froze the main thread (and stuttered the audio).
+    const me = this._selfRequester();
+    for (const t of tracks) t.requester = t.requester || me;
+    S.queue.push(...tracks);
+    if (!S.current) { const t = S.queue.shift(); this.playTrack(t); }
+    else { UI.renderQueue(); this._ensurePreload(); }
   },
 
   async removeFromQueue(i) {
