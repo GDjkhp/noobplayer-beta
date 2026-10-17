@@ -328,8 +328,8 @@ const Library = {
       id: str(raw.id, 60) || this._newId(),
       kind: kind === 'track' ? 'track' : 'collection',
       name: str(raw.name) || first.title,
-      author: str(raw.author) || str(first.author),
-      artwork: str(raw.artwork, 2000) || str(first.artworkUrl, 2000),
+      author: str(raw.author) || str(first.author), // replace this with playlist author soon
+      artwork: str(raw.artwork, 2000) || str(first.artworkUrl, 2000), // replace this with playlist thumbnail soon
       source: str(raw.source, 2000),
       tracks: kind === 'track' ? [tracks[0]] : tracks,
       added: Number.isFinite(raw.added) ? raw.added : Date.now(),

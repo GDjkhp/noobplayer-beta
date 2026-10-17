@@ -74,6 +74,7 @@ const WAVE_MAX_COLS = 360, WAVE_TICK_MS = 30;
 // could afford finer bins too, but reuses the same BUF_BIN_MS PCMPlayer.feed()
 // already bins at (see _bufRecord) rather than a second binning pass.
 const BUF_BIN_MS = 100;
+const LIST_CAP = 100;                 // max rows the Smart Queue / History cards render (the server caps its push the same way)
 const LIVE_VIEW_SPAN_S = 20;          // seconds of stream the lobby strip covers...
 const LIVE_PLAYHEAD_FRAC = 0.5;       // ...with the playhead centered across it (played on the left, ready on the right)
 const COL_PLAYED = 'rgba(148,163,184,.55)';
@@ -1246,23 +1247,36 @@ const Debug = {
     if (!list) return;
     let items = [], total = 0;
     if (S.mode === 'standalone') {
-      items = (S.autoQueue || []).map(t => ({ title: t.info && t.info.title, author: t.info && t.info.author }));
-      total = items.length;
+      const src = S.autoQueue || [];
+      total = src.length;
+      items = src.slice(0, LIST_CAP).map(t => ({ title: t.info && t.info.title, author: t.info && t.info.author }));
     } else if (S.mode === 'server' && this.server && !this.server.error) {
-      items = this.server.autoQueue || [];
+      items = (this.server.autoQueue || []).slice(0, LIST_CAP);
       total = this.server.autoQueueCount || 0;
     }
     count.textContent = total ? `(${total})` : '';
+    this._setList(list, items, total, S.mode ? 'empty — nothing queued for autoplay/smart shuffle yet' : 'not connected');
+  },
+
+  // Shared by the Smart Queue + History cards. Builds the (capped) row HTML
+  // only when the list actually changed — render() runs ~3.5x/sec, and
+  // rebuilding thousands of rows that often starved the audio path.
+  _setList(list, items, total, emptyMsg) {
+    const sig = (S.mode || '-') + '|' + total + '|' + items.length + '|' + items.map(t => (t.title || '') + '\u0001' + (t.author || '')).join('\u0002');
+    if (list._sig === sig) return;
+    list._sig = sig;
     if (!items.length) {
-      this._setHTML(list, `<div class="dbg-empty-row">${S.mode ? 'empty — nothing queued for autoplay/smart shuffle yet' : 'not connected'}</div>`);
+      this._setHTML(list, `<div class="dbg-empty-row">${emptyMsg}</div>`);
       return;
     }
-    this._setHTML(list, items.map((t, i) => `
+    const rows = items.map((t, i) => `
       <div class="dbg-list-row">
         <span class="dbg-mono">#${i + 1}</span>
         <span>${esc(t.title || 'Unknown title')}</span>
         <span class="dbg-muted">${esc(t.author || '')}</span>
-      </div>`).join(''));
+      </div>`).join('');
+    const more = total > items.length ? `<div class="dbg-empty-row">+${total - items.length} more not shown</div>` : '';
+    this._setHTML(list, rows + more);
   },
 
   // Everything that has already finished playing, most recent at the top.
@@ -1276,30 +1290,15 @@ const Debug = {
     if (!list) return;
     let items = [], total = 0;
     if (S.mode === 'standalone') {
-      items = (S.history || []).slice().reverse().map(t => ({ title: t.info && t.info.title, author: t.info && t.info.author }));
-      total = items.length;
+      const src = S.history || [];
+      total = src.length;
+      items = src.slice(-LIST_CAP).reverse().map(t => ({ title: t.info && t.info.title, author: t.info && t.info.author }));
     } else if (S.mode === 'server' && this.server && !this.server.error) {
-      items = this.server.history || [];
+      items = (this.server.history || []).slice(0, LIST_CAP);
       total = this.server.historyCount != null ? this.server.historyCount : items.length;
     }
     count.textContent = total ? `(${total})` : '';
-
-    // render() runs ~3.5x/sec; skip the DOM rebuild when nothing changed so
-    // a scroll position inside this card isn't fighting constant re-renders.
-    const sig = (S.mode || '-') + '|' + total + '|' + items.map(t => (t.title || '') + '\u0001' + (t.author || '')).join('\u0002');
-    if (list._sig === sig) return;
-    list._sig = sig;
-
-    if (!items.length) {
-      this._setHTML(list, `<div class="dbg-empty-row">${S.mode ? 'nothing has finished playing yet' : 'not connected'}</div>`);
-      return;
-    }
-    this._setHTML(list, items.map((t, i) => `
-      <div class="dbg-list-row">
-        <span class="dbg-mono">#${i + 1}</span>
-        <span>${esc(t.title || 'Unknown title')}</span>
-        <span class="dbg-muted">${esc(t.author || '')}</span>
-      </div>`).join(''));
+    this._setList(list, items, total, S.mode ? 'nothing has finished playing yet' : 'not connected');
   },
 
   _renderServer() {

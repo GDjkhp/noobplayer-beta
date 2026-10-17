@@ -955,12 +955,12 @@ class LobbyRelay:
             # detail Autoplay/Smart Shuffle drain from. Capped + stripped
             # down (see _track_brief) since this goes out on every push.
             "autoQueueCount": len(self.lobby.auto_queue),
-            "autoQueue": [_track_brief(t) for t in self.lobby.auto_queue],
+            "autoQueue": [_track_brief(t) for t in self.lobby.auto_queue[:DEBUG_LIST_CAP]],
             # Everything that already played (Lobby.history is oldest->newest,
             # unbounded), flipped so the most recent track is
             # first — the Debug tab's History Queue card renders it as-is.
             "historyCount": len(self.lobby.history),
-            "history": [_track_brief(t) for t in reversed(self.lobby.history)],
+            "history": [_track_brief(t) for t in reversed(self.lobby.history[-DEBUG_LIST_CAP:])],
         }
 
     # ---- debug/stats push (Socket.IO) --------------------------------
@@ -1657,6 +1657,12 @@ def track_id(track):
         return None
     info = track.get("info") or {}
     return info.get("identifier") or track.get("encoded")
+
+
+# The Debug tab's Smart Queue / History cards only ever show this many rows.
+# Without a cap, a 2000+ song pool was rebuilt + serialized on the event loop
+# (the same one that paces audio) every push, which caused audible stutter.
+DEBUG_LIST_CAP = 100
 
 
 def _track_brief(track):
