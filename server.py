@@ -315,9 +315,16 @@ def _get_analysis_pool():
         for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
                     "NUMBA_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
             os.environ[var] = th
+        kw = {}
+        recycle = int(getattr(config, "AUDIO_ANALYSIS_RECYCLE_TASKS", 0) or 0)
+        import sys
+        if recycle > 0 and sys.version_info >= (3, 11):
+            # Replace a worker after this many jobs: whatever it accumulated
+            # (allocator fragmentation, library caches) goes back to the OS.
+            kw["max_tasks_per_child"] = recycle
         _analysis_pool = ProcessPoolExecutor(
             max_workers=n, mp_context=multiprocessing.get_context("spawn"),
-            initializer=analysis.worker_init)
+            initializer=analysis.worker_init, **kw)
         # Spawn every worker now so the first real track doesn't pay for the
         # process start (numpy + scipy import, ~100 MB per worker).
         for _ in range(n):
@@ -341,6 +348,17 @@ def _reset_analysis_pool(dead=None):
 
 
 ANALYSIS_KEEP = 12   # finished analyses remembered per lobby (LRU-ish)
+
+# pcm_to_mono runs in a server thread and needs ~1.5-3x the mono result as
+# scratch. Without a gate, every queued/skipped track decodes at once.
+_decode_sem = None
+
+
+def _decode_gate():
+    global _decode_sem
+    if _decode_sem is None:
+        _decode_sem = asyncio.Semaphore(1)
+    return _decode_sem
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -732,6 +750,24 @@ class LobbyRelay:
                                "stages": {}, "timings": {}}
         self._beats_events[key] = asyncio.Event()
         self._analysis_tasks[key] = asyncio.create_task(self._run_analysis(key, cache))
+        self._prune_analyses()
+
+    def _prune_analyses(self):
+        """Cancel analyses of tracks that are neither playing nor next up.
+        Each one pins its track's whole PCM (~11.5 MB/min) plus the decoded
+        mono (~5 MB/min) and sits in the worker queue; skipping through a queue
+        used to stack all of them up and run every one to completion."""
+        keep = set()
+        if self._cache is not None:
+            keep.add(self._cache.key)
+        if self._preload is not None:
+            keep.add(self._preload["track"].get("encoded"))
+        cur = (self.lobby.current_track or {}).get("encoded")
+        if cur:
+            keep.add(cur)
+        for k, t in list(self._analysis_tasks.items()):
+            if k not in keep and not t.done():
+                t.cancel()
 
     async def _publish(self, key, stage, data=None, timing=None, **extra):
         """Record a finished stage and push it to the lobby over the socket."""
@@ -793,8 +829,10 @@ class LobbyRelay:
                                                          "startedAt": 0, "doneAt": round(time.monotonic() - t0, 2), "wall": round(time.monotonic() - t0, 2)},
                                 phase="decode")
             # ---- decode: 48k stereo s16 -> 22.05k mono float
-            td = time.monotonic()
-            mono = await asyncio.to_thread(analysis.pcm_to_mono, cache.buf)
+            async with _decode_gate():
+                td = time.monotonic()
+                mono = await asyncio.to_thread(analysis.pcm_to_mono, cache.buf)
+            cache = None      # don't pin the track's PCM for the rest of the analysis (the relay owns it)
             ds = round(time.monotonic() - td, 3)
             await self._publish(key, "decode", timing={"sec": ds, "steps": [{"name": "resample to 22.05 kHz mono", "sec": ds}],
                                                        "startedAt": round(td - t0, 2), "doneAt": round(time.monotonic() - t0, 2), "wall": ds},
@@ -815,6 +853,13 @@ class LobbyRelay:
 
             beats = bdata["beats"]
 
+            # The key stages only read a centred excerpt (240 s / 60 s). Send
+            # just that, and let go of the full-length mono now.
+            kq = analysis.key_excerpt(mono, False)
+            held = {"kq": kq if kq is mono else kq.copy(),
+                    "kr": analysis.key_excerpt(mono, True).copy()}
+            del mono, kq
+
             # ---- 2. tempo sections || quick key (parallel workers)
             async def sections_stage():
                 if not beats:
@@ -823,7 +868,8 @@ class LobbyRelay:
                 return r, t
 
             async def key_stage():
-                r, t = await self._job("key", t0, analysis.stage_key, mono, state["tuning"], False)
+                seg = held.pop("kq")
+                r, t = await self._job("key", t0, analysis.stage_key, seg, state["tuning"], False)
                 await self._publish(key, "key", r["data"], t)
 
             async def run_safe(coro, name):
@@ -856,7 +902,8 @@ class LobbyRelay:
 
             # ---- 4. refined key (HPSS, slow) — runs alongside the meter
             async def key_refine_stage():
-                r, t = await self._job("key-refine", t0, analysis.stage_key, mono, state["tuning"], True)
+                seg = held.pop("kr")
+                r, t = await self._job("key-refine", t0, analysis.stage_key, seg, state["tuning"], True)
                 if r["data"]:
                     await self._publish(key, "key", r["data"], None)
                 e = self._analysis.get(key)
@@ -881,6 +928,9 @@ class LobbyRelay:
             if ev:
                 ev.set()                 # never leave playback waiting on a dead analysis
             self._analysis_tasks.pop(key, None)
+            if getattr(config, "AUDIO_ANALYSIS_TRIM_SERVER", True):
+                # PCM caches + decode scratch fragment the server heap; return it.
+                asyncio.get_running_loop().run_in_executor(None, analysis.trim_memory)
             # Bound memory: drop the oldest finished entries.
             done = [k for k, v in self._analysis.items() if v.get("complete")]
             for k in done[:max(0, len(done) - ANALYSIS_KEEP)]:
@@ -1026,6 +1076,7 @@ class LobbyRelay:
         if self._preload and self._preload["task"] and not self._preload["task"].done():
             self._preload["task"].cancel()
         self._preload = None
+        self._prune_analyses()
 
     # ---- seek cache -----------------------------------------------------
     @staticmethod
@@ -1235,6 +1286,7 @@ class LobbyRelay:
         self._cancel_task()
         self._cancel_preload()
         self._cancel_cache()
+        self._prune_analyses()
         self._idle = False
         self._idle_event.clear()
         self._pending = None

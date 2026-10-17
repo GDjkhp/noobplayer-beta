@@ -32,6 +32,7 @@ Honest limitations:
   * Compound meters (6/8, 9/8, 12/8) are inferred from a triple-vs-duple
     subdivision test on the beat grid.
 """
+import functools
 import os
 import time
 
@@ -123,6 +124,38 @@ def ping():
     return True
 
 
+_libc = None
+
+
+def trim_memory():
+    """Hand freed heap pages back to the OS (glibc malloc_trim; a no-op on
+    musl / macOS / Windows). Large numpy temporaries are freed to the allocator
+    but glibc keeps the pages mapped while anything newer sits above them, so a
+    long-lived process only ever ratchets UP in RSS. Call after big jobs."""
+    global _libc
+    if _libc is False:
+        return
+    try:
+        if _libc is None:
+            import ctypes
+            _libc = ctypes.CDLL("libc.so.6")
+        _libc.malloc_trim(0)
+    except Exception:
+        _libc = False
+
+
+def _trimmed(fn):
+    """Run a pool job, then trim. By the time `finally` runs, fn's frame (and
+    every temporary it held) is already gone, so this releases the stage's peak."""
+    @functools.wraps(fn)
+    def wrapper(*a, **k):
+        try:
+            return fn(*a, **k)
+        finally:
+            trim_memory()
+    return wrapper
+
+
 class Timer:
     """Collects named step durations: `with t("onset envelope"): ...`"""
     def __init__(self):
@@ -148,21 +181,34 @@ class Timer:
 # ───────────────────────── PCM → mono 22.05 kHz ─────────────────────────
 def pcm_to_mono(buf):
     """s16le/48k/stereo bytes-like → float32 mono at SR. Chunked so a long
-    track never needs a full float copy at 48 kHz."""
+    track never needs a full float copy at 48 kHz, and written straight into one
+    preallocated output (the old list + np.concatenate held every chunk AND the
+    joined result at once)."""
     a = np.frombuffer(buf, dtype="<i2")
     frames = a.size // 2
     a = a[: frames * 2]
     step = SRC_RATE * 30
-    out = []
+    out = np.empty(-(-frames * 147 // 320) + 1, np.float32)     # ceil(frames*147/320), +1 slack
+    pos = 0
     for s in range(0, frames, step):
         seg = a[s * 2:(s + step) * 2]
         mono = (seg[0::2].astype(np.float32) + seg[1::2].astype(np.float32)) * (0.5 / 32768.0)
-        out.append(scipy.signal.resample_poly(mono, 147, 320).astype(np.float32))
-    return np.concatenate(out) if out else np.zeros(0, np.float32)
+        r = scipy.signal.resample_poly(mono, 147, 320)
+        out[pos:pos + len(r)] = r
+        pos += len(r)
+    return out[:pos]
+
+
+def key_excerpt(y, refine):
+    """The slice of `y` stage_key actually reads. The server sends THIS to the
+    worker instead of the whole track (stage_key crops again, a no-op)."""
+    return _centre(y, 60 if refine else KEY_MAX_SECONDS)
 
 
 # ───────────────────────── DSP primitives ─────────────────────────
 _CACHE = {}
+_TUNED_MAX = 6          # tuning-dependent chroma filterbanks kept (tuning has ~100 distinct values)
+_tuned_keys = []
 
 
 def _hann(n):
@@ -245,6 +291,11 @@ def _chroma_fb(n_fft, tuning, octave_weight=True, fmin=None, fmax=None, sr=SR):
             keep &= freqs <= fmax
         w = w * keep[None, :]
     _CACHE[key] = w.astype(np.float32)
+    # The key includes the track's tuning, which differs per track, so an
+    # unbounded dict grows with every new song. Keep only the most recent few.
+    _tuned_keys.append(key)
+    while len(_tuned_keys) > _TUNED_MAX:
+        _CACHE.pop(_tuned_keys.pop(0), None)
     return _CACHE[key]
 
 
@@ -578,6 +629,7 @@ def _chroma_profile(seg, tuning, T, harmonic=False):
         return (frame * w[None, :]).sum(axis=1) / w.sum()
 
 
+@_trimmed
 def stage_key(y, tuning=0.0, refine=False):
     """Key detection. Two passes so the answer shows up fast:
       quick  - STFT chroma straight from the mix
@@ -601,6 +653,7 @@ def _frames_to_time(frames):
     return (np.asarray(frames, dtype=np.float64) + ONSET_LATENCY_FRAMES) * HOP / SR
 
 
+@_trimmed
 def stage_beats(y):
     """PRIORITY stage: beat grid + tempo. Playback waits for this one only.
     Returns the result plus a small `state` (onset envelopes, chroma) that the
@@ -746,6 +799,7 @@ def _beats_in(onset, a, b, bpm):
     return np.asarray(fr, dtype=int) + a
 
 
+@_trimmed
 def stage_sections(state, duration):
     """Detect tempo changes. Returns sections [{start,end,bpm,startBeat,beats}]
     and, when there is more than one, a re-tracked beat list whose grid follows
@@ -872,6 +926,7 @@ def stage_sections(state, duration):
 
 
 # ───────────────────────── meter stage ─────────────────────────
+@_trimmed
 def stage_meter(state, beat_times, sections=None):
     T = Timer()
     frames = np.round(np.asarray(beat_times) * SR / HOP).astype(int)

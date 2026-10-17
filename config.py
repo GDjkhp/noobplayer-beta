@@ -142,7 +142,7 @@ PASSWORD_FAIL_WINDOW = 60        # ...within this many seconds, then 429 until i
 # BPM / beats / tempo changes / time signature / key. Runs on numpy + scipy only
 # Master switch. False = nothing is imported or started, nothing is analysed and
 # playback is never held back; the Debug card just says "disabled in server config".
-AUDIO_ANALYSIS_ENABLED = False
+AUDIO_ANALYSIS_ENABLED = True
 
 # Hold the first audio frame of a track until its BPM / beat grid is ready
 # (at most AUDIO_ANALYSIS_GATE_SECONDS, then it plays anyway).
@@ -155,3 +155,8 @@ AUDIO_ANALYSIS_USE_PROCESS = True
 AUDIO_ANALYSIS_WORKERS = 2        # worker processes (~100 MB RAM each)
 AUDIO_ANALYSIS_THREADS = 2        # BLAS threads per worker
 AUDIO_ANALYSIS_PREWARM = True     # start the workers at server start (so the first track doesn't wait for the process to spawn)
+# Replace each worker process after this many jobs (0 = never; needs Python 3.11+).
+# A safety net if a worker's RSS still creeps up on your VPS: ~5 jobs per track.
+AUDIO_ANALYSIS_RECYCLE_TASKS = 0
+# Return freed heap pages to the OS in the server process after each analysis (glibc only).
+AUDIO_ANALYSIS_TRIM_SERVER = True
