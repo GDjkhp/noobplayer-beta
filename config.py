@@ -142,7 +142,7 @@ PASSWORD_FAIL_WINDOW = 60        # ...within this many seconds, then 429 until i
 # BPM / beats / tempo changes / time signature / key. Runs on numpy + scipy only
 # Master switch. False = nothing is imported or started, nothing is analysed and
 # playback is never held back; the Debug card just says "disabled in server config".
-AUDIO_ANALYSIS_ENABLED = True
+AUDIO_ANALYSIS_ENABLED = False
 
 # Hold the first audio frame of a track until its BPM / beat grid is ready
 # (at most AUDIO_ANALYSIS_GATE_SECONDS, then it plays anyway).
