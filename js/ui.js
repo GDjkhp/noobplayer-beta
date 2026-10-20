@@ -597,6 +597,131 @@ const UI = {
     });
   },
 
+  /* ───────── Search results: progressive loading ─────────
+     Same idea as the queue: 100 rows to start, +100 whenever the user scrolls
+     to the end of what's rendered. Rows are only ever APPENDED (results don't
+     reorder), so there's no reconcile step — just build the next slice. */
+  _SCHUNK: 100,
+  _sLimit: 100,
+  _sShown: 0,          // rows currently in the DOM
+  _sIO: null,          // IntersectionObserver watching the footer vs. the viewport
+  _sFoot: null,        // the footer element currently being watched
+  _sWired: false,
+
+  _sRowHtml(t, i, locked) {
+    const thumb = t.info.artworkUrl
+      ? `<img class="si-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
+      : `<div class="si-nth"><span class="material-symbols-outlined">music_note</span></div>`;
+    return `<div class="si" data-i="${i}">${thumb}
+          <div class="si-meta">
+            <div class="si-t">${esc(t.info.title)}</div>
+            <div class="si-a">${esc(t.info.author)}</div>
+          </div>
+          <div class="si-acts">
+            <button class="add-btn pnow" data-a="play" data-i="${i}" title="Play" ${locked?'disabled':''}><span class="material-symbols-outlined">play_arrow</span><span class="lbl">Play</span></button>
+            <button class="add-btn" data-a="q" data-i="${i}" title="Add to queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">Queue</span></button>
+            <button class="add-btn" data-a="link" data-i="${i}" title="Open track link" ${t.info.uri ? '' : 'disabled'}><span class="material-symbols-outlined">open_in_new</span><span class="lbl">Link</span></button>
+            <button class="add-btn" data-a="save" data-i="${i}" title="Save to library"><span class="material-symbols-outlined">bookmark_add</span><span class="lbl">Save</span></button>
+            <button class="add-btn" data-a="dl" data-i="${i}" title="Download this track"><span class="material-symbols-outlined">download</span><span class="lbl">Download</span></button>
+          </div>
+          <span class="si-d">${fmt(t.info.length)}</span>
+        </div>`;
+  },
+
+  // Appends rows [_sShown, min(_sLimit, total)) and keeps the footer last.
+  _sRender(res) {
+    const all = S.searchResults;
+    const total = all.length;
+    const upto = Math.min(total, this._sLimit);
+    const old = res.querySelector(':scope > .s-more');
+    if (old) old.remove();
+
+    if (upto > this._sShown) {
+      const locked = this.isLocked();
+      let html = '';
+      for (let i = this._sShown; i < upto; i++) html += this._sRowHtml(all[i], i, locked);
+      res.insertAdjacentHTML('beforeend', html);
+      this._sShown = upto;
+    }
+
+    if (this._sShown < total) {
+      const more = document.createElement('div');
+      more.className = 'q-more s-more';
+      more.textContent = `Showing ${this._sShown} of ${total} — scroll for more`;
+      res.appendChild(more);
+      this._sWatch(more);
+    } else {
+      if (this._sIO) this._sIO.disconnect();
+      this._sFoot = null;
+    }
+  },
+
+  _sLoadMore() {
+    const res = document.getElementById('sres');
+    if (!res || this._sShown >= S.searchResults.length) return;
+    this._sLimit += this._SCHUNK;
+    this._sRender(res);
+    // The new footer is observed fresh, so if it's STILL in view (very tall
+    // screen) it reports straight away and loads the next 100.
+  },
+
+  // Footer vs. the browser viewport: works whether #sres or the page is what
+  // scrolls, and when the Search tab is shown/hidden.
+  _sWatch(more) {
+    this._sFoot = more;
+    if (!('IntersectionObserver' in window)) return;   // scroll listeners in _sWire cover this
+    if (!this._sIO) {
+      this._sIO = new IntersectionObserver(entries => {
+        if (entries.some(en => en.isIntersecting)) this._sLoadMore();
+      }, { root: null, rootMargin: `0px 0px ${this._qMargin}px 0px` });
+    }
+    this._sIO.disconnect();
+    this._sIO.observe(more);
+  },
+
+  _sCheck() {
+    const m = this._sFoot;
+    if (!m || !m.isConnected || this._sShown >= S.searchResults.length) return;
+    const r = m.getBoundingClientRect();
+    if (r.height > 0 && r.top <= window.innerHeight + this._qMargin) this._sLoadMore();
+  },
+
+  // Delegated listeners on #sres, wired once (rows come and go).
+  _sWire(res) {
+    if (this._sWired) return;
+    this._sWired = true;
+    res.addEventListener('click', e => {
+      if (e.target.closest('.s-more')) { this._sLoadMore(); return; }
+      const btn = e.target.closest('.add-btn[data-a]');
+      if (!btn || !res.contains(btn) || btn.disabled) return;
+      e.stopPropagation();
+      const t = S.searchResults[parseInt(btn.dataset.i)];
+      if (!t) return;
+      if (btn.dataset.a === 'dl') { UI.openDownloadMenu(btn, t); return; }
+      if (btn.dataset.a === 'link') { UI.openTrackLink(t); return; }
+      if (btn.dataset.a === 'save') { Library.addTrack(t); return; }
+      // Something is already loaded (playing OR paused): Play on a search
+      // result queues it instead of replacing the current track.
+      if (btn.dataset.a === 'play' && S.current) {
+        Engine.addToQueue(t, { silent: true }).then(ok => {
+          if (ok) toast(`Queued from search: ${t.info.title}`, 'success', 2500);
+        });
+      } else if (btn.dataset.a === 'play') {
+        if (S.mode === 'standalone') { S.queue = []; if (S.current) S.history.push(S.current); }
+        Engine.playTrack(t);
+      } else {
+        Engine.addToQueue(t);
+      }
+    });
+    if (!('IntersectionObserver' in window)) {
+      let raf = 0;
+      const check = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; this._sCheck(); }); };
+      window.addEventListener('scroll', check, { passive: true });
+      window.addEventListener('resize', check, { passive: true });
+      res.addEventListener('scroll', check, { passive: true });
+    }
+  },
+
   async doSearch() {
     const raw = document.getElementById('si').value.trim();
     if (!raw) { toast('Enter a search term or URL', 'warn'); return; }
@@ -676,49 +801,15 @@ const UI = {
         </div>`;
       }
 
-      const locked = this.isLocked();
-      let html = banner;
-      tracks.forEach((t, i) => {
-        const thumb = t.info.artworkUrl
-          ? `<img class="si-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
-          : `<div class="si-nth"><span class="material-symbols-outlined">music_note</span></div>`;
-        html += `<div class="si" data-i="${i}">${thumb}
-          <div class="si-meta">
-            <div class="si-t">${esc(t.info.title)}</div>
-            <div class="si-a">${esc(t.info.author)}</div>
-          </div>
-          <div class="si-acts">
-            <button class="add-btn pnow" data-a="play" data-i="${i}" title="Play" ${locked?'disabled':''}><span class="material-symbols-outlined">play_arrow</span><span class="lbl">Play</span></button>
-            <button class="add-btn" data-a="q" data-i="${i}" title="Add to queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">Queue</span></button>
-            <button class="add-btn" data-a="save" data-i="${i}" title="Save to library"><span class="material-symbols-outlined">bookmark_add</span><span class="lbl">Save</span></button>
-            <button class="add-btn" data-a="dl" data-i="${i}" title="Download this track"><span class="material-symbols-outlined">download</span><span class="lbl">Download</span></button>
-          </div>
-          <span class="si-d">${fmt(t.info.length)}</span>
-        </div>`;
-      });
-      res.innerHTML = html;
-
-      res.querySelectorAll('.add-btn[data-a]').forEach(btn => {
-        btn.addEventListener('click', e => {
-          e.stopPropagation();
-          const t = S.searchResults[parseInt(btn.dataset.i)];
-          if (!t) return;
-          if (btn.dataset.a === 'dl') { UI.openDownloadMenu(btn, t); return; }
-          if (btn.dataset.a === 'save') { Library.addTrack(t); return; }
-          // Something is already loaded (playing OR paused): Play on a search
-          // result queues it instead of replacing the current track.
-          if (btn.dataset.a === 'play' && S.current) {
-            Engine.addToQueue(t, { silent: true }).then(ok => {
-              if (ok) toast(`Queued from search: ${t.info.title}`, 'success', 2500);
-            });
-          } else if (btn.dataset.a === 'play') {
-            if (S.mode === 'standalone') { S.queue = []; if (S.current) S.history.push(S.current); }
-            Engine.playTrack(t);
-          } else {
-            Engine.addToQueue(t);
-          }
-        });
-      });
+      // Only the first 100 rows go into the DOM; the next 100 are appended each
+      // time the user scrolls to the end (see _sRender / _sWatch). The banner,
+      // Add All / Shuffle Add / Download All and S.searchResults all still use
+      // the FULL result list — only the rendering is windowed.
+      res.innerHTML = banner;
+      this._sLimit = this._SCHUNK;
+      this._sShown = 0;
+      this._sRender(res);
+      this._sWire(res);
 
       const addAll = document.getElementById('btn-add-all');
       if (addAll) addAll.addEventListener('click', async () => {
@@ -1122,4 +1213,4 @@ const UI = {
       Engine.seekTo(msFromEvent(e));
     });
   },
-};
+};

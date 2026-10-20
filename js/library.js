@@ -439,9 +439,11 @@ const Library = {
       const acts = isCol
         ? `<button class="add-btn" data-la="queue" title="Add every track to the queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">Queue</span></button>
            <button class="add-btn" data-la="shuffle" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span><span class="lbl">Shuffle</span></button>
+           ${/^https?:\/\//i.test(item.source || '') ? `<button class="add-btn" data-la="plink" title="Open playlist link"><span class="material-symbols-outlined">open_in_new</span><span class="lbl">Link</span></button>` : ''}
            ${item.source ? `<button class="add-btn" data-la="refresh" title="Re-fetch from the original link"><span class="material-symbols-outlined">refresh</span></button>` : ''}`
         : `<button class="add-btn pnow" data-la="play" title="Play"><span class="material-symbols-outlined">play_arrow</span><span class="lbl">Play</span></button>
-           <button class="add-btn" data-la="queue" title="Add to queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">Queue</span></button>`;
+           <button class="add-btn" data-la="queue" title="Add to queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">Queue</span></button>
+           <button class="add-btn" data-la="link" title="Open track link" ${item.tracks[0].info.uri ? '' : 'disabled'}><span class="material-symbols-outlined">open_in_new</span><span class="lbl">Link</span></button>`;
       let html = `<div class="lib-item ${isCol ? 'col' : ''} ${open ? 'open' : ''}" data-id="${esc(item.id)}">
         <div class="si lib-row" data-la="${isCol ? 'toggle' : ''}">
           ${isCol ? `<span class="material-symbols-outlined lib-chev">${open ? 'expand_more' : 'chevron_right'}</span>` : ''}
@@ -463,6 +465,7 @@ const Library = {
             <div class="si-acts">
               <button class="add-btn pnow" data-la="tplay" data-ti="${i}" title="Play"><span class="material-symbols-outlined">play_arrow</span></button>
               <button class="add-btn" data-la="tqueue" data-ti="${i}" title="Add to queue"><span class="material-symbols-outlined m-ico">playlist_add</span></button>
+              <button class="add-btn" data-la="tlink" data-ti="${i}" title="Open track link" ${t.info.uri ? '' : 'disabled'}><span class="material-symbols-outlined">open_in_new</span></button>
             </div>
             <span class="si-d">${fmt(t.info.length)}</span>
           </div>`).join('') + `</div>`;
@@ -487,6 +490,12 @@ const Library = {
     else if (a === 'queue') this._bulk(item.tracks, false, item.kind === 'collection' ? item.name : '');
     else if (a === 'shuffle') this._bulk(item.tracks, true, item.name);
     else if (a === 'refresh') this.refresh(item.id);
+    else if (a === 'link') UI.openTrackLink(item.tracks[0]);
+    else if (a === 'tlink') UI.openTrackLink(item.tracks[+btn.dataset.ti]);
+    else if (a === 'plink') {
+      if (/^https?:\/\//i.test(item.source || '')) window.open(item.source, '_blank', 'noopener,noreferrer');
+      else toast('No link available for this playlist', 'info', 1800);
+    }
     else if (a === 'remove') this.remove(item.id);
     else if (a === 'tplay') this._playOrQueue(item.tracks[+btn.dataset.ti]);
     else if (a === 'tqueue') {
