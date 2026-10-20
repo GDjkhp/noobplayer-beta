@@ -855,13 +855,33 @@ const UI = {
   _LYR_CACHE_MAX: 2,    // current + next
   _lyrPreFor: null,       // encoded of the track last preloaded
 
-  _lyrLoad(encoded) {
+  _lyrLoad(encoded, keep) {
     let p = this._lyrCache.get(encoded);
-    if (p) return p;
+    if (p) {                                   // hit: mark as most recently used
+      this._lyrCache.delete(encoded); this._lyrCache.set(encoded, p);
+      return p;
+    }
     p = Promise.resolve(Backend.loadlyrics(encoded)).catch(e => { this._lyrCache.delete(encoded); throw e; });
     this._lyrCache.set(encoded, p);
-    while (this._lyrCache.size > this._LYR_CACHE_MAX) this._lyrCache.delete(this._lyrCache.keys().next().value);
+    this._lyrEvict(encoded, keep);
     return p;
+  },
+
+  // Trim to _LYR_CACHE_MAX, oldest first — but never drop an entry that is
+  // about to be needed. When a track starts, the queue (and so the "next"
+  // preload) updates BEFORE the new current track asks for its lyrics, so at
+  // that instant the track that is about to play is neither current nor the
+  // queue head. Dropping it there is what made lyrics fetch twice. Entries in
+  // `keep` (the previous preload target) are protected for that reason; the
+  // cache may sit one over the limit for a moment and trims on the next insert.
+  _lyrEvict(justAdded, keep) {
+    const cur = S.current && S.current.encoded;
+    const head = S.queue && S.queue[0] && S.queue[0].encoded;
+    const safe = new Set([justAdded, cur, head, ...(keep || [])]);
+    for (const k of this._lyrCache.keys()) {
+      if (this._lyrCache.size <= this._LYR_CACHE_MAX) break;
+      if (!safe.has(k)) this._lyrCache.delete(k);
+    }
   },
 
   // Warm the cache for the next track in the queue (if there is one). Safe to
@@ -871,8 +891,9 @@ const UI = {
     const enc = next && next.encoded;
     if (!enc || enc === (S.current && S.current.encoded)) return;
     if (this._lyrPreFor === enc) return;
+    const prev = this._lyrPreFor;
     this._lyrPreFor = enc;
-    this._lyrLoad(enc).catch(() => { if (this._lyrPreFor === enc) this._lyrPreFor = null; });
+    this._lyrLoad(enc, [prev]).catch(() => { if (this._lyrPreFor === enc) this._lyrPreFor = null; });
   },
 
   async fetchLyrics() {
