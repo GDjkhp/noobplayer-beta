@@ -213,6 +213,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-dl').addEventListener('click', e => UI.openDownloadMenu(e.currentTarget, S.current));
   document.getElementById('public-refresh-btn').addEventListener('click', () => Lobby.refreshPublicList());
   document.getElementById('btn-link').addEventListener('click', () => UI.openTrackLink(S.current));
+  document.getElementById('btn-lyr-refetch').addEventListener('click', () => UI.refetchLyrics());
 
   /* ───────── Media Session (lock-screen / hardware media keys) ─────────
      Metadata + playback/position state are pushed from
@@ -358,4 +359,4 @@ document.addEventListener('DOMContentLoaded', async () => {
       return '';
     }
   });
-});
+});

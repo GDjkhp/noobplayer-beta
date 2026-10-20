@@ -150,6 +150,7 @@ const UI = {
       document.getElementById('lyr-body').innerHTML =
         `<div class="empty"><span class="material-symbols-outlined">lyrics</span><p>Play a track and fetch lyrics</p></div>`;
       document.getElementById('lyr-src-lbl').textContent = 'No lyrics loaded';
+      this._lyrBusy(false);
     }
     this.updatePlayPauseIcons(); this.updateEQ(); this.applyLockState();
   },
@@ -896,8 +897,25 @@ const UI = {
     this._lyrLoad(enc, [prev]).catch(() => { if (this._lyrPreFor === enc) this._lyrPreFor = null; });
   },
 
-  async fetchLyrics() {
+  // Manual "Fetch Lyrics": throw away whatever we have for this track (cached
+  // result, including a cached "no lyrics found" or an error) and ask again.
+  refetchLyrics() {
     if (!S.current) return;
+    const enc = S.current.encoded;
+    this._lyrCache.delete(enc);
+    S.lyricsFetchedFor = null;
+    S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
+    this.fetchLyrics();
+  },
+
+  // The button is disabled while a fetch is running (and with no track).
+  _lyrBusy(busy) {
+    const b = document.getElementById('btn-lyr-refetch');
+    if (b) b.disabled = busy || !S.current;
+  },
+
+  async fetchLyrics() {
+    if (!S.current) { this._lyrBusy(false); return; }
     // Already fetched (or currently fetching) lyrics for this exact track —
     // nothing to do. This is what makes it safe to call fetchLyrics() from
     // updatePlayerUI() on every re-render instead of only from a manual
@@ -905,10 +923,19 @@ const UI = {
     const enc = S.current.encoded;
     if (S.lyricsFetchedFor === enc) { this.preloadNextLyrics(); return; }
     S.lyricsFetchedFor = enc;
+    this._lyrBusy(true);
     this._lyrHoldUntil = 0;
     document.getElementById('lyr-src-lbl').textContent = 'Loading…';
     document.getElementById('lyr-body').innerHTML = `<div class="empty"><div class="dots"><span></span><span></span><span></span></div><p>Fetching lyrics…</p></div>`;
     const stale = () => !S.current || S.current.encoded !== enc;   // track changed while we waited
+    try {
+      return await this._fetchLyricsInto(enc, stale);
+    } finally {
+      if (!stale()) this._lyrBusy(false);
+    }
+  },
+
+  async _fetchLyricsInto(enc, stale) {
     try {
       const data = await this._lyrLoad(enc);
       if (stale()) return;
