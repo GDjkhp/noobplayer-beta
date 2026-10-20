@@ -391,6 +391,7 @@ const UI = {
     }
 
     this.applyLockState();
+    this.preloadNextLyrics();   // queue head may have changed
 
     // Make sure the footer is being tracked against the viewport.
     if (more && more.parentNode === el) this._qWatch(more);
@@ -846,19 +847,50 @@ const UI = {
     }
   },
 
+  /* Lyrics cache + preload. _lyrLoad(encoded) returns ONE shared promise per
+     track, so a preload that is still in flight when the track becomes current
+     is simply awaited by fetchLyrics() instead of being requested twice.
+     Failures are not cached (a later attempt retries); "no lyrics" is. */
+  _lyrCache: new Map(),   // encoded -> Promise<response>
+  _LYR_CACHE_MAX: 2,    // current + next
+  _lyrPreFor: null,       // encoded of the track last preloaded
+
+  _lyrLoad(encoded) {
+    let p = this._lyrCache.get(encoded);
+    if (p) return p;
+    p = Promise.resolve(Backend.loadlyrics(encoded)).catch(e => { this._lyrCache.delete(encoded); throw e; });
+    this._lyrCache.set(encoded, p);
+    while (this._lyrCache.size > this._LYR_CACHE_MAX) this._lyrCache.delete(this._lyrCache.keys().next().value);
+    return p;
+  },
+
+  // Warm the cache for the next track in the queue (if there is one). Safe to
+  // call as often as you like — it only fires once per distinct next track.
+  preloadNextLyrics() {
+    const next = S.queue && S.queue[0];
+    const enc = next && next.encoded;
+    if (!enc || enc === (S.current && S.current.encoded)) return;
+    if (this._lyrPreFor === enc) return;
+    this._lyrPreFor = enc;
+    this._lyrLoad(enc).catch(() => { if (this._lyrPreFor === enc) this._lyrPreFor = null; });
+  },
+
   async fetchLyrics() {
     if (!S.current) return;
     // Already fetched (or currently fetching) lyrics for this exact track —
     // nothing to do. This is what makes it safe to call fetchLyrics() from
     // updatePlayerUI() on every re-render instead of only from a manual
     // button click.
-    if (S.lyricsFetchedFor === S.current.encoded) return;
-    S.lyricsFetchedFor = S.current.encoded;
+    const enc = S.current.encoded;
+    if (S.lyricsFetchedFor === enc) { this.preloadNextLyrics(); return; }
+    S.lyricsFetchedFor = enc;
     this._lyrHoldUntil = 0;
     document.getElementById('lyr-src-lbl').textContent = 'Loading…';
     document.getElementById('lyr-body').innerHTML = `<div class="empty"><div class="dots"><span></span><span></span><span></span></div><p>Fetching lyrics…</p></div>`;
+    const stale = () => !S.current || S.current.encoded !== enc;   // track changed while we waited
     try {
-      const data = await Backend.loadlyrics(S.current.encoded);
+      const data = await this._lyrLoad(enc);
+      if (stale()) return;
       if (!data || data.loadType === 'empty' || !data.data) {
         S.lyrics = null; S.lyricsType = null;
         document.getElementById('lyr-src-lbl').textContent = 'No lyrics found';
@@ -883,9 +915,12 @@ const UI = {
         document.getElementById('lyr-body').innerHTML = `<div class="empty"><p>No lyrics available</p></div>`;
       }
     } catch (e) {
+      if (stale()) return;
       document.getElementById('lyr-src-lbl').textContent = `Error`;
       document.getElementById('lyr-body').innerHTML = `<div class="empty"><p>${esc(e.message)}</p></div>`;
     }
+    // Current track's lyrics are settled — now warm up the next one.
+    this.preloadNextLyrics();
   },
 
   // Auto-scroll yields to the user. Any manual scroll gesture (wheel, touch
