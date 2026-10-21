@@ -82,6 +82,10 @@ const UI = {
       info.textContent = count === 0
         ? 'Queue empty'
         : `${count} track${count !== 1 ? 's' : ''} · ${fmt(totalMs)}`;
+      if (count && this._qFilter) {
+        const n = this._qMatches(this._qFilter).length;
+        info.textContent = `${n} of ${info.textContent}`;
+      }
     }
 
     const ap = document.getElementById('btn-autoplay');
@@ -309,6 +313,8 @@ const UI = {
   _QCHUNK: 100,
   _qLimit: 100,
   _qRows: null,        // key -> row element (only rows currently in the DOM)
+  _qFilter: '',        // lowercase queue filter ('' = off)
+  _qVisCount: 0,       // rows that pass the filter (== queue length when off)
   _qDragFrom: null,
   _qDragOver: null,
   _qMargin: 200,       // px before the footer actually enters the viewport that we start loading
@@ -324,12 +330,22 @@ const UI = {
     const el = document.getElementById('ql');
     if (!this._qRows) { this._qRows = new Map(); this._wireQueueEvents(el); }
 
-    if (count === 0) {
+    // Filter: `vis` maps a visible position to its REAL queue index (null = no
+    // filter, identity). Rows always carry the real index, so play / move /
+    // remove / drag keep acting on the right track while the list is filtered.
+    const q = this._qFilter;
+    const vis = q ? this._qMatches(q) : null;
+    const visCount = vis ? vis.length : count;
+    this._qVisCount = visCount;
+
+    if (visCount === 0) {
       this._qRows.clear();
-      this._qLimit = this._QCHUNK;
-      if (!el.querySelector(':scope > .empty')) {
-        el.innerHTML = `<div class="empty"><span class="material-symbols-outlined">queue_music</span><p>Queue is empty</p></div>`;
-      }
+      if (this._qIO) this._qIO.disconnect();
+      this._qSentinel = null;
+      if (count === 0) this._qLimit = this._QCHUNK;
+      el.innerHTML = count === 0
+        ? `<div class="empty"><span class="material-symbols-outlined">queue_music</span><p>Queue is empty</p></div>`
+        : `<div class="empty"><p>No matches</p></div>`;
       this.applyLockState();
       return;
     }
@@ -338,17 +354,18 @@ const UI = {
 
     const locked = this.isLocked();
     const me = LobbyAPI.userId();
-    const shown = Math.min(count, this._qLimit);
+    const shown = Math.min(visCount, this._qLimit);
+    const at = j => vis ? vis[j] : j;
 
     // Keys for the visible window. "nth occurrence" keeps duplicate tracks distinct.
     const seen = new Map();
     const keys = new Array(shown);
-    for (let i = 0; i < shown; i++) {
-      const t = S.queue[i];
+    for (let j = 0; j < shown; j++) {
+      const t = S.queue[at(j)];
       const base = (t.encoded || t.info?.identifier || '') + '|' + (t.requester?.id || '');
       const n = seen.get(base) || 0;
       seen.set(base, n + 1);
-      keys[i] = base + '#' + n;
+      keys[j] = base + '#' + n;
     }
 
     // Drop rows that left the window / queue.
@@ -366,9 +383,9 @@ const UI = {
 
     // "Load more" footer, always last.
     let more = el.querySelector(':scope > .q-more');
-    if (shown < count) {
+    if (shown < visCount) {
       if (!more) { more = document.createElement('div'); more.className = 'q-more'; }
-      more.textContent = `Showing ${shown} of ${count} — scroll for more`;
+      more.textContent = `Showing ${shown} of ${visCount} — scroll for more`;
       if (more.parentNode !== el || more !== el.lastElementChild) el.appendChild(more);
     } else if (more) {
       more.remove(); more = null;   // null it: it must not be used as the insert anchor below
@@ -377,14 +394,15 @@ const UI = {
     }
 
     let anchor = more || null;
-    for (let i = shown - 1; i >= 0; i--) {
+    for (let j = shown - 1; j >= 0; j--) {
+      const i = at(j);
       const t = S.queue[i];
-      let row = this._qRows.get(keys[i]);
+      let row = this._qRows.get(keys[j]);
       if (!row) {
         row = this._qBuildRow(t);
-        this._qRows.set(keys[i], row);
+        this._qRows.set(keys[j], row);
         el.insertBefore(row, anchor);
-      } else if (!stay.has(i)) {
+      } else if (!stay.has(j)) {
         el.insertBefore(row, anchor);
       }
       this._qSyncRow(row, i, t, count, locked, me);
@@ -398,8 +416,37 @@ const UI = {
     if (more && more.parentNode === el) this._qWatch(more);
   },
 
+  // Real queue indices whose title / author contain q (q is lowercase).
+  _qMatches(q) {
+    const out = [];
+    for (let i = 0; i < S.queue.length; i++) {
+      const t = S.queue[i], info = t.info || {};
+      const ti = String(info.title || '').toLowerCase();
+      const au = String(info.author || '').toLowerCase();
+      if (ti.includes(q) || au.includes(q) || (ti + ' ' + au).includes(q)) out.push(i);
+    }
+    return out;
+  },
+
+  // Called from the queue filter box: back to the first 100 matches.
+  setQueueFilter(raw) {
+    this._qFilter = String(raw || '').trim().toLowerCase();
+    this._qLimit = this._QCHUNK;
+    this.renderQueue();
+    const el = document.getElementById('ql');
+    if (el) el.scrollTop = 0;
+  },
+
+  // Back to the first 100 rows (called on a tab switch).
+  resetQueueWindow() {
+    this._qLimit = this._QCHUNK;
+    this.renderQueue();
+    const el = document.getElementById('ql');
+    if (el) el.scrollTop = 0;
+  },
+
   _qLoadMore() {
-    if (this._qLimit >= S.queue.length) return;
+    if (this._qLimit >= this._qVisCount) return;
     this._qLimit += this._QCHUNK;
     this.renderQueue();
     // Re-arm: the new footer sits 100 rows further down. If it is STILL inside
@@ -430,7 +477,7 @@ const UI = {
   // Manual version of the same test (only used where IntersectionObserver is missing).
   _qCheck() {
     const m = this._qSentinel;
-    if (!m || !m.isConnected || this._qLimit >= S.queue.length) return;
+    if (!m || !m.isConnected || this._qLimit >= this._qVisCount) return;
     const r = m.getBoundingClientRect();
     if (r.height > 0 && r.top <= window.innerHeight + this._qMargin) this._qLoadMore();
   },
@@ -453,9 +500,10 @@ const UI = {
   // Builds the row for a track ONCE. Nothing in here depends on position or
   // lock state — _qSyncRow fills those in.
   _qBuildRow(t) {
-    const thumb = t.info.artworkUrl
+    const art = t.info.artworkUrl
       ? `<img class="qi-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" decoding="async" onerror="this.style.display='none'">`
       : `<div class="qi-nth"><span class="material-symbols-outlined">music_note</span></div>`;
+    const thumb = `<span class="th-w">${art}${srcBadge(trackSrc(t))}</span>`;
     const req = t.requester || null;
     const auto = req && req.id === '__auto__';
     const chip = req
@@ -467,7 +515,7 @@ const UI = {
         <span class="qi-n"></span>${thumb}
         <div class="qi-m">
           <div class="qi-t">${esc(t.info.title)}</div>
-          <div class="qi-a">${esc(t.info.author)}${chip}</div>
+          <div class="qi-a"><span class="qi-au">${esc(t.info.author)}</span>${chip}</div>
         </div>
         <div class="qi-bs">
           <button class="qib" data-qa="play" title="Play now"><span class="material-symbols-outlined">play_arrow</span></button>
@@ -485,6 +533,9 @@ const UI = {
     row._btn = {};
     row.querySelectorAll('.qib').forEach(b => { row._btn[b.dataset.qa] = b; });
     row._chip = row.querySelector('.qi-req');
+    row._tEl = row.querySelector('.qi-t');
+    row._auEl = row.querySelector('.qi-au');
+    row._hq = '';     // filter the title/author <mark>s were last drawn for
     row._sig = null;
     return row;
   },
@@ -492,6 +543,13 @@ const UI = {
   // Patches only what depends on position / lock state, and only if it changed.
   _qSyncRow(row, i, t, count, locked, me) {
     row._i = i;
+    // <mark> the filter hits in title/author (only redrawn when the filter changed).
+    const q = this._qFilter;
+    if (row._hq !== q) {
+      row._hq = q;
+      row._tEl.innerHTML = hl(t.info.title, q);
+      row._auEl.innerHTML = hl(t.info.author, q);
+    }
     const last = i === count - 1;
     const sig = `${i}|${last ? 1 : 0}|${locked ? 1 : 0}|${me || ''}`;
     if (row._sig === sig) return;
@@ -519,6 +577,8 @@ const UI = {
 
   // One set of delegated listeners for the whole list (wired once).
   _wireQueueEvents(el) {
+    const qf = document.getElementById('q-filter');
+    if (qf) qf.addEventListener('input', e => this.setQueueFilter(e.target.value));
     el.addEventListener('click', e => {
       const more = e.target.closest('.q-more');
       if (more) { this._qLoadMore(); return; }
@@ -611,9 +671,10 @@ const UI = {
   _sWired: false,
 
   _sRowHtml(t, i, locked) {
-    const thumb = t.info.artworkUrl
+    const art = t.info.artworkUrl
       ? `<img class="si-th" src="${esc(t.info.artworkUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
       : `<div class="si-nth"><span class="material-symbols-outlined">music_note</span></div>`;
+    const thumb = `<span class="th-w">${art}${srcBadge(trackSrc(t))}</span>`;
     return `<div class="si" data-i="${i}">${thumb}
           <div class="si-meta">
             <div class="si-t">${esc(t.info.title)}</div>
@@ -780,7 +841,7 @@ const UI = {
         tracks = data.data.tracks;
         plMeta = { name: data.data.info?.name || 'Playlist', source: id, artwork: data.data.pluginInfo?.artworkUrl || '', author: data.data.pluginInfo?.author || '' };
         banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
-          <span style="color:var(--text);font-weight:600">${esc(data.data.info?.name || 'Playlist')}</span>
+          ${srcBadge(srcFromUrl(id) || trackSrc(tracks[0]), 'inline')}<span style="color:var(--text);font-weight:600">${esc(data.data.info?.name || 'Playlist')}</span>
           <span>${tracks.length} tracks</span>
           <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button><button class="add-btn" id="btn-shuf-all" style="opacity:1" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span>Shuffle Add</button>
           <button class="add-btn" id="btn-lib-save" style="opacity:1" title="Save this playlist to your library"><span class="material-symbols-outlined">bookmark_add</span>Save</button>
@@ -1040,7 +1101,30 @@ const UI = {
     }
   },
 
+  // Library / Search / Queue only keep 100 rows (per list) rendered after you
+  // leave them, so coming back never lands on a long, already-expanded list.
+  _resetTabWindow(tab) {
+    if (tab === 'library') Library.resetWindow();
+    else if (tab === 'queue') this.resetQueueWindow();
+    else if (tab === 'search') this.resetSearchWindow();
+  },
+
+  // Trim the rendered search rows back to the first 100 and re-arm the footer.
+  resetSearchWindow() {
+    const res = document.getElementById('sres');
+    this._sLimit = this._SCHUNK;
+    if (!res || !S.searchResults.length || this._sShown === 0) return;
+    if (this._sShown > this._SCHUNK) {
+      res.querySelectorAll(':scope > .si').forEach((row, k) => { if (k >= this._SCHUNK) row.remove(); });
+      this._sShown = this._SCHUNK;
+    }
+    this._sRender(res);
+    res.scrollTop = 0;
+  },
+
   switchTab(name) {
+    const prev = S.activeTab;
+    if (prev && prev !== name) this._resetTabWindow(prev);
     S.activeTab = name;
     document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
     document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + name));
@@ -1296,4 +1380,4 @@ const UI = {
       Engine.seekTo(msFromEvent(e));
     });
   },
-};
+};

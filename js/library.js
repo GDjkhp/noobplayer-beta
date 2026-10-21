@@ -176,14 +176,34 @@ const Library = {
     }
     return a;
   },
-  _matches(item) {
-    if (!this._filter) return true;
-    const hay = [item.name, item.author, ...(item.kind === 'collection' ? item.tracks.map(t => t.info.title + ' ' + t.info.author) : [])]
-      .join(' ').toLowerCase();
-    return hay.includes(this._filter);
+  // Does this track's title / author contain the filter?
+  _tHit(t) {
+    const q = this._filter;
+    if (!q) return true;
+    const ti = String((t.info && t.info.title) || '').toLowerCase();
+    const au = String((t.info && t.info.author) || '').toLowerCase();
+    return ti.includes(q) || au.includes(q) || (ti + ' ' + au).includes(q);
   },
+  // What to show for one item under the current filter:
+  //   rows — [{ t, i }] the tracks to list (i = index into item.tracks, so the
+  //          row buttons keep pointing at the right track while filtered)
+  //   hit  — whether the item survives the filter at all
+  // A playlist with track hits lists ONLY those tracks. A playlist hit by name
+  // or author alone (no track hits) still lists everything, since the playlist
+  // itself is what matched.
+  _view(item) {
+    const all = item.tracks.map((t, i) => ({ t, i }));
+    const q = this._filter;
+    if (!q) return { rows: all, hit: true, filtered: false };
+    const selfHit = String(item.name || '').toLowerCase().includes(q) || String(item.author || '').toLowerCase().includes(q);
+    if (item.kind !== 'collection') return { rows: all, hit: selfHit || this._tHit(item.tracks[0]), filtered: false };
+    const rows = all.filter(r => this._tHit(r.t));
+    if (rows.length) return { rows, hit: true, filtered: rows.length !== all.length };
+    return { rows: selfHit ? all : [], hit: selfHit, filtered: false };
+  },
+  _matches(item) { return this._view(item).hit; },
   _visibleTracks() {
-    return this._uniq(this.items.filter(i => this._matches(i)).flatMap(i => i.tracks));
+    return this._uniq(this.items.flatMap(i => { const v = this._view(i); return v.hit ? v.rows.map(r => r.t) : []; }));
   },
 
   _dropFromMemory(id) {
@@ -409,10 +429,13 @@ const Library = {
   },
 
   /* ───────── rendering ───────── */
-  _thumb(src, cls, icon) {
-    return src
+  // Thumbnail wrapped so a circular source badge (bottom-right) can overlay it.
+  // `srcKey` is '' / unknown → no badge is rendered.
+  _thumb(src, cls, icon, srcKey) {
+    const img = src
       ? `<img class="${cls}" src="${esc(src)}" alt="" loading="lazy" onerror="this.style.display='none'">`
       : `<div class="${cls.replace('th', 'nth')}"><span class="material-symbols-outlined">${icon}</span></div>`;
+    return `<span class="th-w">${img}${srcBadge(srcKey)}</span>`;
   },
 
   render() {
@@ -434,7 +457,6 @@ const Library = {
     }
     const shown = this.items.filter(i => this._matches(i));
     if (!shown.length) { list.innerHTML = `<div class="empty"><p>No matches</p></div>`; return; }
-
     // Progressive loading: 100 top-level items, and 100 tracks per expanded
     // playlist; the next 100 are appended when the user scrolls to the footer.
     const upto = Math.min(shown.length, this._lLimit);
@@ -456,10 +478,11 @@ const Library = {
   },
 
   _trowHtml(t, i) {
+    const q = this._filter;
     return `
           <div class="si lib-trow" data-ti="${i}">
-            ${this._thumb(t.info.artworkUrl, 'si-th', 'music_note')}
-            <div class="si-meta"><div class="si-t">${esc(t.info.title)}</div><div class="si-a">${esc(t.info.author)}</div></div>
+            ${this._thumb(t.info.artworkUrl, 'si-th', 'music_note', trackSrc(t))}
+            <div class="si-meta"><div class="si-t">${hl(t.info.title, q)}</div><div class="si-a">${hl(t.info.author, q)}</div></div>
             <div class="si-acts">
               <button class="add-btn pnow" data-la="tplay" data-ti="${i}" title="Play"><span class="material-symbols-outlined">play_arrow</span></button>
               <button class="add-btn" data-la="tqueue" data-ti="${i}" title="Add to queue"><span class="material-symbols-outlined m-ico">playlist_add</span></button>
@@ -471,12 +494,17 @@ const Library = {
 
   _itemHtml(item) {
     const isCol = item.kind === 'collection';
-    const open = isCol && (this._open.has(item.id) || !!this._filter);
-    const count = item.tracks.length;
+    const q = this._filter;
+    const open = isCol && (this._open.has(item.id) || !!q);
+    const view = this._view(item);
+    const total = item.tracks.length;
+    const count = view.rows.length;
+    const countTxt = view.filtered ? `${count} of ${total} track${total !== 1 ? 's' : ''}` : `${total} track${total !== 1 ? 's' : ''}`;
     const sub = isCol
-      ? `${count} track${count !== 1 ? 's' : ''}${item.author ? ' \u00b7 ' + esc(item.author) : ''}`
-      : esc(item.author || '');
-    const dur = fmt(item.tracks.reduce((a, t) => a + (t.info.length || 0), 0));
+      ? `${countTxt}${item.author ? ' \u00b7 ' + hl(item.author, q) : ''}`
+      : hl(item.author || '', q);
+    const dur = fmt(view.rows.reduce((a, r) => a + (r.t.info.length || 0), 0));
+    const srcKey = isCol ? collectionSrc(item) : trackSrc(item.tracks[0]);
     const acts = isCol
       ? `<button class="add-btn" data-la="queue" title="Add every track to the queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">Queue</span></button>
          <button class="add-btn" data-la="shuffle" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span><span class="lbl">Shuffle</span></button>
@@ -488,9 +516,9 @@ const Library = {
     let html = `<div class="lib-item ${isCol ? 'col' : ''} ${open ? 'open' : ''}" data-id="${esc(item.id)}">
         <div class="si lib-row" data-la="${isCol ? 'toggle' : ''}">
           ${isCol ? `<span class="material-symbols-outlined lib-chev">${open ? 'expand_more' : 'chevron_right'}</span>` : ''}
-          ${this._thumb(item.artwork, 'si-th', isCol ? 'library_music' : 'music_note')}
+          ${this._thumb(item.artwork, 'si-th', isCol ? 'library_music' : 'music_note', srcKey)}
           <div class="si-meta">
-            <div class="si-t">${esc(item.name)}</div>
+            <div class="si-t">${hl(item.name, q)}</div>
             <div class="si-a">${sub}</div>
           </div>
           <div class="si-acts lib-acts">${acts}
@@ -500,7 +528,7 @@ const Library = {
         </div>`;
     if (open) {
       const upto = Math.min(count, this._subLimit.get(item.id) || this._LCHUNK);
-      html += `<div class="lib-sub">` + item.tracks.slice(0, upto).map((t, i) => this._trowHtml(t, i)).join('')
+      html += `<div class="lib-sub">` + view.rows.slice(0, upto).map(r => this._trowHtml(r.t, r.i)).join('')
         + (upto < count ? this._moreHtml(upto, count) : '') + `</div>`;
     }
     return html + `</div>`;
@@ -513,12 +541,13 @@ const Library = {
     if (wrap) {                                   // inside an expanded playlist
       const item = this.items.find(i => i.id === wrap.dataset.id);
       if (!item) return;
+      const rows = this._view(item).rows;     // filtered rows, each keeping its real track index
       const have = wrap.querySelectorAll('.lib-trow').length;
-      if (have >= item.tracks.length) { foot.remove(); return; }
-      const upto = Math.min(item.tracks.length, have + this._LCHUNK);
+      if (have >= rows.length) { foot.remove(); return; }
+      const upto = Math.min(rows.length, have + this._LCHUNK);
       this._subLimit.set(item.id, upto);
-      foot.insertAdjacentHTML('beforebegin', item.tracks.slice(have, upto).map((t, k) => this._trowHtml(t, have + k)).join(''));
-      if (upto < item.tracks.length) foot.textContent = `Showing ${upto} of ${item.tracks.length} \u2014 scroll for more`;
+      foot.insertAdjacentHTML('beforebegin', rows.slice(have, upto).map(r => this._trowHtml(r.t, r.i)).join(''));
+      if (upto < rows.length) foot.textContent = `Showing ${upto} of ${rows.length} \u2014 scroll for more`;
       else foot.remove();
     } else {                                      // the list itself
       const list = document.getElementById('lib-list');
@@ -558,6 +587,15 @@ const Library = {
       const r = f.getBoundingClientRect();
       if (r.height > 0 && r.top <= window.innerHeight + this._lMargin) this._lMore(f);
     });
+  },
+
+  // Back to the first 100 items / first 100 tracks per playlist (called on a tab switch).
+  resetWindow() {
+    this._lLimit = this._LCHUNK;
+    this._subLimit.clear();
+    this.render();
+    const list = document.getElementById('lib-list');
+    if (list) list.scrollTop = 0;
   },
 
   _onListClick(e) {

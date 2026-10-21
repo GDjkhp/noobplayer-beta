@@ -14,6 +14,77 @@ function esc(s) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+/* ───────── <mark> highlighting ─────────
+   hl(text, q) → HTML-escaped text with every case-insensitive occurrence of q
+   wrapped in <mark>. With an empty q it is just esc(text). */
+function hl(text, q) {
+  const s = String(text == null ? '' : text);
+  if (!q) return esc(s);
+  const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+  let out = '', last = 0, m;
+  while ((m = re.exec(s)) !== null) {
+    if (!m[0]) { re.lastIndex++; continue; }
+    out += esc(s.slice(last, m.index)) + '<mark>' + esc(m[0]) + '</mark>';
+    last = m.index + m[0].length;
+  }
+  return out + esc(s.slice(last));
+}
+
+/* ───────── source icons ─────────
+   Circle badge for the service a track / playlist came from. Sources with no
+   icon here render nothing at all. */
+const SRC_ICONS = {
+  youtube:      { name: 'YouTube',       url: 'https://gdjkhp.github.io/img/771384-512.png' },
+  youtubemusic: { name: 'YouTube Music', url: 'https://gdjkhp.github.io/img/ytmusic.png' },
+  spotify:      { name: 'Spotify',       url: 'https://gdjkhp.github.io/img/Spotify_App_Logo.svg.png' },
+  soundcloud:   { name: 'SoundCloud',    url: 'https://gdjkhp.github.io/img/soundcloud-icon.png' },
+  bandcamp:     { name: 'Bandcamp',      url: 'https://gdjkhp.github.io/img/bandcamp-button-circle-aqua-512.png' },
+  applemusic:   { name: 'Apple Music',   url: 'https://gdjkhp.github.io/img/applemoosic.png' },
+  deezer:       { name: 'Deezer',        url: 'https://gdjkhp.github.io/img/deez.png' },
+  qobuz:        { name: 'Qobuz',         url: 'https://gdjkhp.github.io/img/qobuz.png' },
+  tidal:        { name: 'Tidal',         url: 'https://gdjkhp.github.io/img/tidal.png' },
+};
+const SRC_ALIAS = { ytmusic: 'youtubemusic', ytm: 'youtubemusic', apple: 'applemusic' };
+
+function srcFromUrl(url) {
+  let host = '';
+  try { host = new URL(url).hostname.toLowerCase(); } catch (_) { return ''; }
+  if (host === 'music.youtube.com') return 'youtubemusic';
+  if (/(^|\.)(youtube\.com|youtu\.be)$/.test(host)) return 'youtube';
+  if (/(^|\.)spotify\.com$/.test(host)) return 'spotify';
+  if (/(^|\.)soundcloud\.com$/.test(host)) return 'soundcloud';
+  if (/(^|\.)bandcamp\.com$/.test(host)) return 'bandcamp';
+  if (/(^|\.)music\.apple\.com$/.test(host)) return 'applemusic';
+  if (/(^|\.)deezer\.com$/.test(host)) return 'deezer';
+  if (/(^|\.)qobuz\.com$/.test(host)) return 'qobuz';
+  if (/(^|\.)tidal\.com$/.test(host)) return 'tidal';
+  return '';
+}
+
+// Source key of one track ('' if unknown / no icon).
+function trackSrc(t) {
+  const info = (t && t.info) || {};
+  let k = String(info.sourceName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  k = SRC_ALIAS[k] || k;
+  if (k === 'youtube' && srcFromUrl(info.uri) === 'youtubemusic') k = 'youtubemusic';
+  return SRC_ICONS[k] ? k : srcFromUrl(info.uri);
+}
+
+// Source key of a library collection: its link, else the tracks if they all agree.
+function collectionSrc(item) {
+  const fromLink = srcFromUrl(item.source);
+  if (fromLink) return fromLink;
+  const keys = new Set((item.tracks || []).map(trackSrc));
+  return keys.size === 1 ? [...keys][0] : '';
+}
+
+// The <img> circle for a source key, or '' when there is no icon.
+function srcBadge(key, cls = '') {
+  const ic = SRC_ICONS[key];
+  if (!ic) return '';
+  return `<img class="src-ico ${cls}" src="${esc(ic.url)}" alt="" title="${esc(ic.name)}" loading="lazy" decoding="async" onerror="this.remove()">`;
+}
+
 function toast(msg, type = 'info', dur = 3500) {
   const cls = type === 'error' ? 'err' : type === 'success' ? 'ok' : type === 'warn' ? 'warn' : '';
   const icon = type === 'error' ? 'error' : type === 'success' ? 'check_circle' : type === 'warn' ? 'warning' : 'info';

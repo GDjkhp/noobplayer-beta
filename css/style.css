@@ -383,6 +383,17 @@ body::after {
 
 #q-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
 #q-info { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }
+#q-filter { width: 130px; min-width: 0; background: var(--bg); border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text); font-family: var(--fm); font-size: 11px; padding: 5px 12px; outline: none; }
+#q-filter:focus { border-color: var(--accent); }
+
+/* Filter hits (library + queue) */
+mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: inherit; border-radius: 2px; padding: 0 1px; }
+
+/* Thumbnail wrapper: lets a circular source badge sit on the artwork's corner. */
+.th-w { position: relative; display: flex; flex-shrink: 0; }
+.src-ico { position: absolute; right: -4px; bottom: -4px; width: 16px; height: 16px; border-radius: 50%; object-fit: cover; background: var(--surf3, var(--surf2)); border: 2px solid var(--bg); box-sizing: content-box; pointer-events: none; }
+.qi .src-ico, .lib-trow .src-ico { width: 14px; height: 14px; }
+.src-ico.inline { position: static; width: 18px; height: 18px; border: none; flex-shrink: 0; }
 /* M3 outlined button (small, icon+label) — queue toolbar actions. */
 .qa { display: inline-flex; align-items: center; gap: 4px; background: none; border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--muted); font-family: var(--fm); font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; padding: 5px 10px; cursor: pointer; transition: all .15s; }
 .qa .material-symbols-outlined { font-size: 14px; }
@@ -1157,7 +1168,7 @@ body.pad-active.pad-tabs-focused .pane :focus {
     grid-template-columns: auto minmax(0, 1fr) auto;
     grid-template-areas: "th meta dur" "acts acts acts";
   }
-  .si > .si-th, .si > .si-nth { grid-area: th; }
+  .si > .th-w { grid-area: th; }
   .si-meta { grid-area: meta; }
   .si-d { grid-area: dur; }
   .si-acts { grid-area: acts; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
@@ -1173,7 +1184,7 @@ body.pad-active.pad-tabs-focused .pane :focus {
   }
   .qi-drag { grid-area: drag; }
   .qi-n { grid-area: n; }
-  .qi > .qi-th, .qi > .qi-nth { grid-area: th; }
+  .qi > .th-w { grid-area: th; }
   .qi-m { grid-area: meta; }
   .qi-d { grid-area: dur; }
   .qi-bs {
