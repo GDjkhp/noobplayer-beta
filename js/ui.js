@@ -111,6 +111,114 @@ const UI = {
 
   setBuffering(on) { document.getElementById('buf-ring').classList.toggle('show', on); },
 
+  /* ───────── Player artwork ─────────
+     • YouTube / YouTube Music tracks use the biggest thumbnail that exists:
+       maxresdefault → sddefault → hqdefault → mqdefault → default (then the
+       track's own artworkUrl). Library / Search / Queue keep info.artworkUrl.
+     • Changing track animates the artwork: next → new art slides in from the
+       right, previous → current art slides off to the right revealing the
+       previous track, override play → new art rises from the bottom. */
+  _artKey: null,       // track whose artwork is shown / loading
+  _artTok: 0,          // bumps to cancel an in-flight artwork load
+  _artDirHint: null,   // { dir, at } set by Engine just before it changes track
+  _artGhost: null,
+  _artAnims: [],
+
+  artHint(dir) { this._artDirHint = { dir, at: Date.now() }; },
+
+  _takeArtDir() {
+    const h = this._artDirHint;
+    this._artDirHint = null;
+    return h && Date.now() - h.at < 15000 ? h.dir : 'next';   // natural advance = 'next'
+  },
+
+  _artUrls(t) {
+    const info = t.info || {};
+    const out = [];
+    const src = trackSrc(t);
+    if ((src === 'youtube' || src === 'youtubemusic') && info.identifier && /^[\w-]{6,}$/.test(info.identifier)) {
+      for (const q of ['maxresdefault', 'sddefault', 'hqdefault', 'mqdefault', 'default'])
+        out.push(`https://i.ytimg.com/vi/${info.identifier}/${q}.jpg`);
+    }
+    if (info.artworkUrl && !out.includes(info.artworkUrl)) out.push(info.artworkUrl);
+    return out;
+  },
+
+  // Resolves with the first URL that really loads (YouTube answers 404 — or a
+  // 120px grey placeholder — for sizes a video doesn't have), else null.
+  _artProbe(urls) {
+    return new Promise(resolve => {
+      let k = 0;
+      const next = () => {
+        if (k >= urls.length) { resolve(null); return; }
+        const u = urls[k++];
+        const im = new Image();
+        // default.jpg is legitimately 120px wide; every bigger size at 120px is YouTube's placeholder.
+        im.onload = () => { if (im.naturalWidth <= 120 && /i\.ytimg\.com\/vi\/[^/]+\/(?!default\.jpg)/.test(u)) next(); else resolve(u); };
+        im.onerror = next;
+        im.src = u;
+      };
+      next();
+    });
+  },
+
+  _artClean(img) {
+    this._artAnims.forEach(a => { try { a.cancel(); } catch (_) {} });
+    this._artAnims = [];
+    if (this._artGhost) { this._artGhost.remove(); this._artGhost = null; }
+    if (img) img.style.transition = '';
+  },
+
+  _updateArt(t, img, empty) {
+    const key = t.encoded || (t.info && (t.info.identifier || t.info.uri)) || '';
+    if (key && key === this._artKey) return;       // same track: nothing to redo
+    this._artKey = key;
+    const tok = ++this._artTok;
+    const dir = this._takeArtDir();
+    const urls = this._artUrls(t);
+    if (!urls.length) {
+      this._artClean(img); img.classList.remove('vis'); empty.style.display = 'flex';
+      return;
+    }
+    this._artProbe(urls).then(url => {
+      if (tok !== this._artTok) return;            // a newer track took over
+      if (!url) { this._artClean(img); img.classList.remove('vis'); empty.style.display = 'flex'; return; }
+      this._artShow(img, empty, url, dir);
+    });
+  },
+
+  _artShow(img, empty, url, dir) {
+    const had = img.classList.contains('vis') && !!img.getAttribute('src');
+    this._artClean(img);
+    const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const canAnim = !reduce && typeof img.animate === 'function' &&
+      (dir === 'prev' ? had : (had || dir === 'up'));
+    let ghost = null;
+    if (canAnim && had) {
+      ghost = img.cloneNode(false);
+      ghost.removeAttribute('id');
+      ghost.className = 'art-ghost';
+      // prev: the old art sits ABOVE and slides away; otherwise it stays beneath.
+      img.insertAdjacentElement(dir === 'prev' ? 'afterend' : 'beforebegin', ghost);
+      this._artGhost = ghost;
+    }
+    empty.style.display = 'none';
+    if (canAnim) img.style.transition = 'none';
+    img.src = url;
+    img.classList.add('vis');
+    if (!canAnim) return;
+
+    const opts = { duration: 480, easing: 'cubic-bezier(.22,.8,.3,1)', fill: 'both' };
+    const anim = dir === 'prev'
+      ? ghost.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(100%)' }], opts)
+      : img.animate([{ transform: dir === 'up' ? 'translateY(100%)' : 'translateX(100%)' }, { transform: 'none' }], opts);
+    this._artAnims = [anim];
+    anim.onfinish = () => {
+      if (this._artAnims[0] !== anim) return;
+      this._artClean(img);
+    };
+  },
+
   updatePlayerUI() {
     const t = S.current;
     const img = document.getElementById('art-img');
@@ -119,12 +227,7 @@ const UI = {
     document.getElementById('btn-link').disabled = !(t && t.info.uri);
 
     if (t) {
-      if (t.info.artworkUrl) {
-        img.src = t.info.artworkUrl;
-        img.onload = () => img.classList.add('vis');
-        img.onerror = () => { img.classList.remove('vis'); empty.style.display = 'flex'; };
-        empty.style.display = 'none';
-      } else { img.classList.remove('vis'); empty.style.display = 'flex'; }
+      this._updateArt(t, img, empty);
 
       const srcMap = { youtube:'YOUTUBE', youtubemusic:'YT MUSIC', soundcloud:'SOUNDCLOUD',
         spotify:'SPOTIFY', deezer:'DEEZER', bandcamp:'BANDCAMP', applemusic:'APPLE MUSIC', yandexmusic:'YANDEX' };
@@ -141,6 +244,7 @@ const UI = {
       // cheap and safe.
       this.fetchLyrics();
     } else {
+      this._artKey = null; this._artTok++; this._artClean(img);
       img.classList.remove('vis'); empty.style.display = 'flex';
       document.getElementById('info-src-txt').textContent = '— IDLE —';
       document.getElementById('info-title').textContent = 'Nothing playing';
@@ -426,6 +530,12 @@ const UI = {
       if (ti.includes(q) || au.includes(q) || (ti + ' ' + au).includes(q)) out.push(i);
     }
     return out;
+  },
+
+  // Real queue indices the filter currently matches, or null when no filter is
+  // active — the queue toolbar's Shuffle / Download All / Clear use this.
+  queueFilterIndices() {
+    return this._qFilter ? this._qMatches(this._qFilter) : null;
   },
 
   // Called from the queue filter box: back to the first 100 matches.
@@ -839,7 +949,7 @@ const UI = {
       let plMeta = null;
       if (data.loadType === 'playlist') {
         tracks = data.data.tracks;
-        plMeta = { name: data.data.info?.name || 'Playlist', source: id, artwork: data.data.pluginInfo?.artworkUrl || '', author: data.data.pluginInfo?.author || '' };
+        plMeta = Library.playlistMeta(data, id);
         banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
           ${srcBadge(srcFromUrl(id) || trackSrc(tracks[0]), 'inline')}<span style="color:var(--text);font-weight:600">${esc(data.data.info?.name || 'Playlist')}</span>
           <span>${tracks.length} tracks</span>

@@ -122,7 +122,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('gapless-btn').addEventListener('click', () => Engine.toggleGapless());
   document.getElementById('btn-shuf').addEventListener('click', () => Engine.shuffleQueue());
 
-  document.getElementById('btn-qshuf').addEventListener('click', () => Engine.shuffleQueue());
+  // With the queue filter active, Shuffle / Download All / Clear only touch the filtered tracks.
+  document.getElementById('btn-qshuf').addEventListener('click', () => {
+    const idx = UI.queueFilterIndices();
+    if (idx && !idx.length) { toast('No tracks match the filter', 'warn'); return; }
+    Engine.shuffleQueue(idx || undefined);
+  });
   document.getElementById('btn-qsmart').addEventListener('click', () => Engine.smartShuffle());
   document.getElementById('btn-qfair').addEventListener('click', () => Engine.toggleFair());
   document.getElementById('btn-autoplay').addEventListener('click', () => Engine.cycleAutoplay());
@@ -136,15 +141,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     else if (act === 'unban') Lobby.unban(b.dataset.uid);
   });
   document.getElementById('btn-qdl').addEventListener('click', e => {
+    const idx = UI.queueFilterIndices();
+    if (idx && !idx.length) { toast('No tracks match the filter', 'warn'); return; }
     // The currently playing track isn't in S.queue — put it first, without duplicating it if it's also queued.
-    const all = S.current && S.current.encoded ? [S.current] : [];
+    // (With a filter active only the filtered queue tracks are downloaded.)
+    const all = !idx && S.current && S.current.encoded ? [S.current] : [];
     const seen = new Set(all.map(t => t.encoded));
-    (S.queue || []).forEach(t => { if (t && t.encoded && !seen.has(t.encoded)) { seen.add(t.encoded); all.push(t); } });
+    (idx ? idx.map(i => S.queue[i]) : (S.queue || [])).forEach(t => { if (t && t.encoded && !seen.has(t.encoded)) { seen.add(t.encoded); all.push(t); } });
     UI.openDownloadMenu(e.currentTarget, all);
   });
   document.getElementById('btn-qclr').addEventListener('click', () => {
     if (!S.queue.length) { toast('Queue is already empty', 'warn'); return; }
-    Engine.clearQueue();
+    const idx = UI.queueFilterIndices();
+    if (idx && !idx.length) { toast('No tracks match the filter', 'warn'); return; }
+    Engine.clearQueue(idx || undefined);
   });
 
   document.getElementById('vol-sl').addEventListener('input', function() {
@@ -359,4 +369,4 @@ document.addEventListener('DOMContentLoaded', async () => {
       return '';
     }
   });
-});
+});

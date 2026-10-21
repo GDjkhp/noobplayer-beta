@@ -3657,6 +3657,15 @@ async def lobby_queue_remove(code):
     return jsonify({"ok": True, "state": state})
 
 
+def _queue_indices(lobby, raw):
+    """Sorted, de-duplicated, in-range queue positions from a client-supplied
+    list (used by the filtered shuffle / clear). Anything else is ignored."""
+    if not isinstance(raw, list):
+        return []
+    n = len(lobby.queue)
+    return sorted({i for i in raw if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < n})
+
+
 @app.route("/api/lobby/<code>/queue/shuffle", methods=["POST"])
 async def lobby_queue_shuffle(code):
     """Host-only: plain Fisher-Yates over the pending queue. The currently
@@ -3667,7 +3676,18 @@ async def lobby_queue_shuffle(code):
     data = await request.get_json(force=True, silent=True) or {}
     if not _require_controller(lobby, data.get("clientId")):
         return jsonify({"error": "host or DJ only"}), 403
-    random.shuffle(lobby.queue)
+    indices = _queue_indices(lobby, data.get("indices"))
+    if data.get("indices") is not None:
+        # Filtered shuffle: only the tracks at these positions trade places
+        # with each other; everything else stays exactly where it is.
+        if not indices:
+            return jsonify({"error": "bad indices"}), 400
+        picked = [lobby.queue[i] for i in indices]
+        random.shuffle(picked)
+        for i, t in zip(indices, picked):
+            lobby.queue[i] = t
+    else:
+        random.shuffle(lobby.queue)
     lobby.apply_fair()   # with Fair on this only shuffles within each person's own tracks
     lobby.relay.ensure_preload()
     state = lobby.public_state()
@@ -3687,9 +3707,20 @@ async def lobby_queue_clear(code):
     data = await request.get_json(force=True, silent=True) or {}
     if not _require_controller(lobby, data.get("clientId")):
         return jsonify({"error": "host or DJ only"}), 403
-    removed = len(lobby.queue)
-    lobby.queue = []
-    lobby.auto_queue = []
+    if data.get("indices") is not None:
+        # Filtered clear: drop only the tracks at these positions (the
+        # recommendation pool is left alone — the queue isn't being emptied).
+        indices = _queue_indices(lobby, data.get("indices"))
+        if not indices:
+            return jsonify({"error": "bad indices"}), 400
+        gone = set(indices)
+        lobby.queue = [t for i, t in enumerate(lobby.queue) if i not in gone]
+        removed = len(gone)
+        lobby.apply_fair()
+    else:
+        removed = len(lobby.queue)
+        lobby.queue = []
+        lobby.auto_queue = []
     lobby.relay.ensure_preload()
     state = lobby.public_state()
     await broadcast(lobby, "state", state)

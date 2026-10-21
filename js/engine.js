@@ -537,6 +537,7 @@ const Engine = {
   /* ───────── public API used by UI event handlers ───────── */
 
   async playTrack(track) {
+    UI.artHint('up');   // override play: artwork enters from the bottom
     if (S.mode === 'server') {
       if (!UI.canControl()) { toast('Only the host or a DJ can change tracks', 'warn'); return; }
       try {
@@ -573,6 +574,7 @@ const Engine = {
   async skip() {
     if (S.mode === 'server') {
       if (!UI.canControl()) { toast('Only the host or a DJ can skip', 'warn'); return; }
+      UI.artHint('next');
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'skip', { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
@@ -585,12 +587,14 @@ const Engine = {
     // one" should move on rather than replay forever.
     const next = this._advanceQueueState(S.current, { skipTrackLoop: true });
     if (!next) { if (S.current) this.stop(); else toast('Queue is empty', 'warn'); return; }
+    UI.artHint('next');
     await this._playNowGapless(next);
   },
 
   async prev() {
     if (S.mode === 'server') {
       if (!UI.canControl()) { toast('Only the host or a DJ can change tracks', 'warn'); return; }
+      UI.artHint('prev');
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'prev', { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
@@ -600,6 +604,7 @@ const Engine = {
     if (S.history.length === 0) { toast('No previous track', 'warn'); return; }
     if (S.current) S.queue.unshift(S.current);
     const prevTrack = S.history.pop();
+    UI.artHint('prev');
     await this._playNowGapless(prevTrack);
   },
 
@@ -741,15 +746,30 @@ const Engine = {
     this._ensurePreload();
   },
 
-  async shuffleQueue() {
+  // indices (optional): queue positions to shuffle among themselves — the
+  // queue filter's matches. Everything else stays where it is.
+  async shuffleQueue(indices) {
+    const part = Array.isArray(indices);
     if (S.mode === 'server') {
       if (!UI.canControl()) { toast('Only the host or a DJ can shuffle the queue', 'warn'); return; }
       if (!S.queue.length) { toast('Queue is empty', 'warn'); return; }
       try {
-        const r = await LobbyAPI.control(S.lobby.code, 'queue/shuffle', { clientId: S.lobby.clientId });
+        const r = await LobbyAPI.control(S.lobby.code, 'queue/shuffle', part ? { clientId: S.lobby.clientId, indices } : { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
-        toast('Queue shuffled', 'info', 1500);
+        toast(part ? `Shuffled ${indices.length} filtered track${indices.length !== 1 ? 's' : ''}` : 'Queue shuffled', 'info', 1500);
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      return;
+    }
+    if (part) {
+      const pos = indices.filter(i => i >= 0 && i < S.queue.length);
+      const picked = pos.map(i => S.queue[i]);
+      for (let i = picked.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [picked[i], picked[j]] = [picked[j], picked[i]];
+      }
+      pos.forEach((qi, k) => { S.queue[qi] = picked[k]; });
+      UI.renderQueue(); toast(`Shuffled ${pos.length} filtered track${pos.length !== 1 ? 's' : ''}`, 'info', 1500);
+      this._ensurePreload();
       return;
     }
     for (let i = S.queue.length - 1; i > 0; i--) {
@@ -824,14 +844,25 @@ const Engine = {
     } catch (e) { toast(`Error: ${e.message}`, 'error'); }
   },
 
-  async clearQueue() {
+  // indices (optional): remove only these queue positions (the queue filter's
+  // matches) instead of emptying the whole queue.
+  async clearQueue(indices) {
+    const part = Array.isArray(indices);
     if (S.mode === 'server') {
       if (!UI.canControl()) { toast('Only the host or a DJ can clear the queue', 'warn'); return; }
       try {
-        const r = await LobbyAPI.control(S.lobby.code, 'queue/clear', { clientId: S.lobby.clientId });
+        const r = await LobbyAPI.control(S.lobby.code, 'queue/clear', part ? { clientId: S.lobby.clientId, indices } : { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
-        toast(`Queue cleared (${r.removed} removed)`, 'info', 1500);
+        toast(part ? `Removed ${r.removed} filtered track${r.removed !== 1 ? 's' : ''}` : `Queue cleared (${r.removed} removed)`, 'info', 1500);
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+      return;
+    }
+    if (part) {
+      const gone = new Set(indices);
+      S.queue = S.queue.filter((_, i) => !gone.has(i));
+      UI.renderQueue(); UI.updateQueueHeader();
+      toast(`Removed ${gone.size} filtered track${gone.size !== 1 ? 's' : ''}`, 'info', 1500);
+      this._ensurePreload();
       return;
     }
     S.queue = [];

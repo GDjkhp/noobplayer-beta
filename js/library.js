@@ -230,6 +230,29 @@ const Library = {
     return true;
   },
 
+  // The playlist's OWN name / author / thumbnail from a loadtracks "playlist"
+  // response (NodeLink puts them in pluginInfo; some sources use info).
+  // Fields the node doesn't supply come back '' — addCollection then falls back
+  // to a shared track artist (author) or the first track's art (thumbnail).
+  playlistMeta(data, link) {
+    const d = (data && data.data) || {};
+    const info = d.info || {}, plugin = d.pluginInfo || {};
+    return {
+      name: info.name || plugin.name || 'Playlist',
+      source: link,
+      author: plugin.author || plugin.owner || info.author || '',
+      artwork: plugin.artworkUrl || plugin.artwork || plugin.thumbnail || info.artworkUrl || info.thumbnail || d.artworkUrl || d.thumbnail || '',
+    };
+  },
+
+  // A playlist has no author of its own unless the node says so. When every
+  // track shares one artist (an album) that artist is the author; a mixed
+  // playlist gets none — never just "whoever sang track #1".
+  _commonAuthor(tracks) {
+    const set = new Set(tracks.map(t => t.info && t.info.author).filter(Boolean));
+    return set.size === 1 ? [...set][0] : '';
+  },
+
   addCollection({ name, source, artwork, tracks, author }, { quiet = false } = {}) {
     tracks = this._uniq((tracks || []).filter(t => t && t.info));
     if (!tracks.length) { if (!quiet) toast('Nothing to save', 'warn'); return false; }
@@ -240,7 +263,7 @@ const Library = {
     this.items.unshift({
       id: this._newId(), kind: 'collection',
       name: name || 'Untitled collection',
-      author: author || tracks[0].info.author || '',
+      author: author || this._commonAuthor(tracks),
       artwork: artwork || tracks[0].info.artworkUrl || '',
       source: source || '', tracks: tracks.map(t => this._slim(t)), added: Date.now(),
     });
@@ -256,13 +279,7 @@ const Library = {
     if (!data) return 0;
     if (data.loadType === 'track') return this.addTrack(data.data, { quiet: true }) ? 1 : 0;
     if (data.loadType === 'playlist') {
-      const info = data.data.info || {};
-      const plugin = data.data.pluginInfo || {};
-      return this.addCollection({
-        name: info.name || 'Playlist', source: link,
-        artwork: plugin.artworkUrl || plugin.artwork || '',
-        author: plugin.author || '', tracks: data.data.tracks,
-      }, { quiet: true }) ? 1 : 0;
+      return this.addCollection({ ...this.playlistMeta(data, link), tracks: data.data.tracks }, { quiet: true }) ? 1 : 0;
     }
     if (data.loadType === 'search') {      // a link that resolved to a list of results
       const list = data.data || [];
@@ -310,6 +327,14 @@ const Library = {
       if (!tracks.length) { toast('Could not refresh — nothing came back', 'warn'); return; }
       const delta = tracks.length - item.tracks.length;
       item.tracks = tracks.map(t => this._slim(t));
+      // Also re-read the playlist's own name / author / thumbnail — this is what
+      // repairs older items that were saved with the first track's artist & art.
+      if (item.kind === 'collection' && d && d.loadType === 'playlist') {
+        const m = this.playlistMeta(d, item.source);
+        if (d.data && d.data.info && d.data.info.name) item.name = m.name;
+        item.author = m.author || this._commonAuthor(item.tracks);
+        item.artwork = m.artwork || item.tracks[0].info.artworkUrl || '';
+      }
       this.render();
       this._persist(item);
       toast(`Refreshed ${item.name} (${delta >= 0 ? '+' : ''}${delta})`, 'success', 2200);
@@ -355,8 +380,9 @@ const Library = {
       id: str(raw.id, 60) || this._newId(),
       kind: kind === 'track' ? 'track' : 'collection',
       name: str(raw.name) || first.title,
-      author: str(raw.author) || str(first.author), // replace this with playlist author soon
-      artwork: str(raw.artwork, 2000) || str(first.artworkUrl, 2000), // replace this with playlist thumbnail soon
+      // A track's author is its artist; a collection's is the playlist's own (or the one shared artist).
+      author: str(raw.author) || (kind === 'track' ? str(first.author) : this._commonAuthor(tracks)),
+      artwork: str(raw.artwork, 2000) || str(first.artworkUrl, 2000),
       source: str(raw.source, 2000),
       tracks: kind === 'track' ? [tracks[0]] : tracks,
       added: Number.isFinite(raw.added) ? raw.added : Date.now(),

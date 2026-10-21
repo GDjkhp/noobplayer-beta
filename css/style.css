@@ -227,8 +227,11 @@ body::after {
    of stacking below it (see the max-width:1000px query). On desktop it's
    just a plain flex column, identical to the old unwrapped layout. */
 #player-panel { display: flex; flex-direction: column; min-width: 0; }
-#art-img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .5s; }
+#art-img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .5s; position: relative; }
 #art-img.vis { opacity: 1; }
+/* The outgoing artwork during a track-change slide (see UI._artShow). Placed
+   next to #art-img in the DOM, so the EQ / meter overlays stay above it. */
+.art-ghost { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
 #art-empty {
   position: absolute; inset: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 10px; color: var(--muted2);
