@@ -231,17 +231,19 @@ const Library = {
   },
 
   // The playlist's OWN name / author / thumbnail from a loadtracks "playlist"
-  // response (NodeLink puts them in pluginInfo; some sources use info).
-  // Fields the node doesn't supply come back '' — addCollection then falls back
-  // to a shared track artist (author) or the first track's art (thumbnail).
+  // response. NodeLink (playlist-author-thumbnail-support) returns them as
+  // data.info.author / data.info.thumbnail ('' when a source has none, e.g.
+  // Tidal has no author); pluginInfo is only the fallback for older nodes.
+  // Empty fields make addCollection fall back to a shared track artist
+  // (author) or the first track's art (thumbnail).
   playlistMeta(data, link) {
     const d = (data && data.data) || {};
     const info = d.info || {}, plugin = d.pluginInfo || {};
     return {
       name: info.name || plugin.name || 'Playlist',
       source: link,
-      author: plugin.author || plugin.owner || info.author || '',
-      artwork: plugin.artworkUrl || plugin.artwork || plugin.thumbnail || info.artworkUrl || info.thumbnail || d.artworkUrl || d.thumbnail || '',
+      author: info.author || plugin.author || plugin.owner || '',
+      artwork: info.thumbnail || info.artworkUrl || plugin.artworkUrl || plugin.artwork || plugin.thumbnail || '',
     };
   },
 
