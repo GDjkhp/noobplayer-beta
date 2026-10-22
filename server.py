@@ -100,6 +100,7 @@ import aiohttp
 import av
 import numpy as np
 import socketio
+from socketio.exceptions import ConnectionRefusedError as SioConnectionRefused
 from quart import Quart, Response, jsonify, request, send_from_directory
 from quart_cors import cors
 from urllib.parse import parse_qs
@@ -3068,7 +3069,7 @@ async def connect(sid, environ, auth=None):
         if not tok:
             tok = (parse_qs(environ.get("QUERY_STRING", "")).get("token") or [""])[0]
         if not _token_ok(tok):
-            raise socketio.exceptions.ConnectionRefusedError("password required")
+            raise SioConnectionRefused("password required")
 
 
 @sio.on("join_lobby")
