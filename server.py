@@ -1077,6 +1077,50 @@ class LobbyRelay:
                 t.cancel()
         self._analysis_tasks.clear()
 
+    def _preload_progress(self):
+        """How far the gapless preload of the NEXT track has got, for the Debug
+        tab: bytes of PCM cached vs. the whole track (192000 B/s x its length).
+        `percent` stays just under 100 until NodeLink's stream has really ended
+        (`done`), because the stream's length can differ a little from the
+        track's advertised length. None when nothing is being preloaded."""
+        pre = self._preload
+        if pre is None:
+            return None
+        return self._cache_progress(pre["cache"], pre["track"])
+
+    def _current_progress(self):
+        """Same numbers for the CURRENT track's download (the relay's live seek
+        cache). Pressing Next with a finished/running preload makes that preload
+        the current cache, so this carries on from where the preload was; an
+        override play / Previous starts a fresh download from byte 0. None when
+        the track isn't cached at all (live stream / too long: fetched live)."""
+        cache = self._cache
+        if cache is None:
+            return None
+        cur = self.lobby.current_track
+        track = cur if cur and cur.get("encoded") == cache.key else {}
+        return self._cache_progress(cache, track)
+
+    def _cache_progress(self, cache, track):
+        info = track.get("info") or {}
+        got = len(cache.buf)
+        total = self._pos_to_offset(float(info.get("length") or 0))
+        if cache.done:
+            percent = 100.0
+        elif total > 0:
+            percent = min(99.9, got * 100.0 / total)
+        else:
+            percent = None
+        return {
+            "title": info.get("title") or "",
+            "author": info.get("author") or "",
+            "bytes": got,
+            "totalBytes": total,
+            "percent": round(percent, 1) if percent is not None else None,
+            "done": bool(cache.done),
+            "failed": bool(cache.failed and not cache.done),
+        }
+
     def debug_snapshot(self):
         """Read-only stats snapshot for the client Debug tab. Safe to call
         from any task — only ever reads the bounded counters above."""
@@ -1091,6 +1135,8 @@ class LobbyRelay:
             # server holds a reference to — an exact count, not a proxy.
             "listeners": len(self.audio_out.listeners),
             "hasPreload": self._preload is not None,
+            "preload": self._preload_progress(),
+            "current": self._current_progress(),
             "seekCacheBytes": len(self._cache.buf) if self._cache else 0,
             "framesSent": self.stats["frames_sent"],
             "pcmBytesIn": self.stats["pcm_bytes_in"],

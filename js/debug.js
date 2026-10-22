@@ -1144,7 +1144,8 @@ const Debug = {
       ['Base/Output latency', ctx ? `${((ctx.baseLatency || 0) * 1000).toFixed(1)} / ${((ctx.outputLatency || 0) * 1000).toFixed(1)} ms` : '—'],
       ['Buffered ahead', this._fmtMaybeMs(this._bufferedAheadMs())],
       ['Avg request latency', this._fmtMaybeMs(netMs)],
-      ['Preload / queue chunks', this._queueChunksLabel()],
+      ['Current track download', this._currentDlLabel()],
+      ['Next track preload', this._queueChunksLabel()],
     ];
     this._setCards(el, cards);
   },
@@ -1161,9 +1162,43 @@ const Debug = {
     return null;
   },
 
+  // The next track's preload as "NN% cached" (100% = fully downloaded and
+  // ready for the gapless hand-over), with the track's title.
+  _preloadLabel(p, doneText = 'ready') {
+    const name = p.title ? ` · ${p.title}` : '';
+    if (p.failed) return `download failed${name}`;
+    if (p.done) return `100% · ${doneText}${name}`;
+    const mb = p.bytes ? ` (${(p.bytes / 1048576).toFixed(1)}${p.totalBytes ? '/' + (p.totalBytes / 1048576).toFixed(1) : ''} MB)` : '';
+    return `${p.percent == null ? '…' : p.percent.toFixed(1) + '%'} cached${mb}${name}`;
+  },
+
+  // The CURRENT track's download. Next with a preload takes over that preload's
+  // progress; override play / Previous starts again from 0%.
+  _currentDlLabel() {
+    if (S.mode === 'server' && this.server && !this.server.error) {
+      if (!S.current) return 'nothing playing';
+      return this.server.current ? this._preloadLabel(this.server.current, 'downloaded') : 'not cached · streamed live';
+    }
+    return '—';
+  },
+
   _queueChunksLabel() {
-    if (S.mode === 'standalone') return S.preload ? `${S.preload.chunks.length} chunk(s) preloaded` : 'none preloaded';
-    if (S.mode === 'server' && this.server && !this.server.error) return this.server.hasPreload ? 'server has next track preloaded' : 'nothing preloaded';
+    if (S.mode === 'standalone') {
+      const pre = S.preload;
+      if (!pre) return 'none preloaded';
+      // Sum the received bytes (cached per chunk count — chunks only ever get appended).
+      if (pre._n !== pre.chunks.length) { pre._n = pre.chunks.length; pre._bytes = pre.chunks.reduce((a, c) => a + c.length, 0); }
+      const info = pre.track && pre.track.info || {};
+      const total = Math.round((info.length || 0) * 192);   // 48 kHz · s16 · stereo = 192 bytes per ms
+      return this._preloadLabel({
+        title: info.title || '', bytes: pre._bytes, totalBytes: total,
+        done: pre.done && !pre.error, failed: !!pre.error,
+        percent: pre.done ? 100 : (total ? Math.min(99.9, pre._bytes * 100 / total) : null),
+      });
+    }
+    if (S.mode === 'server' && this.server && !this.server.error) {
+      return this.server.preload ? this._preloadLabel(this.server.preload) : 'nothing preloaded';
+    }
     return '—';
   },
 
