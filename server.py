@@ -725,6 +725,7 @@ class LobbyRelay:
         self._analysis = {}
         self._analysis_tasks = {}
         self._beats_events = {}     # key -> asyncio.Event, set once the BPM stage is done (or can't be)
+        self._analysis_dl = {}      # key -> the PcmCache an analysis is still waiting on (dropped once the download finished)
 
     # ---- audio analysis ---------------------------------------------
     def ensure_analysis(self, track, cache):
@@ -732,8 +733,25 @@ class LobbyRelay:
         `cache` is its PcmCache, or None if the track isn't cacheable (live
         stream / too long) — those are reported as unsupported."""
         key = (track or {}).get("encoded")
-        if not key or key in self._analysis:
+        if not key:
             return
+        old = self._analysis.get(key)
+        if old is not None:
+            # An unfinished analysis that is still waiting on a download that was
+            # cancelled / failed (typically the gapless PRELOAD of this track, dropped
+            # by start_track when the user pressed Next) is doomed: it is about to
+            # delete its own entry. Don't let it block the analysis of the track that
+            # is playing now — replace it with one bound to the live cache.
+            dead = self._analysis_dl.get(key)
+            stale = (not old.get("complete") and dead is not None and cache is not None and dead is not cache
+                     and not dead.done and (dead.failed or (dead.task is not None and dead.task.done())))
+            if not stale:
+                return
+            t = self._analysis_tasks.pop(key, None)
+            if t is not None and not t.done():
+                t.cancel()
+            self._analysis.pop(key, None)
+            self._analysis_dl.pop(key, None)
         if getattr(analysis, "DISABLED", False):
             self._analysis[key] = {"status": "disabled", "complete": True,
                                    "reason": "audio analysis is turned off (AUDIO_ANALYSIS_ENABLED = False in config.py)"}
@@ -748,8 +766,10 @@ class LobbyRelay:
             return
         self._analysis[key] = {"status": "pending", "phase": "download", "complete": False,
                                "stages": {}, "timings": {}}
-        self._beats_events[key] = asyncio.Event()
-        self._analysis_tasks[key] = asyncio.create_task(self._run_analysis(key, cache))
+        entry = self._analysis[key]
+        ev = self._beats_events[key] = asyncio.Event()
+        self._analysis_dl[key] = cache
+        self._analysis_tasks[key] = asyncio.create_task(self._run_analysis(key, cache, entry, ev))
         self._prune_analyses()
 
     def _prune_analyses(self):
@@ -813,18 +833,25 @@ class LobbyRelay:
                   "wall": round(done - submitted, 2)}
         return res, timing
 
-    async def _run_analysis(self, key, cache):
+    async def _run_analysis(self, key, cache, entry, ev):
         t0 = time.monotonic()
-        ev = self._beats_events.get(key)
+
+        def drop():
+            # Only remove OUR entry: a replacement analysis of the same track
+            # (see ensure_analysis) must not be deleted by this one's cleanup.
+            if self._analysis.get(key) is entry:
+                self._analysis.pop(key, None)
         try:
             # ---- download (the relay's own PCM cache; shared with playback)
             while not cache.done:
                 if cache.failed or (cache.task is not None and cache.task.done()):
                     # Download died or was cancelled (track skipped / preload
                     # dropped): forget it so a later play can try again.
-                    self._analysis.pop(key, None)
+                    drop()
                     return
                 await asyncio.sleep(0.1)
+            if self._analysis_dl.get(key) is cache:
+                del self._analysis_dl[key]      # downloaded: stop referencing the PCM
             await self._publish(key, "download", timing={"sec": round(time.monotonic() - t0, 2), "steps": [],
                                                          "startedAt": 0, "doneAt": round(time.monotonic() - t0, 2), "wall": round(time.monotonic() - t0, 2)},
                                 phase="decode")
@@ -916,7 +943,7 @@ class LobbyRelay:
             total = round(time.monotonic() - t0, 2)
             await self._publish(key, "done", None, None, complete=True, phase="done", totalSec=total)
         except asyncio.CancelledError:
-            self._analysis.pop(key, None)
+            drop()
             raise
         except Exception as e:
             traceback.print_exc()
@@ -927,7 +954,10 @@ class LobbyRelay:
         finally:
             if ev:
                 ev.set()                 # never leave playback waiting on a dead analysis
-            self._analysis_tasks.pop(key, None)
+            if self._analysis_tasks.get(key) is asyncio.current_task():
+                self._analysis_tasks.pop(key, None)
+            if self._analysis_dl.get(key) is cache:
+                del self._analysis_dl[key]
             if getattr(config, "AUDIO_ANALYSIS_TRIM_SERVER", True):
                 # PCM caches + decode scratch fragment the server heap; return it.
                 asyncio.get_running_loop().run_in_executor(None, analysis.trim_memory)
