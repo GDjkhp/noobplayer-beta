@@ -1,13 +1,155 @@
 'use strict';
 /* ═══════════════════════════════════════════
+   Auth — optional noobplayer server password.
+
+   A server started with NOOBPLAYER_PASSWORD in its .env refuses every /api/
+   call, the live socket and the audio session until the client presents an
+   access token (POST /api/auth/login trades the password for one). Only the
+   token is kept (per server URL, in the persistent Store) — never the password.
+
+   fetch() is wrapped once, below: any request to the current server gets the
+   token header, and a 401 "password required" pops the password window and then
+   retries the request, so the rest of the app doesn't need to know about any of
+   this. A server without a password never answers 401, so nothing changes there.
+═══════════════════════════════════════════ */
+const Auth = {
+  _mem: {},          // server url -> token (mirror of the Store, also works if storage is blocked)
+  _prompts: {},      // server url -> in-flight password window (shared by concurrent 401s)
+  _raw: window.fetch.bind(window),
+
+  normalize(url) {
+    url = String(url || '').trim();
+    if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+    return url.replace(/\/+$/, '');
+  },
+  _key(base) { return 'nl_srvtok:' + base; },
+  token(base) {
+    base = base || Backend.serverUrl;
+    if (!base) return '';
+    if (this._mem[base] !== undefined) return this._mem[base];
+    let t = '';
+    try { t = Store.getItem(this._key(base)) || ''; } catch (_) {}
+    return (this._mem[base] = t);
+  },
+  setToken(base, t) {
+    this._mem[base] = t || '';
+    try { if (t) Store.setItem(this._key(base), t); else Store.removeItem(this._key(base)); } catch (_) {}
+  },
+  forServer(url) { return !!Backend.serverUrl && (url === Backend.serverUrl || url.startsWith(Backend.serverUrl + '/')); },
+
+  // → { required, authorized } ; null when the server can't be asked (old server / unreachable)
+  async status(base) {
+    try {
+      const t = this.token(base);
+      const res = await this._raw(`${base}/api/auth/status`, t ? { headers: { 'X-Noobplayer-Token': t } } : undefined);
+      if (!res.ok) return null;
+      const j = await res.json();
+      return { required: !!j.required, authorized: !!j.authorized };
+    } catch (_) { return null; }
+  },
+
+  // Trades a password for a token. Throws Error('wrong password' …) on failure.
+  async login(base, password) {
+    const res = await this._raw(`${base}/api/auth/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(j.error || `HTTP ${res.status}`), { status: res.status });
+    this.setToken(base, j.token || '');
+    return true;
+  },
+
+  // Makes sure we may talk to `base`. With `password` it logs in with that;
+  // otherwise it reuses the saved token and, if that is missing / stale, opens
+  // the password window. → { ok, required, error? }
+  async ensure(base, { password, askIfNeeded = true, cancelable = false } = {}) {
+    const st = await this.status(base);
+    if (!st || !st.required) return { ok: true, required: false };
+    if (st.authorized && !password) return { ok: true, required: true };
+    if (password) {
+      try { await this.login(base, password); return { ok: true, required: true }; }
+      catch (e) { return { ok: false, required: true, error: e.message }; }
+    }
+    if (!askIfNeeded) return { ok: false, required: true, error: 'password required' };
+    const ok = await this.prompt(base, { cancelable });
+    return { ok, required: true, error: ok ? undefined : 'password required' };
+  },
+
+  // The password window. Resolves true once logged in, false if cancelled.
+  prompt(base, { cancelable = false } = {}) {
+    base = base || Backend.serverUrl;
+    if (this._prompts[base]) return this._prompts[base];
+    const p = new Promise(resolve => {
+      const ov = document.createElement('div');
+      ov.className = 'confirm-overlay auth-overlay';
+      ov.innerHTML = `
+        <form class="confirm-box auth-box" autocomplete="off">
+          <div class="confirm-title">noobplayer server password</div>
+          <div class="confirm-text"><b class="auth-host"></b> needs a password.</div>
+          <input class="hi full auth-pw" type="password" placeholder="Password" autocomplete="off" style="margin-top:14px">
+          <div class="auth-err" role="alert"></div>
+          <div class="auth-btns">
+            ${cancelable ? '<button type="button" class="overlay-btn ghost auth-cancel">Cancel</button>' : ''}
+            <button type="submit" class="overlay-btn auth-go">Enter</button>
+          </div>
+        </form>`;
+      ov.querySelector('.auth-host').textContent = base;
+      const form = ov.querySelector('form'), pw = ov.querySelector('.auth-pw');
+      const err = ov.querySelector('.auth-err'), go = ov.querySelector('.auth-go');
+      const done = ok => { ov.remove(); delete this._prompts[base]; resolve(ok); };
+      form.addEventListener('submit', async e => {
+        e.preventDefault();
+        if (!pw.value) { pw.focus(); return; }
+        go.disabled = true; err.textContent = '';
+        try { await this.login(base, pw.value); done(true); }
+        catch (ex) {
+          go.disabled = false;
+          err.textContent = ex.status === 401 ? 'Wrong password' : ex.message;
+          pw.select();
+        }
+      });
+      const cancel = ov.querySelector('.auth-cancel');
+      if (cancel) cancel.addEventListener('click', () => done(false));
+      document.body.appendChild(ov);
+      setTimeout(() => pw.focus(), 0);
+    });
+    this._prompts[base] = p;
+    return p;
+  },
+};
+
+// One wrapper for every request to the current server (see Auth above).
+window.fetch = async function (input, init) {
+  if (typeof input !== 'string' || !Auth.forServer(input) || input.includes('/api/auth/')) return Auth._raw(input, init);
+  const base = Backend.serverUrl;
+  const withToken = () => {
+    const h = new Headers((init && init.headers) || {});
+    const t = Auth.token(base);
+    if (t) h.set('X-Noobplayer-Token', t);
+    return { ...(init || {}), headers: h };
+  };
+  let res = await Auth._raw(input, withToken());
+  if (res.status === 401) {
+    const body = await res.clone().json().catch(() => null);
+    if (body && body.auth === 'required') {
+      // The default server (this page's own origin) can't be skipped; another one can.
+      const ok = await Auth.prompt(base, { cancelable: base !== window.location.origin });
+      if (ok) res = await Auth._raw(input, withToken());
+    }
+  }
+  return res;
+};
+
+/* ═══════════════════════════════════════════
    Backend — unifies standalone (direct NodeLink) and
-   server mode (Flask proxy) behind one interface.
+   server mode (noobplayer server proxy) behind one interface.
    ui.js / engine.js call these without knowing which mode is active.
 ═══════════════════════════════════════════ */
 const Backend = {
   mode: null,        // 'standalone' | 'server'
   host: '', pass: '', // standalone
-  serverUrl: '',      // server mode — Flask base URL
+  serverUrl: '',      // server mode — noobplayer server base URL
 
   setStandalone(host, pass) {
     this.mode = 'standalone';
@@ -78,7 +220,7 @@ const Backend = {
 };
 
 /* ═══════════════════════════════════════════
-   LobbyAPI — REST calls to the Flask lobby backend (server mode only)
+   LobbyAPI — REST calls to the noobplayer lobby backend (server mode only)
 ═══════════════════════════════════════════ */
 const LobbyAPI = {
   base() { return Backend.serverUrl; },
@@ -251,7 +393,9 @@ const LobbyAPI = {
       throw err;
     }
     const path = info.path.replace('{code}', code);
-    return `https://${host}:${info.port}${path}`;
+    // Servers with a password only accept the audio session with the access token.
+    const tok = Auth.token(this.base());
+    return `https://${host}:${info.port}${path}${tok ? '?token=' + encodeURIComponent(tok) : ''}`;
   },
 };
 
@@ -332,6 +476,9 @@ const DownloadAPI = {
       title: track.info?.title || '',
       author: track.info?.author || '',
     });
+    // A plain navigation can't carry a header, so the access token rides in the URL.
+    const tok = Auth.token(this.base());
+    if (tok) p.set('token', tok);
     return `${this.base()}/api/download?${p.toString()}`;
   },
 };

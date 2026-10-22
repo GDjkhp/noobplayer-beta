@@ -386,6 +386,11 @@ body::after {
 
 #q-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
 #q-info { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }
+/* Server password window (see Auth.prompt in api.js) */
+.auth-overlay { z-index: 2000; background: rgba(0,0,0,.72); }
+.auth-box .hi { box-sizing: border-box; }
+.auth-err { min-height: 18px; margin-top: 8px; font-family: var(--fm); font-size: 11px; color: var(--red, #e5484d); }
+.auth-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 #q-filter { width: 130px; min-width: 0; background: var(--bg); border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text); font-family: var(--fm); font-size: 11px; padding: 5px 12px; outline: none; }
 #q-filter:focus { border-color: var(--accent); }
 

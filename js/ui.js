@@ -1427,17 +1427,35 @@ const UI = {
     if (ok) toast('Settings saved', 'success', 1500);
   },
 
-  // Points the app at a different Flask server entirely — leaves the
+  // Points the app at a different noobplayer server entirely — leaves the
   // current lobby (or disconnects standalone) first since a different
   // server means a wholly different set of lobbies, then boots a fresh
   // default lobby on it, same as first load.
-  async switchFlaskServer() {
+  async switchNoobplayerServer() {
     const mode = document.querySelector('input[name="cfg-srv"]:checked').value;
     let url;
+    const pwEl = document.getElementById('cfg-srv-pw');
     if (mode === 'custom') {
       url = document.getElementById('cfg-srv-url').value.trim();
       if (!url) { toast('Enter a server URL', 'warn'); return; }
     }
+
+    // Check the password BEFORE leaving anything, so a typo doesn't cost you
+    // your current lobby. Custom: the password field (empty = a saved login, or
+    // none needed). Default: this page's own server (window opens if it asks).
+    const target = mode === 'custom' ? Auth.normalize(url) : window.location.origin;
+    const auth = await Auth.ensure(target, {
+      password: mode === 'custom' ? pwEl.value : '',
+      askIfNeeded: mode !== 'custom', cancelable: true,
+    });
+    if (!auth.ok) {
+      if (mode === 'custom') {
+        toast(auth.error === 'wrong password' ? 'Wrong server password' : 'That server needs a password — enter it below the server URL', 'warn', 4000);
+        pwEl.focus();
+      }
+      return;
+    }
+    if (mode === 'custom') pwEl.value = '';
 
     if (S.mode === 'server' && S.lobby.active) {
       await Lobby.leave({ autoRejoin: false });

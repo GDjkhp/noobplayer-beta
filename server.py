@@ -102,6 +102,7 @@ import numpy as np
 import socketio
 from quart import Quart, Response, jsonify, request, send_from_directory
 from quart_cors import cors
+from urllib.parse import parse_qs
 
 # ── QUIC / WebTransport (live lobby audio relay) ──
 # See _make_quic_cert / QuicPcmRelay / start_quic_server below. This is
@@ -133,7 +134,7 @@ from dotenv import load_dotenv
 STATIC_DIR = Path(__file__).resolve().parent  # project root (index.html lives here)
 
 app = Quart(__name__, static_folder=None)
-app = cors(app, allow_origin="*", allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type"],
+app = cors(app, allow_origin="*", allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type", "X-Noobplayer-Token"],
            expose_headers=["Content-Length", "Content-Disposition"])
 
 # Socket.IO server for real-time push (state/participants/chat), mounted
@@ -150,6 +151,77 @@ asgi_app = socketio.ASGIApp(sio, other_asgi_app=app)
 load_dotenv(Path(__file__).resolve().parent / ".env")
 NL_HOST = (os.environ.get("NODELINK_HOST") or "").strip().rstrip("/")
 NL_PASS = os.environ.get("NODELINK_PASSWORD") or ""
+
+# Bind address / port of the noobplayer server (config.py; the old FLASK_HOST /
+# FLASK_PORT names are still honoured so an existing config.py keeps working).
+NOOBPLAYER_HOST = getattr(config, "NOOBPLAYER_HOST", getattr(config, "FLASK_HOST", "0.0.0.0"))
+NOOBPLAYER_PORT = getattr(config, "NOOBPLAYER_PORT", getattr(config, "FLASK_PORT", 42069))
+
+# ── Optional noobplayer server password ──
+# NOOBPLAYER_PASSWORD in .env. Empty / unset = open server, exactly as before.
+# When set, every /api/ route, the live Socket.IO connection and the WebTransport
+# audio session need the access token the client gets from POST /api/auth/login.
+# The token is an HMAC of the password (never the password itself) so it can ride
+# in a header, or in a ?token= query for plain navigations (downloads, beacons).
+# The static frontend stays public — it has to load to show the password window.
+NOOBPLAYER_PASSWORD = os.environ.get("NOOBPLAYER_PASSWORD") or ""
+AUTH_TOKEN = (hmac.new(NOOBPLAYER_PASSWORD.encode("utf-8"), b"noobplayer-auth-v1", hashlib.sha256).hexdigest()
+              if NOOBPLAYER_PASSWORD else "")
+
+
+def _token_ok(tok):
+    if not NOOBPLAYER_PASSWORD:
+        return True
+    return isinstance(tok, str) and hmac.compare_digest(tok.encode("utf-8"), AUTH_TOKEN.encode("utf-8"))
+
+
+_login_fails = {}    # client ip -> [timestamps of recent failed logins]
+
+
+def _client_ip():
+    fwd = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return fwd or request.remote_addr or "?"
+
+
+@app.before_request
+async def _require_password():
+    if not NOOBPLAYER_PASSWORD or request.method == "OPTIONS":
+        return None
+    path = request.path
+    if not path.startswith("/api/") or path in ("/api/auth/status", "/api/auth/login"):
+        return None
+    if _token_ok(request.headers.get("X-Noobplayer-Token") or request.args.get("token")):
+        return None
+    return jsonify({"error": "password required", "auth": "required"}), 401
+
+
+@app.route("/api/auth/status")
+async def auth_status():
+    """Public. Tells the client whether this server wants a password, and
+    whether the token it sent (if any) is still good."""
+    return jsonify({"required": bool(NOOBPLAYER_PASSWORD),
+                    "authorized": _token_ok(request.headers.get("X-Noobplayer-Token") or request.args.get("token"))})
+
+
+@app.route("/api/auth/login", methods=["POST"])
+async def auth_login():
+    if not NOOBPLAYER_PASSWORD:
+        return jsonify({"ok": True, "required": False, "token": ""})
+    ip = _client_ip()
+    now = time.time()
+    fails = [t for t in _login_fails.get(ip, []) if now - t < 60]
+    if len(fails) >= 8:
+        _login_fails[ip] = fails
+        return jsonify({"error": "too many attempts — wait a minute"}), 429
+    data = await request.get_json(force=True, silent=True) or {}
+    given = str(data.get("password") or "")
+    if hmac.compare_digest(given.encode("utf-8"), NOOBPLAYER_PASSWORD.encode("utf-8")):
+        _login_fails.pop(ip, None)
+        return jsonify({"ok": True, "required": True, "token": AUTH_TOKEN})
+    fails.append(now)
+    _login_fails[ip] = fails
+    await asyncio.sleep(0.6)    # slows down guessing
+    return jsonify({"error": "wrong password"}), 401
 if not NL_HOST or not NL_PASS:
     raise SystemExit(
         "Missing NodeLink credentials: set NODELINK_HOST and NODELINK_PASSWORD "
@@ -2210,7 +2282,7 @@ async def broadcast(lobby, event, data):
 # the whole module has finished loading, so the actual definition order
 # doesn't matter to Python.
 # ═══════════════════════════════════════════════════════════════════
-QUIC_PORT = getattr(config, "QUIC_PORT", config.FLASK_PORT)   # same NUMBER as the HTTP server — TCP and UDP are independent port namespaces, so this is just a convenience (one number to open/forward in a firewall), never a shared socket
+QUIC_PORT = getattr(config, "QUIC_PORT", NOOBPLAYER_PORT)   # same NUMBER as the HTTP server — TCP and UDP are independent port namespaces, so this is just a convenience (one number to open/forward in a firewall), never a shared socket
 # WebTransport's serverCertificateHashes pinning (see GET /api/quic-info
 # below) — how a browser trusts this self-signed cert with no real CA
 # involved — requires the certificate's validity window to be 14 days or
@@ -2326,6 +2398,7 @@ class LobbyQuicProtocol(QuicConnectionProtocol):
         method = headers.get(b":method", b"").decode()
         protocol = headers.get(b":protocol", b"").decode()
         path = headers.get(b":path", b"").decode()
+        path, _, query = path.partition("?")      # the access token rides in the query (?token=…)
 
         def reject(status: bytes):
             self.http.send_headers(stream_id=event.stream_id, headers=[(b":status", status)], end_stream=True)
@@ -2333,6 +2406,9 @@ class LobbyQuicProtocol(QuicConnectionProtocol):
 
         if method != "CONNECT" or protocol != "webtransport":
             reject(b"400")
+            return
+        if NOOBPLAYER_PASSWORD and not _token_ok((parse_qs(query).get("token") or [""])[0]):
+            reject(b"401")
             return
         m = _LOBBY_AUDIO_PATH_RE.match(path)
         lobby = LOBBIES.get(m.group(1).upper()) if m else None
@@ -2392,7 +2468,7 @@ async def start_quic_server():
         configuration.max_datagram_frame_size = 65536
         configuration.certificate, configuration.private_key = _make_quic_cert()
         cert_hash = _quic_cert_hash_hex
-        bind_host = config.FLASK_HOST
+        bind_host = NOOBPLAYER_HOST
         _quic_server = await quic_serve(
             bind_host,
             QUIC_PORT,
@@ -2982,11 +3058,17 @@ async def restore_lobby():
 # for tracking which participants currently have a live connection.
 # ═══════════════════════════════════════════════════════════════════
 @sio.event
-async def connect(sid, environ):
+async def connect(sid, environ, auth=None):
     # No lobby association yet — the client already has clientId/code
     # from its REST create/join call and sends join_lobby right after
-    # connecting. Nothing to do here but accept the connection.
-    pass
+    # connecting. With a server password set, the connection must present
+    # the access token (Socket.IO `auth`, or ?token= in the query string).
+    if NOOBPLAYER_PASSWORD:
+        tok = auth.get("token") if isinstance(auth, dict) else None
+        if not tok:
+            tok = (parse_qs(environ.get("QUERY_STRING", "")).get("token") or [""])[0]
+        if not _token_ok(tok):
+            raise socketio.exceptions.ConnectionRefusedError("password required")
 
 
 @sio.on("join_lobby")
@@ -4193,10 +4275,11 @@ if __name__ == "__main__":
     print(f"[NodeLink Lobby Server] NodeLink node: {NL_HOST}")
     print(f"[NodeLink Lobby Server] Lobby music transport: raw PCM over QUIC/WebTransport (udp/{QUIC_PORT})")
     print(f"[NodeLink Lobby Server] Realtime transport: Socket.IO (WebSocket, long-polling fallback)")
-    print(f"[NodeLink Lobby Server] Listening on http://{config.FLASK_HOST}:{config.FLASK_PORT}")
+    print(f"[NodeLink Lobby Server] Listening on http://{NOOBPLAYER_HOST}:{NOOBPLAYER_PORT}"
+          + ("  (password protected)" if NOOBPLAYER_PASSWORD else ""))
 
     # Quart's own app.run() only serves `app` — the plain Quart/REST
     # layer. Socket.IO is mounted a level above that (see `asgi_app`
     # near the top of this file), so it has to be what actually gets
     # served, or every websocket/polling request 404s.
-    uvicorn.run("server:asgi_app", host=config.FLASK_HOST, port=config.FLASK_PORT, reload=True)
+    uvicorn.run("server:asgi_app", host=NOOBPLAYER_HOST, port=NOOBPLAYER_PORT, reload=True)

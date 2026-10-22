@@ -1,6 +1,6 @@
 'use strict';
 /* ═══════════════════════════════════════════
-   Lobby — server mode. Talks to the Flask backend for:
+   Lobby — server mode. Talks to the noobplayer backend for:
      - lobby create/join/browse (REST)
      - shared playback state + chat (Socket.IO push)
      - music over a live QUIC/WebTransport session (see
@@ -167,8 +167,17 @@ const Lobby = {
 
   _connectSocket(code, clientId) {
     if (S.lobby.socket) { S.lobby.socket.disconnect(); }
-    const socket = io(Backend.serverUrl, { transports: ['websocket', 'polling'] });
+    const srv = Backend.serverUrl;
+    // `auth` as a function is re-read on every (re)connect, so a fresh token after
+    // the password window is picked up. Servers without a password ignore it.
+    const socket = io(srv, { transports: ['websocket', 'polling'], auth: cb => cb({ token: Auth.token(srv) }) });
     S.lobby.socket = socket;
+    // The server refused the connection for want of a password (it is set, or was
+    // changed, after we got here): ask, then connect again.
+    socket.on('connect_error', async (err) => {
+      if (!err || !/password required/i.test(err.message || '')) return;
+      if (await Auth.prompt(srv, { cancelable: srv !== window.location.origin })) socket.connect();
+    });
 
     // 'connect' fires on the first connection AND after every automatic
     // reconnect (socket.io gives each attempt a fresh sid), so re-sending
@@ -490,7 +499,9 @@ const Lobby = {
     // IndexedDB gets during pagehide.
     Sessions.autosaveIfLastHost('page-closed');
     try {
-      const url = `${Backend.serverUrl}/api/lobby/${S.lobby.code}/leave`;
+      // (a beacon can't carry headers, so the access token goes in the URL)
+      const tok = Auth.token(Backend.serverUrl);
+      const url = `${Backend.serverUrl}/api/lobby/${S.lobby.code}/leave${tok ? '?token=' + encodeURIComponent(tok) : ''}`;
       const blob = new Blob([JSON.stringify({ clientId: S.lobby.clientId })], { type: 'application/json' });
       navigator.sendBeacon?.(url, blob);
     } catch (_) {}
@@ -514,7 +525,7 @@ const Lobby = {
 
   // `autoRejoin` (default true) is what keeps the app from ever landing in
   // a lobby-less limbo: S.mode null but Backend.serverUrl still pointed at
-  // the Flask proxy (it's set once at boot and never cleared — see api.js —
+  // the noobplayer server (it's set once at boot and never cleared — see api.js —
   // so it plays on regardless of S.mode). Without a lobby to hang playback
   // off, that limbo state let you keep playing music with nothing tracking
   // it server-side: no lobby code, nobody to share it with, no chat — a
@@ -522,7 +533,7 @@ const Lobby = {
   // walks straight into a fresh default lobby, exactly like first load (see
   // Main.autoStart) — you're either in a lobby or explicitly in standalone
   // mode, never in between. The two callers that already have their own
-  // follow-up (switching to standalone, switching Flask servers) pass
+  // follow-up (switching to standalone, switching noobplayer servers) pass
   // `autoRejoin: false` so this doesn't create a lobby only to abandon it a
   // moment later.
   async leave(opts = {}) {

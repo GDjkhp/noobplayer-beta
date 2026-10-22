@@ -22,6 +22,9 @@ const Main = {
   async autoStart() {
     Lobby.chooseDefaultServer();
     UI.updateServerUrlDisplay();
+    // A server with a password: ask for it BEFORE anything else talks to it
+    // (the window can't be dismissed — there is no site without the password).
+    await Auth.ensure(Backend.serverUrl);
     let displayName = Store.getItem('nl_display_name');
     if (!displayName) {
       displayName = `Guest${Math.floor(1000 + Math.random() * 9000)}`;
@@ -322,13 +325,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   /* ───────── Config: user settings (display name / default lobby name) ───────── */
   document.getElementById('us-save').addEventListener('click', () => UI.saveUserSettings());
 
-  /* ───────── Config: Flask server ───────── */
+  /* ───────── Config: noobplayer server ───────── */
   document.querySelectorAll('input[name="cfg-srv"]').forEach(r => {
     r.addEventListener('change', () => {
-      document.getElementById('cfg-srv-url').style.display = (r.value === 'custom' && r.checked) ? 'block' : 'none';
+      const show = (r.value === 'custom' && r.checked) ? 'block' : 'none';
+      document.getElementById('cfg-srv-url').style.display = show;
+      document.getElementById('cfg-srv-pw').style.display = show;
     });
   });
-  document.getElementById('cfg-srv-switch').addEventListener('click', () => UI.switchFlaskServer());
+  document.getElementById('cfg-srv-switch').addEventListener('click', () => UI.switchNoobplayerServer());
 
   /* ───────── Bindings tab ───────── */
   document.getElementById('btn-bnd-reset-key').addEventListener('click', () => Bindings.resetKeys());

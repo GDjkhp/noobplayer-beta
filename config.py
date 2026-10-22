@@ -5,11 +5,15 @@ NodeLink credentials (NODELINK_HOST / NODELINK_PASSWORD) are NOT set here —
 they live in the .env file next to server.py (copy .env.example to .env).
 The server proxies all NodeLink API calls (search, stream, lyrics, meaning)
 using them, so browser clients in Server Mode never need to know them.
+
+The optional noobplayer server password is not set here either: add
+NOOBPLAYER_PASSWORD=... to the same .env file. Leave it out (or empty) for an
+open server; with it set, the site shows a password window before anything works.
 """
 
-# ── Flask server ──
-FLASK_HOST = "0.0.0.0"
-FLASK_PORT = 42069
+# ── noobplayer server ──
+NOOBPLAYER_HOST = "0.0.0.0"
+NOOBPLAYER_PORT = 42069
 DEBUG = True
 
 # ── Lobby music transport (QUIC / WebTransport) ──
@@ -23,10 +27,10 @@ DEBUG = True
 # This DOES need a TLS handshake (QUIC always does), unlike the old HLS
 # design's plain HTTP <audio> element — see the cert note
 # below. The WebTransport listener runs as its own UDP server, on the
-# SAME PORT NUMBER as FLASK_PORT above (TCP and UDP are independent
+# SAME PORT NUMBER as NOOBPLAYER_PORT above (TCP and UDP are independent
 # port namespaces, so this never conflicts with the HTTP server — it's
 # just one port number to open/forward instead of two).
-QUIC_PORT = FLASK_PORT
+QUIC_PORT = NOOBPLAYER_PORT
 
 # Opus bitrate (bits/sec) for the live lobby stream. Raw PCM was ~1536 kbps
 # per listener; Opus at 160 kbps is ~10x smaller and, because the source
