@@ -851,7 +851,7 @@ class LobbyRelay:
                     return
                 await asyncio.sleep(0.1)
             if self._analysis_dl.get(key) is cache:
-                del self._analysis_dl[key]      # downloaded: stop referencing the PCM
+                self._analysis_dl.pop(key, None)      # downloaded: stop referencing the PCM
             await self._publish(key, "download", timing={"sec": round(time.monotonic() - t0, 2), "steps": [],
                                                          "startedAt": 0, "doneAt": round(time.monotonic() - t0, 2), "wall": round(time.monotonic() - t0, 2)},
                                 phase="decode")
@@ -956,8 +956,8 @@ class LobbyRelay:
                 ev.set()                 # never leave playback waiting on a dead analysis
             if self._analysis_tasks.get(key) is asyncio.current_task():
                 self._analysis_tasks.pop(key, None)
-            if self._analysis_dl.get(key) is cache:
-                del self._analysis_dl[key]
+            if cache is not None and self._analysis_dl.get(key) is cache:
+                self._analysis_dl.pop(key, None)
             if getattr(config, "AUDIO_ANALYSIS_TRIM_SERVER", True):
                 # PCM caches + decode scratch fragment the server heap; return it.
                 asyncio.get_running_loop().run_in_executor(None, analysis.trim_memory)
