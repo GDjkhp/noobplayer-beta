@@ -24,5 +24,12 @@ https://github.com/GDjkhp/noobplayer-beta
 * <https://github.com/markedjs/marked>
 * <https://github.com/cure53/DOMPurify>
 
+## Credits
+* <https://github.com/Konsl/spicetify-visualizer>
+* <https://github.com/BiparJoy/plasma-ncs-visualizer>
+* <https://github.com/Roonil/NCS_Spectrum_GLava>
+* <https://github.com/caseif/js.nation>
+* <https://github.com/marcopixel/monstercat-visualizer>
+
 ## Copyright
 © GDjkhp / The Karakters Kompany - All rights reserved. Copyright 2026
