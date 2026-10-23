@@ -20,6 +20,10 @@ const Main = {
   },
 
   async autoStart() {
+    // Invite link (?lobby=CODE&password=PW): read it and wipe it from the
+    // address bar RIGHT AWAY — before any prompt or network call — so a
+    // password never sits on screen (streams, screenshots) or in history.
+    const invite = Lobby.consumeInviteParams();
     Lobby.chooseDefaultServer();
     UI.updateServerUrlDisplay();
     // A server with a password: ask for it BEFORE anything else talks to it
@@ -36,6 +40,9 @@ const Main = {
       const stored = Store.getItem('nl_gapless');
       S.gaplessEnabled = stored === null ? true : stored === '1';
     } catch (_) {}
+    // Immediate join from an invite link; if it fails (bad code, wrong
+    // password, cancelled prompt) fall through to the usual own lobby.
+    if (invite && await Lobby.join(invite.code, displayName, invite.password)) return;
     const lobbyName = Store.getItem('nl_lobby_name') || 'New Lobby';
     await Lobby.create(lobbyName, false, displayName);
   },
@@ -292,6 +299,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   /* ───────── Config: current lobby settings ───────── */
   document.getElementById('cfg-copy-code').addEventListener('click', () => Lobby.copyCode());
+  document.getElementById('cfg-share-code').addEventListener('click', () => Lobby.shareLink());
   {
     const ci = document.getElementById('cfg-code-input');
     const doChange = async () => {

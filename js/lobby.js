@@ -480,6 +480,46 @@ const Lobby = {
     catch (e) { toast(`Chat failed: ${e.message}`, 'error'); }
   },
 
+  /* ───────── invite links ─────────
+     ?lobby=CODE            join that lobby on load
+     ?lobby=CODE&password=PW  …and supply its password (so no prompt)
+     (code / pass are accepted as aliases). */
+  inviteLink() {
+    if (!S.lobby.code) return '';
+    const u = new URL(window.location.href);
+    u.search = ''; u.hash = '';
+    u.searchParams.set('lobby', S.lobby.code);
+    if (S.lobby.password) u.searchParams.set('password', S.lobby.password);
+    return u.toString();
+  },
+
+  shareLink() {
+    if (S.mode !== 'server' || !S.lobby.active) { toast('Join a lobby first', 'warn'); return; }
+    const link = this.inviteLink();
+    const note = S.lobby.password ? 'Invite link copied (includes the password)' : 'Invite link copied';
+    navigator.clipboard?.writeText(link).then(() => toast(note, 'success', 2200))
+      .catch(() => toast(link, 'info', 8000));
+  },
+
+  // Reads the invite params and strips them from the URL in one go (so they
+  // are gone even if the join is slow, prompts, or fails). Returns
+  // { code, password } or null.
+  consumeInviteParams() {
+    try {
+      const u = new URL(window.location.href);
+      const p = u.searchParams;
+      const raw = p.get('lobby') ?? p.get('code');
+      const pw = p.get('password') ?? p.get('pass');
+      const had = ['lobby', 'code', 'password', 'pass'].some(k => p.has(k));
+      if (had) {
+        ['lobby', 'code', 'password', 'pass'].forEach(k => p.delete(k));
+        history.replaceState(history.state, '', u.pathname + (p.toString() ? '?' + p.toString() : '') + u.hash);
+      }
+      const code = (raw || '').toUpperCase().replace(/[^A-Z]/g, '');
+      return code.length === 6 ? { code, password: pw || '' } : null;
+    } catch (_) { return null; }
+  },
+
   copyCode() {
     navigator.clipboard?.writeText(S.lobby.code).then(() => toast('Code copied', 'success', 1500))
       .catch(() => toast(S.lobby.code, 'info'));
