@@ -148,6 +148,337 @@ function draw(ctx, v) {
   ctx.globalAlpha = 1;
 }`
 },
+{
+  name: 'NCS',
+  author: 'Noobplayer (after Roonil/NCS_Spectrum_GLava)',
+  code: `// NCS-style particle sphere. Ported from Roonil/NCS_Spectrum_GLava:
+// a field of particles is pushed around by audio-driven fractal noise, and
+// everything that lands inside the sphere is pulled out to its rim, so the
+// shell swells with the bass and frays with the rest of the spectrum.
+const COUNT = 6500;
+let pts = [];
+let aud = new Array(9).fill(0);   // [radius, 8 fractal bands], smoothed
+const perm = new Uint8Array(512);
+(function () {
+  const p = Array.from({ length: 256 }, (_, i) => i);
+  let s = 1337;
+  for (let i = 255; i > 0; i--) { s = (s * 16807) % 2147483647; const j = s % (i + 1); [p[i], p[j]] = [p[j], p[i]]; }
+  for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+})();
+function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function grad(h, x, y, z) {
+  h &= 15; const u = h < 8 ? x : y, w = h < 4 ? y : (h === 12 || h === 14 ? x : z);
+  return ((h & 1) ? -u : u) + ((h & 2) ? -w : w);
+}
+function noise(x, y, z) {
+  const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+  x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+  const u = fade(x), w = fade(y), q = fade(z);
+  const A = perm[X] + Y, AA = perm[A] + Z, AB = perm[A + 1] + Z;
+  const B = perm[X + 1] + Y, BA = perm[B] + Z, BB = perm[B + 1] + Z;
+  return lerp(
+    lerp(lerp(grad(perm[AA], x, y, z), grad(perm[BA], x - 1, y, z), u),
+         lerp(grad(perm[AB], x, y - 1, z), grad(perm[BB], x - 1, y - 1, z), u), w),
+    lerp(lerp(grad(perm[AA + 1], x, y, z - 1), grad(perm[BA + 1], x - 1, y, z - 1), u),
+         lerp(grad(perm[AB + 1], x, y - 1, z - 1), grad(perm[BB + 1], x - 1, y - 1, z - 1), u), w), q);
+}
+// 3 octaves, each a quarter as strong as the last (octaveMultiplier 0.25, octaveScale 1)
+function octave(x, y, z) {
+  let val = 0, tot = 0, amp = 1;
+  for (let i = 0; i < 3; i++) { val += noise(x, y, z) * amp; tot += amp; amp *= 0.25; }
+  return val / tot;
+}
+function smoothstep(a, b, x) { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
+function isDark(c) {
+  const m = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/i.exec((c || '').trim());
+  if (!m) return true;
+  let h = m[1]; if (h.length === 3) h = h.replace(/./g, '$&$&');
+  const n = parseInt(h, 16);
+  return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) < 140;
+}
+function setup(ctx, v) {
+  pts = [];
+  const g = Math.ceil(Math.sqrt(COUNT));
+  for (let i = 0; i < g; i++) for (let j = 0; j < g; j++) {
+    pts.push((i + Math.random()) / g - 0.5, (j + Math.random()) / g - 0.5);
+  }
+}
+function draw(ctx, v) {
+  const W = v.w, H = v.h, cx = W / 2, cy = H / 2;
+  const s = Math.min(W, H) / 760;            // the shader works in a 760px square
+  ctx.clearRect(0, 0, W, H);
+
+  // ── audio: one low band for the radius, eight bands (sorted, as in the
+  //    shader's median network) for the noise strength
+  const f = v.freq, n = f.length;
+  const bandMax = (a, b) => {
+    let m = 0;
+    for (let i = Math.floor(n * a); i <= Math.max(Math.floor(n * a), Math.floor(n * b)); i++) m = Math.max(m, f[i] || 0);
+    return Math.min(1, m / 255 * 1.1);
+  };
+  const raw = [Math.min(1, v.bass * 1.35)];
+  for (let i = 0; i < 8; i++) raw.push(bandMax(0.02 + i * 0.07, 0.02 + (i + 1) * 0.07));
+  const k = v.paused ? 0 : 1 - Math.exp(-v.dt * 14), kd = 1 - Math.exp(-v.dt * 5);
+  for (let i = 0; i < 9; i++) {
+    const t = v.paused ? 0 : raw[i];
+    aud[i] += (t - aud[i]) * (t > aud[i] ? k : kd);
+  }
+  const a = aud.slice(1).sort((x, y) => x - y);
+  const hi = a[7] * a[6];
+  const mixA = (x, y, t) => x * (1 - t) + y * t;
+  let finalAudio = 9 * mixA(
+    mixA(hi - a[1] * a[0], hi, a[5]),
+    mixA(a[6] * mixA(a[7] - a[0], a[6] - a[3], hi) - Math.pow(a[1] * a[0], 1.05), hi, a[5] * a[4]),
+    0.5);
+  finalAudio = Math.max(0, Math.min(finalAudio, 3));
+
+  const radius = (275 + 200 * aud[0]) * s;
+  const feather = 0.45;
+  const t = v.t;
+  const dark = isDark(v.theme.bg);
+
+  // ── particles
+  const size = Math.max(1.1, 1.7 * s);
+  ctx.globalCompositeOperation = dark ? 'lighter' : 'source-over';
+  ctx.fillStyle = v.theme.accent;
+  ctx.globalAlpha = dark ? 0.55 : 0.6;
+  for (let i = 0; i < pts.length; i += 2) {
+    const ox = pts[i] * W, oy = pts[i + 1] * H;     // offset from centre, px
+    let px = ox, py = oy;
+    if (finalAudio > 0.001) {
+      const nx = 4.6 * ox / (760 * s), ny = 4.6 * oy / (760 * s);
+      const fz = t * 0.015;
+      const dx = finalAudio * octave(nx, ny + t * 0.033, fz);
+      const dy = finalAudio * octave(ny + 11.3, nx + 5.1 + t * 0.033, fz);
+      px += Math.max(-5, Math.min(5, dx)) * 110 * s;
+      py += Math.max(-5, Math.min(5, dy)) * 95 * s;
+    }
+    const d = Math.hypot(px, py);
+    if (d <= radius && d > 0) {
+      const diff = radius - d;                      // distance to the rim
+      const move = diff * Math.min(1, smoothstep(0, feather * radius, diff) + 0.02);
+      px += (px / d) * move; py += (py / d) * move;
+    }
+    ctx.fillRect(cx + px - size / 2, cy + py - size / 2, size, size);
+  }
+  ctx.globalAlpha = 1;
+
+  // ── glow: the frame blurred and added back on top of itself
+  try {
+    const c = ctx.canvas;
+    if (c && 'filter' in ctx) {
+      ctx.filter = 'blur(' + Math.max(2, 8 * s).toFixed(1) + 'px)';
+      ctx.globalAlpha = 0.9;
+      ctx.drawImage(c, 0, 0);
+      ctx.filter = 'none';
+      ctx.globalAlpha = 1;
+    }
+  } catch (e) {}
+  ctx.globalCompositeOperation = 'source-over';
+}`
+},
+{
+  name: 'Trap Nation',
+  author: 'Noobplayer (after caseif/js.nation)',
+  code: `// Trap Nation-style visualizer. Ported from caseif/js.nation: eight mirrored,
+// colour-coded spectrum rings (each one a few frames behind the last) around a
+// pulsing centre disc, a camera shake on the beat, and particles streaming
+// toward you.
+const BINS = 48;
+const COLORS = ['#FFFFFF', '#FFFF00', '#FF0000', '#FF66FF', '#333399', '#0000FF', '#33CCFF', '#00FF00'];
+const EXPONENTS = [1, 1.12, 1.14, 1.30, 1.33, 1.36, 1.50, 1.52];
+const MARGINS = [0, 2, 2, 3, 3, 3, 5, 5];
+let hist = [];
+let parts = [];
+let mult = 0;
+
+function setup(ctx, v) {
+  hist = [];
+  parts = Array.from({ length: 420 }, () => newPart(Math.random()));
+}
+function newPart(z) {
+  return {
+    z, a: Math.random() * Math.PI * 2, r: 0.1 + Math.random() * 0.9,
+    sz: 1.2 + Math.random() * 2.2, spd: 0.6 + Math.random() * 0.9,
+    ph: Math.random() * 6.28, phs: 0.8 + Math.random() * 1.6,
+  };
+}
+// weighted moving average, as js.nation does
+function smooth(arr, m) {
+  if (m === 0) return arr;
+  const out = new Array(arr.length);
+  for (let i = 0; i < arr.length; i++) {
+    let sum = 0, den = 0;
+    for (let j = 0; j <= m; j++) {
+      if (i - j < 0 || i + j > arr.length - 1) break;
+      sum += arr[i - j] + arr[i + j];
+      den += (m - j + 1) * 2;
+    }
+    out[i] = sum / den;
+  }
+  return out;
+}
+function drawShape(ctx, pts, cx, cy) {
+  ctx.beginPath();
+  for (let neg = 0; neg <= 1; neg++) {
+    const xm = neg ? -1 : 1;
+    ctx.moveTo(cx, pts[0].y + cy);
+    for (let i = 1; i < pts.length - 2; i++) {
+      const c = xm * (pts[i].x + pts[i + 1].x) / 2 + cx;
+      const d = (pts[i].y + pts[i + 1].y) / 2 + cy;
+      ctx.quadraticCurveTo(xm * pts[i].x + cx, pts[i].y + cy, c, d);
+    }
+    const n = pts.length;
+    ctx.quadraticCurveTo(xm * pts[n - 2].x + cx + neg * 2, pts[n - 2].y + cy, xm * pts[n - 1].x + cx, pts[n - 1].y + cy);
+  }
+  ctx.fill();
+}
+function draw(ctx, v) {
+  const W = v.w, H = v.h, m = Math.min(W, H);
+  const cx = W / 2, cy = H / 2;
+  ctx.clearRect(0, 0, W, H);
+
+  // this frame's spectrum: low-to-mid bins, resampled to BINS points
+  const f = v.freq, n = f.length;
+  const cur = new Array(BINS);
+  for (let i = 0; i < BINS; i++) {
+    const p = Math.pow(i / (BINS - 1), 1.5) * n * 0.5;
+    const a = Math.floor(p), b = Math.max(a + 1, Math.floor(p + n * 0.012));
+    let mx = 0;
+    for (let j = a; j < b; j++) mx = Math.max(mx, f[j] || 0);
+    cur[i] = v.paused ? 0 : Math.min(1, (mx / 255) * (1 + 0.7 * i / BINS));
+  }
+  hist.push(cur);
+  if (hist.length > 8) hist.shift();
+
+  // beat multiplier: quick up, slow down
+  const target = v.paused ? 0 : Math.min(1, Math.pow(0.7 * v.bass + 0.3 * v.mid, 0.8) * 1.25);
+  mult += (target - mult) * (target > mult ? 0.5 : 0.12);
+
+  const rad = m * (0.17 + 0.045 * mult);
+  const maxH = m * 0.34;
+
+  // shake
+  const shx = Math.sin(v.t * 11.3) * Math.cos(v.t * 4.7) * 0.012 * m * mult * 1.6;
+  const shy = Math.cos(v.t * 9.1) * Math.sin(v.t * 5.9) * 0.012 * m * mult * 1.6;
+  ctx.save();
+  ctx.translate(shx, shy);
+
+  // particles, behind everything else
+  const reach = Math.hypot(W, H) * 0.55;
+  ctx.fillStyle = '#ffffff';
+  for (const p of parts) {
+    p.z += Math.max(0.0035 * p.spd * (0.4 + mult * 3), 0.0012) * v.dt * 60;
+    p.ph += p.phs * v.dt * (0.4 + mult * 2);
+    if (p.z >= 1) Object.assign(p, newPart(0));
+    const d = (p.r * p.z * p.z + 0.02) * reach + Math.sin(p.ph) * 6 * mult;
+    const x = cx + Math.cos(p.a) * d, y = cy + Math.sin(p.a) * d;
+    ctx.globalAlpha = Math.min(1, p.z * 3) * (1 - Math.max(0, p.z - 0.8) * 5) * 0.9;
+    const s = p.sz * (0.4 + p.z * 1.8) * (m / 800 + 0.5);
+    ctx.beginPath(); ctx.arc(x, y, s, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // spectrum rings, outermost first
+  ctx.shadowBlur = Math.max(6, m * 0.022);
+  for (let s = COLORS.length - 1; s >= 0; s--) {
+    const frame = hist[Math.max(hist.length - s - 1, 0)];
+    const sm = smooth(frame, MARGINS[s]);
+    const pts = [];
+    for (let i = 0; i < sm.length; i++) {
+      const t = Math.PI * (i / (sm.length - 1)) - Math.PI / 2;
+      const r = rad + maxH * Math.pow(sm[i], 1 / EXPONENTS[s]);
+      pts.push({ x: r * Math.cos(t), y: r * Math.sin(t) });
+    }
+    ctx.fillStyle = COLORS[s];
+    ctx.shadowColor = COLORS[s];
+    drawShape(ctx, pts, cx, cy);
+  }
+  ctx.shadowBlur = 0;
+
+  // centre disc
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, m * 0.006);
+  ctx.beginPath(); ctx.arc(cx, cy, rad - ctx.lineWidth * 2.5, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}`
+},
+{
+  name: 'Monstercat',
+  author: 'Noobplayer (after marcopixel/monstercat-visualizer)',
+  code: `// Monstercat-style spectrum. Based on marcopixel/monstercat-visualizer: 63
+// flat bars on log-spaced bands (20 Hz - 16 kHz), 18px bars with a 7px gap,
+// instant attack and a ~50 ms fall, a soft drop shadow, and the artist and
+// title underneath, clipped to the width of the bars.
+const BARS = 63;
+let vals = new Array(BARS).fill(0.01);
+let prev = new Array(BARS).fill(0);
+
+function draw(ctx, v) {
+  const W = v.w, H = v.h;
+  ctx.clearRect(0, 0, W, H);
+
+  // raw band levels (log-spaced, assuming a 48 kHz source)
+  const f = v.freq, n = f.length;
+  const raw = new Array(BARS);
+  for (let i = 0; i < BARS; i++) {
+    const f0 = 20 * Math.pow(800, i / BARS), f1 = 20 * Math.pow(800, (i + 1) / BARS);
+    const a = Math.min(n - 1, Math.floor(f0 / 24000 * n));
+    const b = Math.min(n, Math.max(a + 1, Math.ceil(f1 / 24000 * n)));
+    let mx = 0;
+    for (let j = a; j < b; j++) mx = Math.max(mx, f[j] || 0);
+    raw[i] = v.paused ? 0 : Math.min(1, mx / 255 * (1 + 0.55 * i / BARS));
+  }
+  const kd = 1 - Math.exp(-v.dt / 0.05);
+  for (let i = 0; i < BARS; i++) {
+    // neighbouring bands bleed into each other, like the skin's smoothed measures
+    const t = (raw[Math.max(0, i - 1)] + raw[i] * 2 + raw[Math.min(BARS - 1, i + 1)]) / 4;
+    const target = 0.01 + Math.pow(t, 1.15) * 0.99;
+    vals[i] = target > vals[i] ? target : vals[i] + (target - vals[i]) * kd;
+  }
+
+  // layout: pitch = bar + gap = 18 + 7
+  const left = W * 0.08, span = W * 0.84;
+  const pitch = span / BARS, bw = pitch * 18 / 25;
+  const base = H * 0.72, maxH = H * 0.62;
+  const sh = Math.max(2, W * 0.003);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.29)';
+  for (let i = 0; i < BARS; i++) {
+    const h = Math.max(1, vals[i] * maxH);
+    ctx.fillRect(left + i * pitch + sh, base - h + sh, bw, h);
+  }
+  ctx.fillStyle = v.theme.text;
+  for (let i = 0; i < BARS; i++) {
+    const h = Math.max(1, vals[i] * maxH);
+    ctx.fillRect(left + i * pitch, base - h, bw, h);
+  }
+
+  // song information
+  const t = v.track;
+  if (t) {
+    const w = (BARS - 1) * pitch + bw;
+    const big = Math.max(14, Math.min(H * 0.085, w / 14)), small = big * 0.58;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(left, base + 4, w, H - base); ctx.clip();
+    ctx.textBaseline = 'top';
+    const fam = "Montserrat, 'Segoe UI', system-ui, sans-serif";
+    ctx.font = '600 ' + big + 'px ' + fam;
+    ctx.fillStyle = 'rgba(0,0,0,0.29)';
+    ctx.fillText(t.author || '', left + sh, base + big * 0.45 + sh);
+    ctx.fillStyle = v.theme.text;
+    ctx.fillText(t.author || '', left, base + big * 0.45);
+    ctx.font = '300 ' + small + 'px ' + fam;
+    ctx.fillStyle = 'rgba(0,0,0,0.29)';
+    ctx.fillText(t.title || '', left + sh, base + big * 1.6 + sh);
+    ctx.fillStyle = v.theme.text;
+    ctx.fillText(t.title || '', left, base + big * 1.6);
+    ctx.restore();
+  }
+}`
+},
 ];
 
 const VIZ_TEMPLATE = `// draw() runs once per animation frame.
