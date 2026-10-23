@@ -463,7 +463,7 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 #lyr-badge.synced { color: var(--green); border-color: var(--green); }
 #lyr-badge[hidden], #btn-lyr-sync[hidden] { display: none; }
 #pane-lyrics { position: relative; }
-#btn-lyr-sync { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--brd2); background: var(--accent); color: var(--bg, #000); font-family: var(--fm); font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: var(--ev3); z-index: 5; animation: lyr-sync-in .2s ease; }
+#btn-lyr-sync { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--brd2); background: var(--accent); color: var(--bg, #000); font-family: var(--fm); font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: var(--ev3); z-index: 5; animation: lyr-sync-in .2s ease; }
 @keyframes lyr-sync-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 #btn-lyr-sync .material-symbols-outlined { font-size: 16px; }
 #lyr-body { flex: 1; overflow-y: auto; padding: 20px 24px; scroll-behavior: smooth; }

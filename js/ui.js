@@ -1182,7 +1182,17 @@ const UI = {
   _lyrHold(on) {
     this._lyrHeld = on;
     const b = document.getElementById('btn-lyr-sync');
-    if (b) b.hidden = !(on && S.lyricsType === 'synced' && S.lyrics);
+    if (b) { b.hidden = !(on && S.lyricsType === 'synced' && S.lyrics); if (!b.hidden) this._lyrPlaceSync(); }
+  },
+
+  // The button is fixed to the bottom of the VIEWPORT (the page itself scrolls
+  // in the stacked layouts, so an absolute position ended up at the very end
+  // of the lyrics). Horizontally it is centred on the lyrics column.
+  _lyrPlaceSync() {
+    const b = document.getElementById('btn-lyr-sync'), body = document.getElementById('lyr-body');
+    if (!b || !body) return;
+    const r = body.getBoundingClientRect();
+    b.style.left = (r.left + r.width / 2) + 'px';
   },
 
   _lyrResume() {
@@ -1211,6 +1221,7 @@ const UI = {
       else if (t.id === 'lyr-body' && e.offsetX >= t.clientWidth) hold();
     }, opt);
     document.getElementById('btn-lyr-sync').addEventListener('click', () => this._lyrResume());
+    window.addEventListener('resize', () => this._lyrPlaceSync());
   },
 
   syncLyrics() {
