@@ -155,7 +155,7 @@ function draw(ctx, v) {
 // a field of particles is pushed around by audio-driven fractal noise, and
 // everything that lands inside the sphere is pulled out to its rim, so the
 // shell swells with the bass and frays with the rest of the spectrum.
-const COUNT = 6500;
+const COUNT = 60000;
 let pts = [];
 let aud = new Array(9).fill(0);   // [radius, 8 fractal bands], smoothed
 const perm = new Uint8Array(512);
@@ -197,6 +197,27 @@ function isDark(c) {
   const n = parseInt(h, 16);
   return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) < 140;
 }
+function rgbOf(ctx, c) {                      // any CSS colour -> [r, g, b]
+  ctx.fillStyle = '#5b9cf6'; ctx.fillStyle = c;
+  const m = /^#([0-9a-f]{6})$/i.exec(ctx.fillStyle);
+  const n = m ? parseInt(m[1], 16) : 0x5b9cf6;
+  return [n >> 16, (n >> 8) & 255, n & 255];
+}
+let off = null, offCtx = null, acc = null, img = null, gw = 0, gh = 0;
+const GX = 44, GY = 28;                       // coarse grid the noise is sampled on
+const fieldX = new Float32Array((GX + 1) * (GY + 1));
+const fieldY = new Float32Array((GX + 1) * (GY + 1));
+const fieldZ = new Float32Array((GX + 1) * (GY + 1));
+
+// The analyser tends to report most of the audible range as loud, which would
+// flatten everything to full height. So measure how loud the spectrum is overall
+// and only count what stands out above that.
+function floorOf(f) {
+  const n = Math.floor(f.length * 0.6);
+  let s = 0;
+  for (let i = 1; i < n; i++) s += f[i];
+  return Math.min(0.85, 0.12 + 0.75 * (s / n / 255));
+}
 function setup(ctx, v) {
   pts = [];
   const g = Math.ceil(Math.sqrt(COUNT));
@@ -206,20 +227,32 @@ function setup(ctx, v) {
 }
 function draw(ctx, v) {
   const W = v.w, H = v.h, cx = W / 2, cy = H / 2;
-  const s = Math.min(W, H) / 760;            // the shader works in a 760px square
+  const s = Math.min(W, H) / 760;             // the shader works in a 760px square
   ctx.clearRect(0, 0, W, H);
+
+  // accumulation buffer at half resolution
+  const nw = Math.max(2, W >> 1), nh = Math.max(2, H >> 1);
+  if (!off || nw !== gw || nh !== gh) {
+    gw = nw; gh = nh;
+    off = document.createElement('canvas'); off.width = gw; off.height = gh;
+    offCtx = off.getContext('2d');
+    acc = new Float32Array(gw * gh);
+    img = offCtx.createImageData(gw, gh);
+  }
 
   // ── audio: one low band for the radius, eight bands (sorted, as in the
   //    shader's median network) for the noise strength
   const f = v.freq, n = f.length;
+  const fl = floorOf(f);
+  const lvl = (x) => Math.pow(Math.max(0, (x / 255 - fl) / (1 - fl)), 1.2);
   const bandMax = (a, b) => {
     let m = 0;
     for (let i = Math.floor(n * a); i <= Math.max(Math.floor(n * a), Math.floor(n * b)); i++) m = Math.max(m, f[i] || 0);
-    return Math.min(1, m / 255 * 1.1);
+    return lvl(m);
   };
-  const raw = [Math.min(1, v.bass * 1.35)];
-  for (let i = 0; i < 8; i++) raw.push(bandMax(0.02 + i * 0.07, 0.02 + (i + 1) * 0.07));
-  const k = v.paused ? 0 : 1 - Math.exp(-v.dt * 14), kd = 1 - Math.exp(-v.dt * 5);
+  const raw = [bandMax(0.0, 0.05)];
+  for (let i = 0; i < 8; i++) raw.push(bandMax(0.03 + i * 0.07, 0.03 + (i + 1) * 0.07));
+  const k = v.paused ? 0 : 1 - Math.exp(-v.dt * 14), kd = 1 - Math.exp(-v.dt * 4);
   for (let i = 0; i < 9; i++) {
     const t = v.paused ? 0 : raw[i];
     aud[i] += (t - aud[i]) * (t > aud[i] ? k : kd);
@@ -231,51 +264,80 @@ function draw(ctx, v) {
     mixA(hi - a[1] * a[0], hi, a[5]),
     mixA(a[6] * mixA(a[7] - a[0], a[6] - a[3], hi) - Math.pow(a[1] * a[0], 1.05), hi, a[5] * a[4]),
     0.5);
-  finalAudio = Math.max(0, Math.min(finalAudio, 3));
+  finalAudio = Math.max(0, Math.min(finalAudio, 0.9));
 
-  const radius = (275 + 200 * aud[0]) * s;
+  const radius = Math.min((190 + 120 * aud[0]) * s, Math.min(W, H) * 0.46);
   const feather = 0.45;
   const t = v.t;
-  const dark = isDark(v.theme.bg);
 
-  // ── particles
-  const size = Math.max(1.1, 1.7 * s);
-  ctx.globalCompositeOperation = dark ? 'lighter' : 'source-over';
-  ctx.fillStyle = v.theme.accent;
-  ctx.globalAlpha = dark ? 0.55 : 0.6;
+  // ── displacement field: the fractal noise only varies slowly in space, so
+  //    sample it on a coarse grid and interpolate per particle
+  const fz = t * 0.015, fy = t * 0.033;
+  if (finalAudio > 0.001) {
+    for (let gy = 0; gy <= GY; gy++) for (let gx = 0; gx <= GX; gx++) {
+      const ox = (gx / GX - 0.5) * W, oy = (gy / GY - 0.5) * H;
+      const nx = 4.6 * ox / (760 * s), ny = 4.6 * oy / (760 * s);
+      const i = gy * (GX + 1) + gx;
+      fieldX[i] = Math.max(-5, Math.min(5, finalAudio * octave(nx, ny + fy, fz))) * 110 * s;
+      fieldY[i] = Math.max(-5, Math.min(5, finalAudio * octave(ny + 11.3, nx + 5.1 + fy, fz))) * 95 * s;
+      fieldZ[i] = Math.max(-5, Math.min(5, finalAudio * octave(nx + 23.7, ny + 3.9, fz + fy))) * 115 * s;
+    }
+  }
+  const moving = finalAudio > 0.001;
+
+  // ── particles -> density buffer
+  acc.fill(0);
+  const rim = radius * feather;
   for (let i = 0; i < pts.length; i += 2) {
     const ox = pts[i] * W, oy = pts[i + 1] * H;     // offset from centre, px
-    let px = ox, py = oy;
-    if (finalAudio > 0.001) {
-      const nx = 4.6 * ox / (760 * s), ny = 4.6 * oy / (760 * s);
-      const fz = t * 0.015;
-      const dx = finalAudio * octave(nx, ny + t * 0.033, fz);
-      const dy = finalAudio * octave(ny + 11.3, nx + 5.1 + t * 0.033, fz);
-      px += Math.max(-5, Math.min(5, dx)) * 110 * s;
-      py += Math.max(-5, Math.min(5, dy)) * 95 * s;
+    let px = ox, py = oy, pz = 0;
+    if (moving) {
+      const u = (pts[i] + 0.5) * GX, w = (pts[i + 1] + 0.5) * GY;
+      const x0 = Math.min(GX - 1, u | 0), y0 = Math.min(GY - 1, w | 0);
+      const fx = u - x0, fy2 = w - y0, b = y0 * (GX + 1) + x0, c = b + GX + 1;
+      px += (fieldX[b] * (1 - fx) + fieldX[b + 1] * fx) * (1 - fy2) + (fieldX[c] * (1 - fx) + fieldX[c + 1] * fx) * fy2;
+      py += (fieldY[b] * (1 - fx) + fieldY[b + 1] * fx) * (1 - fy2) + (fieldY[c] * (1 - fx) + fieldY[c + 1] * fx) * fy2;
+      pz = (fieldZ[b] * (1 - fx) + fieldZ[b + 1] * fx) * (1 - fy2) + (fieldZ[c] * (1 - fx) + fieldZ[c + 1] * fx) * fy2;
     }
-    const d = Math.hypot(px, py);
+    // a sphere, not a circle: the push to the surface happens in 3D, then it is
+    // projected flat, which piles points up at the rim and leaves a soft inside
+    const d = Math.sqrt(px * px + py * py + pz * pz);
     if (d <= radius && d > 0) {
-      const diff = radius - d;                      // distance to the rim
-      const move = diff * Math.min(1, smoothstep(0, feather * radius, diff) + 0.02);
+      const diff = radius - d;                      // distance to the surface
+      const q = Math.min(1, diff / rim);
+      const move = diff * Math.min(1, q * q * (3 - 2 * q) + 0.02);
       px += (px / d) * move; py += (py / d) * move;
     }
-    ctx.fillRect(cx + px - size / 2, cy + py - size / 2, size, size);
+    const X = ((cx + px) * 0.5) | 0, Y = ((cy + py) * 0.5) | 0;
+    if (X >= 0 && X < gw && Y >= 0 && Y < gh) acc[Y * gw + X] += 1;
   }
-  ctx.globalAlpha = 1;
 
-  // ── glow: the frame blurred and added back on top of itself
+  // ── density -> colour (opacity saturates like stacked translucent particles)
+  const dark = isDark(v.theme.bg);
+  const rgb = rgbOf(offCtx, v.theme.accent);
+  const data = img.data;
+  for (let i = 0, p = 0; i < acc.length; i++, p += 4) {
+    const c = acc[i];
+    if (c === 0) { data[p + 3] = 0; continue; }
+    const al = 1 - Math.exp(-0.14 * c);
+    const hot = dark ? Math.min(1, Math.max(0, (c - 4) * 0.1)) : 0;   // piled-up cores burn toward white
+    data[p] = rgb[0] + (255 - rgb[0]) * hot;
+    data[p + 1] = rgb[1] + (255 - rgb[1]) * hot;
+    data[p + 2] = rgb[2] + (255 - rgb[2]) * hot;
+    data[p + 3] = al * 255;
+  }
+  offCtx.putImageData(img, 0, 0);
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(off, 0, 0, W, H);
+  // glow
   try {
-    const c = ctx.canvas;
-    if (c && 'filter' in ctx) {
-      ctx.filter = 'blur(' + Math.max(2, 8 * s).toFixed(1) + 'px)';
-      ctx.globalAlpha = 0.9;
-      ctx.drawImage(c, 0, 0);
-      ctx.filter = 'none';
-      ctx.globalAlpha = 1;
-    }
+    ctx.globalCompositeOperation = dark ? 'lighter' : 'source-over';
+    ctx.filter = 'blur(' + Math.max(3, 9 * s).toFixed(1) + 'px)';
+    ctx.globalAlpha = 0.9;
+    ctx.drawImage(off, 0, 0, W, H);
   } catch (e) {}
-  ctx.globalCompositeOperation = 'source-over';
+  ctx.filter = 'none'; ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
 }`
 },
 {
@@ -334,30 +396,45 @@ function drawShape(ctx, pts, cx, cy) {
   }
   ctx.fill();
 }
+// The analyser tends to report most of the audible range as loud, which would
+// flatten everything to full height. So measure how loud the spectrum is overall
+// and only count what stands out above that.
+function floorOf(f) {
+  const n = Math.floor(f.length * 0.6);
+  let s = 0;
+  for (let i = 1; i < n; i++) s += f[i];
+  return Math.min(0.85, 0.12 + 0.75 * (s / n / 255));
+}
 function draw(ctx, v) {
   const W = v.w, H = v.h, m = Math.min(W, H);
   const cx = W / 2, cy = H / 2;
   ctx.clearRect(0, 0, W, H);
 
-  // this frame's spectrum: low-to-mid bins, resampled to BINS points
+  // this frame's spectrum: the bass-to-low-mid range (js.nation only keeps
+  // roughly 20-130 Hz), log-spaced and resampled to BINS points
   const f = v.freq, n = f.length;
   const cur = new Array(BINS);
+  const fl = floorOf(f);
+  const at = (x) => {
+    const i = Math.max(0, Math.min(n - 1, x)), a = Math.floor(i), b = Math.min(n - 1, a + 1);
+    return (f[a] || 0) * (1 - (i - a)) + (f[b] || 0) * (i - a);
+  };
   for (let i = 0; i < BINS; i++) {
-    const p = Math.pow(i / (BINS - 1), 1.5) * n * 0.5;
-    const a = Math.floor(p), b = Math.max(a + 1, Math.floor(p + n * 0.012));
-    let mx = 0;
-    for (let j = a; j < b; j++) mx = Math.max(mx, f[j] || 0);
-    cur[i] = v.paused ? 0 : Math.min(1, (mx / 255) * (1 + 0.7 * i / BINS));
+    const hz = 30 * Math.pow(2000 / 30, i / (BINS - 1));
+    const p = hz / 24000 * n;
+    const mx = Math.max(at(p), at(p * 1.25));
+    cur[i] = v.paused ? 0 : Math.min(1, Math.pow(Math.max(0, (mx / 255 - fl) / (1 - fl)), 1.8) * 0.95);
   }
   hist.push(cur);
   if (hist.length > 8) hist.shift();
 
   // beat multiplier: quick up, slow down
-  const target = v.paused ? 0 : Math.min(1, Math.pow(0.7 * v.bass + 0.3 * v.mid, 0.8) * 1.25);
+  const lo = Math.max(0, (0.7 * v.bass + 0.3 * v.mid - fl) / (1 - fl));
+  const target = v.paused ? 0 : Math.min(1, Math.pow(lo, 0.8) * 1.2);
   mult += (target - mult) * (target > mult ? 0.5 : 0.12);
 
-  const rad = m * (0.17 + 0.045 * mult);
-  const maxH = m * 0.34;
+  const rad = m * (0.15 + 0.035 * mult);
+  const maxH = m * 0.24;
 
   // shake
   const shx = Math.sin(v.t * 11.3) * Math.cos(v.t * 4.7) * 0.012 * m * mult * 1.6;
@@ -374,21 +451,30 @@ function draw(ctx, v) {
     if (p.z >= 1) Object.assign(p, newPart(0));
     const d = (p.r * p.z * p.z + 0.02) * reach + Math.sin(p.ph) * 6 * mult;
     const x = cx + Math.cos(p.a) * d, y = cy + Math.sin(p.a) * d;
-    ctx.globalAlpha = Math.min(1, p.z * 3) * (1 - Math.max(0, p.z - 0.8) * 5) * 0.9;
-    const s = p.sz * (0.4 + p.z * 1.8) * (m / 800 + 0.5);
+    ctx.globalAlpha = Math.min(1, p.z * 3) * (1 - Math.max(0, p.z - 0.8) * 5) * 0.75;
+    const s = p.sz * (0.25 + p.z * 0.9) * (m / 900 + 0.5);
     ctx.beginPath(); ctx.arc(x, y, s, 0, Math.PI * 2); ctx.fill();
   }
   ctx.globalAlpha = 1;
 
-  // spectrum rings, outermost first
+  // ring heights, innermost (white) first; each colour sits at least a little
+  // outside the one in front of it, so every ring shows as a halo
+  const heights = [];
+  for (let s = 0; s < COLORS.length; s++) {
+    const sm = smooth(hist[Math.max(hist.length - s - 1, 0)], MARGINS[s]);
+    heights.push(sm.map((a, i) => {
+      let h = maxH * Math.pow(a, 1 / EXPONENTS[s]);
+      if (s > 0) h = Math.max(h, heights[s - 1][i]) + m * 0.014;
+      return h;
+    }));
+  }
+  // draw outermost first
   ctx.shadowBlur = Math.max(6, m * 0.022);
   for (let s = COLORS.length - 1; s >= 0; s--) {
-    const frame = hist[Math.max(hist.length - s - 1, 0)];
-    const sm = smooth(frame, MARGINS[s]);
-    const pts = [];
-    for (let i = 0; i < sm.length; i++) {
-      const t = Math.PI * (i / (sm.length - 1)) - Math.PI / 2;
-      const r = rad + maxH * Math.pow(sm[i], 1 / EXPONENTS[s]);
+    const hs = heights[s], pts = [];
+    for (let i = 0; i < hs.length; i++) {
+      const t = Math.PI * (i / (hs.length - 1)) - Math.PI / 2;
+      const r = rad + hs[i];
       pts.push({ x: r * Math.cos(t), y: r * Math.sin(t) });
     }
     ctx.fillStyle = COLORS[s];
@@ -416,26 +502,41 @@ const BARS = 63;
 let vals = new Array(BARS).fill(0.01);
 let prev = new Array(BARS).fill(0);
 
+// The analyser tends to report most of the audible range as loud, which would
+// flatten everything to full height. So measure how loud the spectrum is overall
+// and only count what stands out above that.
+function floorOf(f) {
+  const n = Math.floor(f.length * 0.6);
+  let s = 0;
+  for (let i = 1; i < n; i++) s += f[i];
+  return Math.min(0.85, 0.12 + 0.75 * (s / n / 255));
+}
 function draw(ctx, v) {
   const W = v.w, H = v.h;
   ctx.clearRect(0, 0, W, H);
 
-  // raw band levels (log-spaced, assuming a 48 kHz source)
+  // raw band levels (log-spaced, assuming a 48 kHz source; the analyser has
+  // coarse low-end bins, so interpolate between them instead of snapping)
   const f = v.freq, n = f.length;
+  const at = (x) => {
+    const i = Math.max(0, Math.min(n - 1, x)), a = Math.floor(i), b = Math.min(n - 1, a + 1);
+    return (f[a] || 0) * (1 - (i - a)) + (f[b] || 0) * (i - a);
+  };
   const raw = new Array(BARS);
+  const fl = floorOf(f);
   for (let i = 0; i < BARS; i++) {
     const f0 = 20 * Math.pow(800, i / BARS), f1 = 20 * Math.pow(800, (i + 1) / BARS);
-    const a = Math.min(n - 1, Math.floor(f0 / 24000 * n));
-    const b = Math.min(n, Math.max(a + 1, Math.ceil(f1 / 24000 * n)));
-    let mx = 0;
-    for (let j = a; j < b; j++) mx = Math.max(mx, f[j] || 0);
-    raw[i] = v.paused ? 0 : Math.min(1, mx / 255 * (1 + 0.55 * i / BARS));
+    const p0 = f0 / 24000 * n, p1 = Math.max(p0 + 0.01, f1 / 24000 * n);
+    let mx = at((p0 + p1) / 2);
+    for (let j = Math.ceil(p0); j < p1; j++) mx = Math.max(mx, at(j));
+    const x = Math.max(0, (mx / 255 - fl) / (1 - fl));
+    raw[i] = v.paused ? 0 : Math.min(1, Math.pow(x, 1.7) * (1 + 0.25 * i / BARS));
   }
   const kd = 1 - Math.exp(-v.dt / 0.05);
   for (let i = 0; i < BARS; i++) {
     // neighbouring bands bleed into each other, like the skin's smoothed measures
     const t = (raw[Math.max(0, i - 1)] + raw[i] * 2 + raw[Math.min(BARS - 1, i + 1)]) / 4;
-    const target = 0.01 + Math.pow(t, 1.15) * 0.99;
+    const target = 0.01 + t * 0.99;
     vals[i] = target > vals[i] ? target : vals[i] + (target - vals[i]) * kd;
   }
 
