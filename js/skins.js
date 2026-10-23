@@ -253,10 +253,11 @@ const Skins = {
       .dbg-card,.dbg-section,.dbg-wave-canvas,.dbg-seg-btn,.dbg-seg-toggle,.dbg-table,
       .bnd-btn,.bnd-x,.skin-badge,.hdr-btn,.lobby-code-badge,.skin-tab,.tab,.eb,
       .pm-bar,.pm-fill,.skin-swatch,.skin-sw,.qib,.skin-card,.chat-msg,.cu-item{border-radius:${r}}`);
-    // Every stock pill (search box, buttons, badges, chips, bars, avatars…) is
-    // `border-radius: var(--sh-full)`, so pointing that token at the skin's
-    // radius makes ALL of them follow it, including ones the list above misses.
-    out.push(`:root{--sh-full:${r}}`);
+    // Every rounded element in style.css takes its radius from one of the
+    // --sh-* tokens, so pointing all of them at the skin's radius makes
+    // EVERYTHING follow it (debug rows/cards, session rows, timing bars,
+    // pills, avatars…), including anything the selector list above misses.
+    out.push(`:root{--sh-xs:${r};--sh-sm:${r};--sh-md:${r};--sh-lg:${r};--sh-xl:${r};--sh-full:${r}}`);
     out.push(`.skin-swatch::-webkit-color-swatch-wrapper,.skin-swatch::-webkit-color-swatch{border-radius:${r}}`);
     out.push(`.skin-swatch::-moz-color-swatch{border-radius:${r}}`);
 
