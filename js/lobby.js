@@ -163,6 +163,27 @@ const Lobby = {
     toast(`Joined lobby ${code}${isHost ? ' as host' : ''}`, 'success');
 
     if (initialState) this._applyState(initialState);
+    this._armAudioUnlock();
+  },
+
+  // Browsers keep an AudioContext suspended until the page has had a user
+  // gesture. Joining by clicking a lobby gives us one; joining from an invite
+  // link on page load does not, so the lobby would connect and show "playing"
+  // in silence. Until the first gesture, say so, and the moment one happens
+  // resume the audio.
+  _audioNote: null,
+  _armAudioUnlock() {
+    if (this._audioNote) return;
+    if (navigator.userActivation && navigator.userActivation.hasBeenActive) return;
+    this._audioNote = toast.loading('Click anywhere to start the audio');
+    const events = ['pointerdown', 'keydown', 'touchend'];
+    const unlock = async () => {
+      events.forEach(e => window.removeEventListener(e, unlock, true));
+      if (this._audioNote) { this._audioNote.dismiss(); this._audioNote = null; }
+      try { if (S.player) await S.player.resume(); } catch (_) {}
+      UI.updatePlayerUI();
+    };
+    events.forEach(e => window.addEventListener(e, unlock, true));
   },
 
   _connectSocket(code, clientId) {
