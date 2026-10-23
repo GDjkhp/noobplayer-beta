@@ -190,12 +190,17 @@ function fractal(x, y, z) {
   return (perlin(x, y, z) + perlin(x * 1.5 + 31.4, y * 1.5 + 17.2, z * 1.5) * 0.5 + perlin(x * 2.25 + 7.7, y * 2.25 + 59.1, z * 2.25) * 0.25) / 1.75;
 }
 
-const NG = 72;                               // the noise only varies slowly, so sample it on a coarse grid
+const NG = 56;                               // the noise only varies slowly, so sample it on a coarse grid
 const nfield = new Float32Array((NG + 1) * (NG + 1));
 let hist = [];                               // [dt, level] pairs for the 0.15 s moving average
 let histSum = 0, histTime = 0;
 let noiseOffset = 0, amp = 0;
-let off = null, offCtx = null, img = null, buf = null, S = 0, K = 0;
+let off = null, offCtx = null, img = null, data32 = null, buf = null;
+let S = 0, K = 0, quality = 1, kernelFor = '';
+let kOff = null, kVal = null, kLen = null;   // dot stamp for each of QxQ sub-pixel positions
+let costAvg = 8, frames = 0;
+let rgbKey = '', rgb32 = 0;
+const Q = 4;
 
 function loudness(v) {
   // RMS of the waveform (128 = silence), scaled so ordinary music lands around 0.3-0.7
@@ -212,7 +217,26 @@ function rgbOf(ctx, c) {                      // any CSS colour -> [r, g, b]
 }
 function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
 
+// A dot is a small disc with a 1px soft edge. Its coverage only depends on where
+// it sits inside a pixel, so work out the stamp once for each of QxQ sub-pixel
+// positions instead of doing distance maths for every dot every frame.
+function buildKernel(rpx) {
+  const rE = rpx + 1, span = Math.ceil(rE) + 1;
+  kOff = []; kVal = []; kLen = [];
+  for (let qy = 0; qy < Q; qy++) for (let qx = 0; qx < Q; qx++) {
+    const fx = (qx + 0.5) / Q, fy = (qy + 0.5) / Q;
+    const o = [], vv = [];
+    for (let dy = -span; dy <= span; dy++) for (let dx = -span; dx <= span; dx++) {
+      const ddx = dx + 0.5 - fx, ddy = dy + 0.5 - fy;
+      const t = rE - Math.sqrt(ddx * ddx + ddy * ddy);
+      if (t > 0) { o.push(dy * S + dx); vv.push(Math.round((t > 1 ? 1 : t) * 255)); }
+    }
+    kOff.push(Int32Array.from(o)); kVal.push(Uint8Array.from(vv)); kLen.push(o.length);
+  }
+}
+
 function draw(ctx, v) {
+  const t0 = performance.now();
   const W = v.w, H = v.h;
   ctx.clearRect(0, 0, W, H);
 
@@ -224,16 +248,21 @@ function draw(ctx, v) {
   amp = histTime > 0 ? histSum / histTime : level;
   noiseOffset += dt * 0.75 * (0.5 + amp);
 
-  // ── square viewport, buffers
+  // ── square viewport, buffers, dot stamp
   const size = Math.max(64, Math.floor(Math.min(W, H)));
+  const kWanted = Math.max(64, Math.min(322, Math.round(size / 1.86 * quality)));
   if (size !== S || !off) {
     S = size;
-    K = Math.max(64, Math.min(322, Math.round(S / 1.86)));   // dots per side
     off = document.createElement('canvas'); off.width = S; off.height = S;
     offCtx = off.getContext('2d');
     img = offCtx.createImageData(S, S);
-    buf = new Float32Array(S * S);
+    data32 = new Uint32Array(img.data.buffer);
+    buf = new Uint8Array(S * S);
+    kernelFor = '';
   }
+  K = kWanted;
+  const key = S + ':' + K;
+  if (key !== kernelFor) { kernelFor = key; buildKernel(0.9 / K * 0.5 * S); }
 
   // ── uniforms, as in the original
   const R = 0.675 + (0.9 - 0.675) * amp;                       // sphere radius (NDC)
@@ -246,46 +275,39 @@ function draw(ctx, v) {
 
   // ── dots -> buffer (max blend)
   buf.fill(0);
-  const half = S / 2;
-  const rpx = 0.9 / K * 0.5 * S;                               // dot radius in px
-  const rE = rpx + 1, span = Math.ceil(rE);
-  const fR = R - feather;
+  const half = S / 2, fR = R - feather, margin = Math.ceil(0.9 / K * 0.5 * S) + 4;
+  const lo = margin, hi = S - margin;
+  const invK = 1 / K;
   for (let iy = 0; iy < K; iy++) {
-    const vy = (iy + 0.5) / K, gyf = vy * NG, gy0 = Math.min(NG - 1, gyf | 0), fy = gyf - gy0;
+    const vy = (iy + 0.5) * invK, gyf = vy * NG, gy0 = Math.min(NG - 1, gyf | 0), fy = gyf - gy0;
+    const ry = vy * 0.9 - 0.45;
     for (let ix = 0; ix < K; ix++) {
-      const vx = (ix + 0.5) / K, gxf = vx * NG, gx0 = Math.min(NG - 1, gxf | 0), fx = gxf - gx0;
+      const vx = (ix + 0.5) * invK, gxf = vx * NG, gx0 = Math.min(NG - 1, gxf | 0), fx = gxf - gx0;
       const b = gy0 * (NG + 1) + gx0, c = b + NG + 1;
       const n = (nfield[b] * (1 - fx) + nfield[b + 1] * fx) * (1 - fy) + (nfield[c] * (1 - fx) + nfield[c + 1] * fx) * fy;
-      let x = vx * 0.9 - 0.45 + n, y = vy * 0.9 - 0.45 + n;     // the noise is added to both axes
+      const x = vx * 0.9 - 0.45 + n, y = ry + n;                  // the noise is added to both axes
       const z = (n + 0.5 * noiseAmp) * amp * 0.4;
       const d0 = Math.sqrt(x * x + y * y + z * z);
       if (d0 === 0) continue;
-      const d = Math.min(R, d0);                                  // anything past the sphere lands on it
+      const d = d0 < R ? d0 : R;                                  // anything past the sphere lands on it
       const fs = 1 - clamp01((d - fR) / feather);                 // inside the feather band: pulled out to the rim
-      const k = (d / d0) * (fs * (R / d - 1) + 1);
-      const sx = half + x * k * half, sy = half + y * k * half;
-      const ix0 = Math.round(sx), iy0 = Math.round(sy);
-      for (let oy = -span; oy <= span; oy++) {
-        const py = iy0 + oy; if (py < 0 || py >= S) continue;
-        for (let ox = -span; ox <= span; ox++) {
-          const px = ix0 + ox; if (px < 0 || px >= S) continue;
-          const dx = px + 0.5 - sx, dy = py + 0.5 - sy;
-          const t = rE - Math.sqrt(dx * dx + dy * dy);
-          if (t <= 0) continue;
-          const val = t > 1 ? 1 : t, o = py * S + px;
-          if (val > buf[o]) buf[o] = val;
-        }
+      const k = (d / d0) * (fs * (R / d - 1) + 1) * half;
+      const sx = half + x * k, sy = half + y * k;
+      if (sx < lo || sx > hi || sy < lo || sy > hi) continue;
+      const ixp = sx | 0, iyp = sy | 0;
+      const ph = (((sy - iyp) * Q) | 0) * Q + (((sx - ixp) * Q) | 0);
+      const base = iyp * S + ixp, offs = kOff[ph], vals = kVal[ph];
+      for (let e = 0, L = kLen[ph]; e < L; e++) {
+        const o = base + offs[e], val = vals[e];
+        if (val > buf[o]) buf[o] = val;
       }
     }
   }
 
   // ── colour + glow
-  const rgb = rgbOf(offCtx, v.theme.accent);
-  const data = img.data;
-  for (let i = 0, p = 0; i < buf.length; i++, p += 4) {
-    data[p] = rgb[0]; data[p + 1] = rgb[1]; data[p + 2] = rgb[2];
-    data[p + 3] = buf[i] * 255;
-  }
+  const ck = v.theme.accent;
+  if (ck !== rgbKey) { rgbKey = ck; const c = rgbOf(offCtx, ck); rgb32 = (c[2] << 16) | (c[1] << 8) | c[0]; }
+  for (let i = 0, n = buf.length; i < n; i++) data32[i] = buf[i] ? (rgb32 | (buf[i] << 24)) >>> 0 : 0;
   offCtx.putImageData(img, 0, 0);
 
   const ox = Math.round((W - S) / 2), oy = Math.round((H - S) / 2);
@@ -295,6 +317,13 @@ function draw(ctx, v) {
     ctx.filter = 'none';
   } catch (e) {}
   ctx.drawImage(off, ox, oy);
+
+  // ── adapt: if this machine can't keep up, use fewer (slightly bigger) dots
+  costAvg += (performance.now() - t0 - costAvg) * 0.1;
+  if (++frames % 40 === 0) {
+    if (costAvg > 12 && quality > 0.4) quality = Math.max(0.4, quality * 0.8);
+    else if (costAvg < 5 && quality < 1) quality = Math.min(1, quality * 1.15);
+  }
 }`
 },
 {
