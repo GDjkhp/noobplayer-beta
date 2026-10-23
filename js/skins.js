@@ -95,6 +95,33 @@ const SKIN_PRESETS = {
             accent:'#ffffff', accent2:'#b0b0b0' },
     opts: { radius: 6, noise: 0, glow: 0 },
   },
+  // Light counterparts of the presets above — each is that preset's full palette
+  // run through a dark-mode extension's invert + hue-rotate(180°) filter (so
+  // hues stay put and only light/dark flips). Same shape knobs as the original.
+  'Daybreak': {
+    vars: { bg:'#f8f8ff', surf:'#f1f1ff', surf2:'#ebebff', surf3:'#e5e5ff', brd:'#dfdffb', brd2:'#d5d5f8', text:'#1a1a2c', muted:'#a8a8ce', muted2:'#c0c0e6', accent:'#3172cc', accent2:'#7458c7', green:'#006e10', red:'#db5454', amber:'#793d00', pink:'#ce4c90' },
+    opts: {  },
+  },
+  'Sorbet': {
+    vars: { bg:'#f8e9ff', surf:'#f3dfff', surf2:'#f0d7ff', surf3:'#ecccff', brd:'#e7c9ff', brd2:'#dbb3ff', text:'#1f091f', muted:'#8c62b7', muted2:'#ad8dd3', accent:'#d244a1', accent2:'#0082b3', green:'#00781a', red:'#db5454', amber:'#793d00', pink:'#d244a1' },
+    opts: { radius: 32, glow: 14, noise: 5 },
+  },
+  'Greenhouse': {
+    vars: { bg:'#ffffff', surf:'#ecf6ec', surf2:'#deeede', surf3:'#d3e7d3', brd:'#b0dbb0', brd2:'#87c787', text:'#001f00', muted:'#3f8e3f', muted2:'#7ab67a', accent:'#008300', accent2:'#005600', green:'#006e10', red:'#db5454', amber:'#793d00', pink:'#ce4c90', fn:"'JetBrains Mono', monospace" },
+    opts: { radius: 32, noise: 1, glow: 8 },
+  },
+  'Inkwell': {
+    vars: { bg:'#110e07', surf:'#000000', surf2:'#0e0b05', surf3:'#1b150a', brd:'#2f281a', brd2:'#473e2b', text:'#dad7d2', muted:'#90887b', muted2:'#655d50', accent:'#e6875f', accent2:'#a29277', green:'#67a56b', red:'#ff9292', amber:'#793d00', pink:'#ce4c90', fn:"Georgia, 'Times New Roman', serif" },
+    opts: { radius: 4, noise: 0, glow: 0 },
+  },
+  'Blush': {
+    vars: { bg:'#fdf3f1', surf:'#faece8', surf2:'#f7e5e2', surf3:'#f2dcd6', brd:'#efd5cf', brd2:'#ecc0b4', text:'#260f04', muted:'#af7c68', muted2:'#d1aa9c', accent:'#f15d27', accent2:'#873b00', green:'#2d6500', red:'#db5454', amber:'#793d00', pink:'#ce4c90' },
+    opts: { radius: 2, glow: 18, noise: 4 },
+  },
+  'Chalk': {
+    vars: { bg:'#f5f5f5', surf:'#ededed', surf2:'#e7e7e7', surf3:'#dfdfdf', brd:'#d9d9d9', brd2:'#c7c7c7', text:'#0f0f0f', muted:'#757575', muted2:'#a5a5a5', accent:'#000000', accent2:'#4f4f4f', green:'#006e10', red:'#db5454', amber:'#793d00', pink:'#ce4c90' },
+    opts: { radius: 6, noise: 0, glow: 0 },
+  },
 };
 
 const LS_ACTIVE = 'nl_skin_active';
