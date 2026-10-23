@@ -311,6 +311,8 @@ const MARGINS = [0, 2, 2, 3, 3, 3, 5, 5];
 let hist = [];
 let parts = [];
 let mult = 0;
+let energy = 0;                 // smoothed overall loudness, 0-1
+let shown = null;               // smoothed spectrum actually drawn
 
 function setup(ctx, v) {
   hist = [];
@@ -362,6 +364,13 @@ function floorOf(f) {
   for (let i = 1; i < n; i++) s += f[i];
   return Math.min(0.85, 0.12 + 0.75 * (s / n / 255));
 }
+// overall loudness from the waveform (128 = silence): ~0.05 for a quiet passage, 0.5+ for a loud drop
+function loudness(v) {
+  const w = v.wave, n = w.length;
+  let sum = 0;
+  for (let i = 0; i < n; i++) { const d = (w[i] - 128) / 128; sum += d * d; }
+  return Math.min(1, Math.sqrt(sum / n) * 3.2);
+}
 function draw(ctx, v) {
   const W = v.w, H = v.h, m = Math.min(W, H);
   const cx = W / 2, cy = H / 2;
@@ -382,13 +391,24 @@ function draw(ctx, v) {
     const mx = Math.max(at(p), at(p * 1.25));
     cur[i] = v.paused ? 0 : Math.min(1, Math.pow(Math.max(0, (mx / 255 - fl) / (1 - fl)), 1.8) * 0.95);
   }
+  // The contrast floor above only shows shape; how big the picture gets has to
+  // follow how loud the music really is, or a calm song looks as wild as a drop.
+  const e = v.paused ? 0 : loudness(v);
+  energy += (e - energy) * (e > energy ? 0.25 : 0.06);
+  const gain = Math.pow(energy, 1.1) * 1.15;
+  if (!shown) shown = new Array(BINS).fill(0);
+  for (let i = 0; i < BINS; i++) {
+    const tgt = Math.min(1, cur[i] * gain);
+    shown[i] += (tgt - shown[i]) * (tgt > shown[i] ? 0.4 : 0.12);   // rise quickly, settle slowly
+    cur[i] = shown[i];
+  }
   hist.push(cur);
   if (hist.length > 8) hist.shift();
 
   // beat multiplier: quick up, slow down
   const lo = Math.max(0, (0.7 * v.bass + 0.3 * v.mid - fl) / (1 - fl));
-  const target = v.paused ? 0 : Math.min(1, Math.pow(lo, 0.8) * 1.2);
-  mult += (target - mult) * (target > mult ? 0.5 : 0.12);
+  const target = v.paused ? 0 : Math.min(1, Math.pow(lo, 0.9) * Math.pow(energy, 0.9) * 1.3);
+  mult += (target - mult) * (target > mult ? 0.3 : 0.08);
 
   const rad = m * (0.15 + 0.035 * mult);
   const maxH = m * 0.24;
