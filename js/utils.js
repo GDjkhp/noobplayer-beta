@@ -85,14 +85,48 @@ function srcBadge(key, cls = '') {
   return `<img class="src-ico ${cls}" src="${esc(ic.url)}" alt="" title="${esc(ic.name)}" loading="lazy" decoding="async" onerror="this.remove()">`;
 }
 
+// Shows a toast and returns a handle: { update(msg, type, dur), dismiss() }.
+// dur <= 0 keeps it up until it is updated or dismissed (see toast.loading).
 function toast(msg, type = 'info', dur = 3500) {
-  const cls = type === 'error' ? 'err' : type === 'success' ? 'ok' : type === 'warn' ? 'warn' : '';
-  const icon = type === 'error' ? 'error' : type === 'success' ? 'check_circle' : type === 'warn' ? 'warning' : 'info';
   const el = document.createElement('div');
-  el.className = `toast ${cls}`;
-  el.innerHTML = `<span class="material-symbols-outlined toast-ico">${icon}</span><span class="toast-msg">${esc(msg)}</span>`;
+  let timer = 0;
+  const paint = (m, t, d) => {
+    const cls = t === 'error' ? 'err' : t === 'success' ? 'ok' : t === 'warn' ? 'warn' : t === 'loading' ? 'busy' : '';
+    const icon = t === 'error' ? 'error' : t === 'success' ? 'check_circle' : t === 'warn' ? 'warning' : 'info';
+    el.className = `toast ${cls}`;
+    el.innerHTML = (t === 'loading' ? `<span class="toast-spin"></span>` : `<span class="material-symbols-outlined toast-ico">${icon}</span>`)
+      + `<span class="toast-msg">${esc(m)}</span>`;
+    clearTimeout(timer);
+    if (d > 0) timer = setTimeout(() => el.remove(), d);
+  };
+  paint(msg, type, dur);
   document.getElementById('toasts').appendChild(el);
-  setTimeout(() => el.remove(), dur);
+  return {
+    update(m, t = 'info', d = 3500) { if (el.isConnected) paint(m, t, d); else { const h = toast(m, t, d); this.update = h.update; this.dismiss = h.dismiss; } },
+    dismiss() { clearTimeout(timer); el.remove(); },
+  };
+}
+
+// An operation toast: spinner + message that stays until the work settles.
+//   const t = toast.loading('Fetching…');
+//   t.update('Done', 'success') | t.update(err.message, 'error') | t.dismiss()
+toast.loading = (msg) => toast(msg, 'loading', 0);
+
+// Runs fn() behind a loading toast, then swaps it for the outcome.
+// okMsg/errMsg may be strings or (result|error) => string; a falsy okMsg just
+// dismisses the toast so the caller can show its own result.
+async function withToast(loadingMsg, fn, okMsg, errMsg) {
+  const t = toast.loading(loadingMsg);
+  try {
+    const r = await fn();
+    const m = typeof okMsg === 'function' ? okMsg(r) : okMsg;
+    if (m) t.update(m, 'success', 2200); else t.dismiss();
+    return r;
+  } catch (e) {
+    const m = typeof errMsg === 'function' ? errMsg(e) : (errMsg || `Error: ${e.message}`);
+    t.update(m, 'error', 5000);
+    throw e;
+  }
 }
 
 function uid() {

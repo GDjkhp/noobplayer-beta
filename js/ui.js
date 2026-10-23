@@ -258,6 +258,7 @@ const UI = {
       document.getElementById('lyr-body').innerHTML =
         `<div class="empty"><span class="material-symbols-outlined">lyrics</span><p>Play a track and fetch lyrics</p></div>`;
       document.getElementById('lyr-src-lbl').textContent = 'No lyrics loaded';
+      this._lyrBadge();
       this._lyrBusy(false);
     }
     this.updatePlayPauseIcons(); this.updateEQ(); this.applyLockState();
@@ -1076,7 +1077,21 @@ const UI = {
     this._lyrCache.delete(enc);
     S.lyricsFetchedFor = null;
     S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
-    this.fetchLyrics();
+    this.fetchLyrics({ notify: true });
+  },
+
+  // Synced / Unsynced pill next to the Fetch Lyrics button. Not rendered at
+  // all unless lyrics are actually loaded for the current track.
+  _lyrBadge() {
+    const b = document.getElementById('lyr-badge');
+    if (!b) return;
+    const kind = S.lyrics && S.lyrics.length ? S.lyricsType : null;
+    if (kind !== 'synced' && kind !== 'plain') { b.hidden = true; b.className = ''; b.innerHTML = ''; return; }
+    const synced = kind === 'synced';
+    b.hidden = false;
+    b.className = synced ? 'synced' : '';
+    b.title = synced ? 'These lyrics are timed to the song' : 'These lyrics have no timing, so they will not follow the song';
+    b.innerHTML = `<span class="material-symbols-outlined">${synced ? 'sync' : 'sync_disabled'}</span>${synced ? 'Synced' : 'Not synced'}`;
   },
 
   // The button is disabled while a fetch is running (and with no track).
@@ -1085,7 +1100,7 @@ const UI = {
     if (b) b.disabled = busy || !S.current;
   },
 
-  async fetchLyrics() {
+  async fetchLyrics(opts = {}) {
     if (!S.current) { this._lyrBusy(false); return; }
     // Already fetched (or currently fetching) lyrics for this exact track —
     // nothing to do. This is what makes it safe to call fetchLyrics() from
@@ -1095,13 +1110,23 @@ const UI = {
     if (S.lyricsFetchedFor === enc) { this.preloadNextLyrics(); return; }
     S.lyricsFetchedFor = enc;
     this._lyrBusy(true);
-    this._lyrHoldUntil = 0;
+    this._lyrHold(false);
+    this._lyrBadge();
+    // Only a manual "Fetch Lyrics" gets an operation toast; the automatic
+    // fetch on every track change stays quiet.
+    const note = opts.notify ? toast.loading('Fetching lyrics…') : null;
     document.getElementById('lyr-src-lbl').textContent = 'Loading…';
     document.getElementById('lyr-body').innerHTML = `<div class="empty"><div class="dots"><span></span><span></span><span></span></div><p>Fetching lyrics…</p></div>`;
     const stale = () => !S.current || S.current.encoded !== enc;   // track changed while we waited
     try {
-      return await this._fetchLyricsInto(enc, stale);
+      await this._fetchLyricsInto(enc, stale);
+      if (note) {
+        if (S.lyrics && S.lyrics.length) note.update(`Lyrics loaded · ${S.lyricsType === 'synced' ? 'synced' : 'not synced'}`, 'success', 2200);
+        else if (document.getElementById('lyr-src-lbl').textContent === 'Error') note.update('Could not fetch lyrics', 'error', 4000);
+        else note.update('No lyrics found for this track', 'warn', 3000);
+      }
     } finally {
+      if (note && stale()) note.dismiss();
       if (!stale()) this._lyrBusy(false);
     }
   },
@@ -1125,7 +1150,7 @@ const UI = {
           S.lyrics.map((l, i) => `<div class="ll" data-i="${i}" data-t="${l.t}">${esc(l.txt) || '<span class="material-symbols-outlined ll-note">music_note</span>'}</div>`).join('');
         if (d.synced) {
           document.querySelectorAll('.ll').forEach(el => {
-            el.addEventListener('click', () => Engine.seekTo(parseFloat(el.dataset.t)));
+            el.addEventListener('click', () => { this._lyrHold(false); Engine.seekTo(parseFloat(el.dataset.t)); });
           });
         }
       } else {
@@ -1138,26 +1163,39 @@ const UI = {
       document.getElementById('lyr-src-lbl').textContent = `Error`;
       document.getElementById('lyr-body').innerHTML = `<div class="empty"><p>${esc(e.message)}</p></div>`;
     }
+    if (!stale()) this._lyrBadge();
     // Current track's lyrics are settled — now warm up the next one.
     this.preloadNextLyrics();
   },
 
   // Auto-scroll yields to the user. Any manual scroll gesture (wheel, touch
-  // drag, scroll keys, grabbing a scrollbar) holds auto-scroll off for
-  // LYR_HOLD_MS after the LAST gesture; the active line is still
-  // highlighted meanwhile, and following resumes at the next line change
-  // once the hold lapses. We listen for the input events themselves, NOT
-  // 'scroll' — a scroll event can't tell our own smooth scrollIntoView from
-  // the user's. Window-level because the page (not just #lyr-body) is what
-  // scrolls in the stacked layouts.
-  LYR_HOLD_MS: 5000,
-  _lyrHoldUntil: 0,
+  // drag, scroll keys, grabbing a scrollbar) over the Lyrics tab stops
+  // auto-scroll and shows a Sync button (like Spotify's); the active line is
+  // still highlighted meanwhile. Following resumes only when the user presses
+  // Sync (or the track changes) — there is no timer. We listen for the input
+  // events themselves, NOT 'scroll' — a scroll event can't tell our own smooth
+  // scrollIntoView from the user's. Window-level because the page (not just
+  // #lyr-body) is what scrolls in the stacked layouts.
+  _lyrHeld: false,
   _lyrBound: false,
+
+  _lyrHold(on) {
+    this._lyrHeld = on;
+    const b = document.getElementById('btn-lyr-sync');
+    if (b) b.hidden = !(on && S.lyricsType === 'synced' && S.lyrics);
+  },
+
+  _lyrResume() {
+    this._lyrHold(false);
+    const active = document.querySelector('.ll.active');
+    if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  },
 
   _lyrBindUserScroll() {
     if (this._lyrBound) return;
     this._lyrBound = true;
-    const hold = () => { this._lyrHoldUntil = performance.now() + this.LYR_HOLD_MS; };
+    const pane = document.getElementById('pane-lyrics');
+    const hold = () => { if (pane && pane.classList.contains('on') && S.lyricsType === 'synced') this._lyrHold(true); };
     const opt = { passive: true, capture: true };
     window.addEventListener('wheel', hold, opt);
     window.addEventListener('touchmove', hold, opt);
@@ -1172,6 +1210,7 @@ const UI = {
       if (t === document.documentElement) hold();
       else if (t.id === 'lyr-body' && e.offsetX >= t.clientWidth) hold();
     }, opt);
+    document.getElementById('btn-lyr-sync').addEventListener('click', () => this._lyrResume());
   },
 
   syncLyrics() {
@@ -1185,7 +1224,7 @@ const UI = {
     document.querySelectorAll('.ll').forEach((el, i) => el.classList.toggle('active', i === idx));
     if (idx >= 0) {
       const active = document.querySelector(`.ll[data-i="${idx}"]`);
-      if (active && performance.now() >= this._lyrHoldUntil) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      if (active && !this._lyrHeld) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
   },
 

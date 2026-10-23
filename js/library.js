@@ -302,6 +302,7 @@ const Library = {
     btn.disabled = true;
     const prev = btn.textContent; btn.textContent = 'Adding…';
     let added = 0, failed = 0, dup = 0;
+    const op = toast.loading(links.length === 1 ? 'Fetching link…' : `Fetching ${links.length} links…`);
     try {
       const settled = await Promise.allSettled(links.map(l => Backend.loadtracks(l)));
       settled.forEach((r, i) => {
@@ -309,9 +310,12 @@ const Library = {
         if (!d || d.loadType === 'empty' || d.loadType === 'error') { failed++; return; }
         this._addResolved(d, links[i]) ? added++ : dup++;
       });
+    } catch (e) {
+      op.update(`Add failed: ${e.message}`, 'error', 5000); return;
     } finally { btn.disabled = false; btn.textContent = prev; }
 
-    if (added) { input.value = ''; toast(`Saved ${added} item${added !== 1 ? 's' : ''} to your library`, 'success', 2200); }
+    if (added) { input.value = ''; op.update(`Saved ${added} item${added !== 1 ? 's' : ''} to your library`, 'success', 2200); }
+    else op.dismiss();
     if (dup) toast(`${dup} already in your library`, 'info', 2000);
     if (failed) toast(`${failed} link${failed !== 1 ? 's' : ''} could not be loaded`, 'warn');
   },
@@ -319,6 +323,7 @@ const Library = {
   async refresh(id) {
     const item = this.items.find(i => i.id === id);
     if (!item || !item.source) return;
+    const op = toast.loading(`Refreshing ${item.name}…`);
     try {
       const d = await Backend.loadtracks(item.source);
       let tracks = [];
@@ -326,7 +331,7 @@ const Library = {
       else if (d && d.loadType === 'search') tracks = d.data || [];
       else if (d && d.loadType === 'track') tracks = [d.data];
       tracks = this._uniq(tracks);
-      if (!tracks.length) { toast('Could not refresh — nothing came back', 'warn'); return; }
+      if (!tracks.length) { op.update('Could not refresh — nothing came back', 'warn'); return; }
       const delta = tracks.length - item.tracks.length;
       item.tracks = tracks.map(t => this._slim(t));
       // Also re-read the playlist's own name / author / thumbnail — this is what
@@ -339,8 +344,8 @@ const Library = {
       }
       this.render();
       this._persist(item);
-      toast(`Refreshed ${item.name} (${delta >= 0 ? '+' : ''}${delta})`, 'success', 2200);
-    } catch (e) { toast(`Refresh failed: ${e.message}`, 'error'); }
+      op.update(`Refreshed ${item.name} (${delta >= 0 ? '+' : ''}${delta})`, 'success', 2200);
+    } catch (e) { op.update(`Refresh failed: ${e.message}`, 'error', 5000); }
   },
 
   remove(id) {

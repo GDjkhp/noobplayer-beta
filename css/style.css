@@ -458,6 +458,14 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 
 #lyr-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
 #lyr-src-lbl { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }
+#lyr-badge { display: inline-flex; align-items: center; gap: 4px; font-family: var(--fm); font-size: 10px; line-height: 1; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--brd2); color: var(--muted); white-space: nowrap; }
+#lyr-badge .material-symbols-outlined { font-size: 12px; }
+#lyr-badge.synced { color: var(--green); border-color: var(--green); }
+#lyr-badge[hidden], #btn-lyr-sync[hidden] { display: none; }
+#pane-lyrics { position: relative; }
+#btn-lyr-sync { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--brd2); background: var(--accent); color: var(--bg, #000); font-family: var(--fm); font-size: 12px; font-weight: 700; cursor: pointer; box-shadow: var(--ev3); z-index: 5; animation: lyr-sync-in .2s ease; }
+@keyframes lyr-sync-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+#btn-lyr-sync .material-symbols-outlined { font-size: 16px; }
 #lyr-body { flex: 1; overflow-y: auto; padding: 20px 24px; scroll-behavior: smooth; }
 .ll { font-size: 18px; font-weight: 600; line-height: 1.7; color: var(--muted); border-radius: var(--sh-xs); transition: color .3s, font-size .2s; cursor: pointer; padding: 2px 6px; margin: 0 -6px; }
 .ll-note { font-size: 16px !important; opacity: .5; vertical-align: -2px; }
@@ -590,6 +598,8 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 .toast.ok .toast-ico { color: var(--green); }
 .toast.warn{ border-left-color: var(--amber); }
 .toast.warn .toast-ico { color: var(--amber); }
+.toast.busy { border-left-color: var(--accent); }
+.toast-spin { flex-shrink: 0; width: 12px; height: 12px; margin: 2px 2px 0; border: 2px solid var(--brd2); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes tin { from{transform:translateX(16px);opacity:0} to{transform:translateX(0);opacity:1} }
 
 /* MEANING MODAL — M3 Dialog: extra-large shape, high elevation. */

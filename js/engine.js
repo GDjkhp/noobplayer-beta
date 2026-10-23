@@ -661,11 +661,16 @@ const Engine = {
   // toast (the caller shows its own notification).
   async addToQueue(track, opts = {}) {
     if (S.mode === 'server') {
+      const op = opts.silent ? null : toast.loading('Adding to queue…');
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/add', { clientId: S.lobby.clientId, track });
         Lobby.applyControlResult(r);
+        if (op) op.update(`+ ${track.info.title}`, 'success', 2000);
         return true;
-      } catch (e) { toast(`Error: ${e.message}`, 'error'); return false; }
+      } catch (e) {
+        if (op) op.update(`Error: ${e.message}`, 'error', 5000); else toast(`Error: ${e.message}`, 'error');
+        return false;
+      }
     }
     track.requester = track.requester || this._selfRequester();
     S.queue.push(track);
@@ -696,10 +701,12 @@ const Engine = {
       }
     }
     if (S.mode === 'server') {
+      const op = toast.loading(`Adding ${tracks.length} track${tracks.length !== 1 ? 's' : ''} to queue…`);
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/add_bulk', { clientId: S.lobby.clientId, tracks });
         Lobby.applyControlResult(r);
-      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+        op.update(`Added ${tracks.length} track${tracks.length !== 1 ? 's' : ''} to queue`, 'success', 2000);
+      } catch (e) { op.update(`Error: ${e.message}`, 'error', 5000); }
       return;
     }
     // Standalone: one push + one render (+ one preload check) for the whole
@@ -788,19 +795,19 @@ const Engine = {
     if (S.mode === 'server') {
       if (!UI.canControl()) { toast('Only the host or a DJ can run Smart Shuffle', 'warn'); return; }
       if (!S.current) { toast('Play something first — recommendations come from the current track', 'warn'); return; }
-      toast('Finding tracks like this one…', 'info', 2000);
+      const op = toast.loading('Finding tracks like this one…');
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/smart', { clientId: S.lobby.clientId, count });
         Lobby.applyControlResult(r);
-        toast(r.added ? `Smart Shuffle · +${r.added} tracks` : 'No new recommendations found', r.added ? 'success' : 'warn', 2500);
-      } catch (e) { toast(`Error: ${e.message}`, 'error'); }
+        op.update(r.added ? `Smart Shuffle · +${r.added} tracks` : 'No new recommendations found', r.added ? 'success' : 'warn', 2500);
+      } catch (e) { op.update(`Error: ${e.message}`, 'error', 5000); }
       return;
     }
 
     if (!S.current) { toast('Play something first — recommendations come from the current track', 'warn'); return; }
     if (S.autoQueue.length < count) {
-      toast('Finding tracks like this one…', 'info', 2000);
-      await this._populateRecommendations();
+      const op = toast.loading('Finding tracks like this one…');
+      try { await this._populateRecommendations(); } finally { op.dismiss(); }
     }
 
     // Shuffle the pool BEFORE taking from it, so the picks aren't just the
