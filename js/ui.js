@@ -1118,6 +1118,7 @@ const UI = {
     this._lyrBusy(true);
     this._lyrHold(false);
     this._lyrBadge();
+    this._lyrResetScroll();
     // Only a manual "Fetch Lyrics" gets an operation toast; the automatic
     // fetch on every track change stays quiet.
     const note = opts.notify ? toast.loading('Fetching lyrics…') : null;
@@ -1244,6 +1245,15 @@ const UI = {
       // Only ever scroll UP to the pane's first row; never push down into it.
       if (delta < -1) window.scrollBy({ top: delta, behavior: 'smooth' });
     });
+  },
+
+  // New track (ended, next, previous, picked from the queue, overridden):
+  // start the lyrics from the top again instead of wherever the last song
+  // had scrolled to.
+  _lyrResetScroll() {
+    const body = document.getElementById('lyr-body');
+    if (body) body.scrollTo({ top: 0, behavior: 'instant' });
+    if (this._lyrTabOpen()) this._scrollTabToStart('lyrics');
   },
 
   _lyrTabOpen() {
