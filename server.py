@@ -1889,6 +1889,23 @@ def stamp_requester(track, participant):
     return track
 
 
+def relabel_requester(lobby, uid, name):
+    """A participant renamed themselves: every track they already added
+    (current, queued, played, recommendation pool) carries the old name in
+    its `requester` stamp, so rewrite it. Matches on the persistent user id,
+    so it also covers tracks added in an earlier join. Returns True if
+    anything changed."""
+    changed = False
+    pools = [lobby.queue, lobby.history, lobby.auto_queue]
+    tracks = [t for pool in pools for t in pool] + [lobby.current_track]
+    for t in tracks:
+        req = t.get("requester") if isinstance(t, dict) else None
+        if isinstance(req, dict) and req.get("id") == uid and req.get("name") != name:
+            req["name"] = name
+            changed = True
+    return changed
+
+
 def requester_key(track):
     req = (track or {}).get("requester") or {}
     return req.get("id") or "__unknown__"
@@ -3711,7 +3728,10 @@ async def lobby_rename(code):
     if new_name and new_name != p.name:
         old_name = p.name
         p.name = new_name
+        relabeled = relabel_requester(lobby, p.uid, new_name)
         await broadcast(lobby, "participants", lobby.participant_list())
+        if relabeled:
+            await broadcast(lobby, "state", lobby.public_state())
         await broadcast(lobby, "chat", {
             "system": True,
             "text": f"{old_name} is now known as {new_name}",
