@@ -663,6 +663,14 @@ const UI = {
       row._tEl.innerHTML = hl(t.info.title, q);
       row._auEl.innerHTML = hl(t.info.author, q);
     }
+    // Rows are reused across renders (keyed by track + requester id), so a
+    // requester who renamed themselves needs their chip refreshed in place.
+    const rq = t.requester;
+    if (row._chip && rq && rq.id !== '__auto__' && row._chipName !== rq.name) {
+      row._chipName = rq.name;
+      row._chip.textContent = rq.name;
+      row._chip.title = `Added by ${rq.name}`;
+    }
     const last = i === count - 1;
     const sig = `${i}|${last ? 1 : 0}|${locked ? 1 : 0}|${me || ''}`;
     if (row._sig === sig) return;
