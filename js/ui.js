@@ -957,7 +957,7 @@ const UI = {
       if (data.loadType === 'playlist') {
         tracks = data.data.tracks;
         plMeta = Library.playlistMeta(data, id);
-        banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
+        banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px">
           ${srcBadge(srcFromUrl(id) || trackSrc(tracks[0]), 'inline')}<span style="color:var(--text);font-weight:600">${esc(data.data.info?.name || 'Playlist')}</span>
           <span>${tracks.length} tracks</span>
           <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button><button class="add-btn" id="btn-shuf-all" style="opacity:1" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span>Shuffle Add</button>
@@ -974,7 +974,7 @@ const UI = {
       if (!tracks.length) { res.innerHTML = `<div class="empty"><p>No results</p></div>`; return; }
 
       if (!banner && tracks.length > 1) {
-        banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px">
+        banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px">
           <span>${tracks.length} results</span>
           <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button><button class="add-btn" id="btn-shuf-all" style="opacity:1" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span>Shuffle Add</button>
           <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every result"><span class="material-symbols-outlined">download</span>Download All</button>
