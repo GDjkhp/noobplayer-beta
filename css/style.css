@@ -52,16 +52,16 @@ body::after {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.025'/%3E%3C/svg%3E");
 }
 ::-webkit-scrollbar { width: 14px; height: 14px; }
-/* Track is inset from both ends by a fraction of the skin radius so the
-   thumb never runs under a rounded corner of its scroll container. */
-::-webkit-scrollbar-track { background: transparent; margin: min(calc(var(--sh-lg) * .6), 28px); }
-::-webkit-scrollbar-thumb {
-  background: var(--brd2); border-radius: var(--sh-full);
-  border: 4px solid transparent; background-clip: padding-box;
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--brd2); border-radius: var(--sh-full); }
+::-webkit-scrollbar-thumb:hover { background: var(--muted2); }
+::-webkit-scrollbar-corner { background: var(--bg); }
+/* Only boxes that are themselves rounded AND scroll internally need the
+   track pulled in from the ends, otherwise the rounded border clips it. The
+   page and the tab strips keep the plain full-length thick scrollbar. */
+textarea.hi::-webkit-scrollbar-track, #meaning-box::-webkit-scrollbar-track {
+  background: transparent; margin: min(calc(var(--sh-lg) * .6), 28px);
 }
-::-webkit-scrollbar-thumb:hover { background: var(--muted2); background-clip: padding-box; }
-::-webkit-scrollbar-corner { background: transparent; }
-::-webkit-resizer { background: transparent; }
 
 /* Multi-line fields: padding grows with the corner radius so text and the
    caret never touch the curve. */
@@ -398,7 +398,7 @@ textarea.hi {
 .add-btn.pnow:hover { background: var(--green); border-color: var(--green); color: #05050f; }
 .add-btn:disabled { opacity: .3; cursor: not-allowed; }
 
-#q-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
+#q-hdr { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0; }
 #q-info { font-family: var(--fm); font-size: 10px; color: var(--muted); flex: 1; }
 /* Server password window (see Auth.prompt in api.js) */
 .auth-overlay { z-index: 2000; background: rgba(0,0,0,.72); }
@@ -696,10 +696,10 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 /* ═══════════════ Skins tab ═══════════════ */
 #pane-skins { overflow: hidden; }
 #skins-hdr {
-  display: flex; align-items: center; gap: 8px; padding: 0 12px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 12px;
   border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0;
 }
-.skins-tabs { display: flex; gap: 4px; flex: 1; }
+.skins-tabs { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
 .skin-tab {
   display: inline-flex; align-items: center; gap: 6px;
   background: none; border: none; border-bottom: 3px solid transparent;
@@ -753,7 +753,7 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 .skin-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
 .skin-actions .overlay-btn { margin-top: 0; }
 
-.skin-browse-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.skin-browse-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
 .skin-sort { display: flex; gap: 4px; flex: 1; }
 
 .skin-list { display: flex; flex-direction: column; gap: 6px; }
@@ -784,10 +784,10 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 /* ═══════════════ Visualizer tab ═══════════════ */
 #pane-viz { overflow: hidden; }
 #viz-hdr {
-  display: flex; align-items: center; gap: 8px; padding: 0 12px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 12px;
   border-bottom: 1px solid var(--brd); background: var(--surf); flex-shrink: 0;
 }
-.viz-tabs { display: flex; gap: 4px; }
+.viz-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
 .viz-tab {
   display: inline-flex; align-items: center; gap: 6px;
   background: none; border: none; border-bottom: 3px solid transparent;

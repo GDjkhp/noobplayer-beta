@@ -921,7 +921,7 @@ const UI = {
 
     try {
       let data, tracks = [], banner = '';
-      const bannerCss = 'padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:10px';
+      const bannerCss = 'padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px';
       const actions = `
           <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button><button class="add-btn" id="btn-shuf-all" style="opacity:1" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span>Shuffle Add</button>
           <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every track listed"><span class="material-symbols-outlined">download</span>Download All</button>`;
@@ -1188,7 +1188,7 @@ const UI = {
   _lyrHold(on) {
     this._lyrHeld = on;
     const b = document.getElementById('btn-lyr-sync');
-    if (b) { b.hidden = !(on && S.lyricsType === 'synced' && S.lyrics); if (!b.hidden) this._lyrPlaceSync(); }
+    if (b) { b.hidden = !(on && S.lyricsType === 'synced' && S.lyrics && this._lyrTabOpen()); if (!b.hidden) this._lyrPlaceSync(); }
   },
 
   // The button is fixed to the bottom of the VIEWPORT (the page itself scrolls
@@ -1225,6 +1225,21 @@ const UI = {
     if (Math.abs(delta) < 2) return;
     if (own) body.scrollBy({ top: delta, behavior: 'smooth' });
     else window.scrollBy({ top: delta, behavior: 'smooth' });
+  },
+
+  _lyrTabOpen() {
+    const pane = document.getElementById('pane-lyrics');
+    return !!(pane && pane.classList.contains('on'));
+  },
+
+  // Called when the Lyrics tab is opened: lines kept highlighting while it
+  // was hidden but nothing scrolled, so catch up now.
+  _lyrCatchUp() {
+    if (this._lyrHeld || S.lyricsType !== 'synced' || !S.lyrics) return;
+    requestAnimationFrame(() => {
+      const active = document.querySelector('.ll.active');
+      if (active && this._lyrTabOpen()) this._lyrCenter(active);
+    });
   },
 
   _lyrResume() {
@@ -1267,7 +1282,7 @@ const UI = {
     document.querySelectorAll('.ll').forEach((el, i) => el.classList.toggle('active', i === idx));
     if (idx >= 0) {
       const active = document.querySelector(`.ll[data-i="${idx}"]`);
-      if (active && !this._lyrHeld) this._lyrCenter(active);
+      if (active && !this._lyrHeld && this._lyrTabOpen()) this._lyrCenter(active);
     }
   },
 
@@ -1320,6 +1335,10 @@ const UI = {
     S.activeTab = name;
     document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
     document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === 'pane-' + name));
+    // The floating Sync button belongs to the Lyrics tab only.
+    const sb = document.getElementById('btn-lyr-sync');
+    if (sb) sb.hidden = !(name === 'lyrics' && this._lyrHeld && S.lyricsType === 'synced' && S.lyrics);
+    if (name === 'lyrics' && prev !== name) this._lyrCatchUp();
   },
 
   /* ═══════════════════ Chat: participant list ═══════════════════
