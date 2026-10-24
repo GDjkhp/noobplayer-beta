@@ -1201,10 +1201,36 @@ const UI = {
     b.style.left = (r.left + r.width / 2) + 'px';
   },
 
+  // Centre a lyric line in the part of the lyrics that is actually visible.
+  // scrollIntoView({block:'center'}) centres in the whole viewport, but on
+  // narrow screens the sticky player panel + tab bar cover the top of it, so
+  // the "centred" line landed underneath them. Instead, measure the visible
+  // band (below the sticky tabs, above the viewport bottom, clipped to the
+  // lyrics box when it scrolls on its own) and scroll by the difference.
+  _lyrCenter(el) {
+    const body = document.getElementById('lyr-body');
+    if (!el || !body) return;
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    const tabs = document.getElementById('tabs');
+    let top = 0, bottom = vh;
+    if (tabs) top = Math.max(0, tabs.getBoundingClientRect().bottom);
+    const own = body.scrollHeight > body.clientHeight + 1;
+    if (own) {
+      const r = body.getBoundingClientRect();
+      top = Math.max(top, r.top); bottom = Math.min(bottom, r.bottom);
+    }
+    if (bottom - top < 40) { bottom = vh; top = Math.min(top, vh - 40); }
+    const er = el.getBoundingClientRect();
+    const delta = (er.top + er.height / 2) - (top + (bottom - top) / 2);
+    if (Math.abs(delta) < 2) return;
+    if (own) body.scrollBy({ top: delta, behavior: 'smooth' });
+    else window.scrollBy({ top: delta, behavior: 'smooth' });
+  },
+
   _lyrResume() {
     this._lyrHold(false);
     const active = document.querySelector('.ll.active');
-    if (active) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (active) this._lyrCenter(active);
   },
 
   _lyrBindUserScroll() {
@@ -1241,7 +1267,7 @@ const UI = {
     document.querySelectorAll('.ll').forEach((el, i) => el.classList.toggle('active', i === idx));
     if (idx >= 0) {
       const active = document.querySelector(`.ll[data-i="${idx}"]`);
-      if (active && !this._lyrHeld) active.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      if (active && !this._lyrHeld) this._lyrCenter(active);
     }
   },
 
