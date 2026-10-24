@@ -1227,6 +1227,25 @@ const UI = {
     else window.scrollBy({ top: delta, behavior: 'smooth' });
   },
 
+  // After switching tabs, glide back to the start of the new pane: the page
+  // itself (it scrolls in the stacked and side-by-side layouts, so a long
+  // list left you mid-way down the next tab) plus any list inside the pane
+  // that still remembers a scroll position.
+  _scrollTabToStart(name) {
+    requestAnimationFrame(() => {
+      const pane = document.getElementById('pane-' + name);
+      if (!pane || S.activeTab !== name) return;
+      pane.querySelectorAll('*').forEach(el => {
+        if (el.scrollTop > 0 && el.scrollHeight > el.clientHeight) el.scrollTo({ top: 0, behavior: 'smooth' });
+      });
+      const tabs = document.getElementById('tabs');
+      const stick = tabs ? Math.max(0, tabs.getBoundingClientRect().bottom) : 0;
+      const delta = pane.getBoundingClientRect().top - stick;
+      // Only ever scroll UP to the pane's first row; never push down into it.
+      if (delta < -1) window.scrollBy({ top: delta, behavior: 'smooth' });
+    });
+  },
+
   _lyrTabOpen() {
     const pane = document.getElementById('pane-lyrics');
     return !!(pane && pane.classList.contains('on'));
@@ -1338,7 +1357,11 @@ const UI = {
     // The floating Sync button belongs to the Lyrics tab only.
     const sb = document.getElementById('btn-lyr-sync');
     if (sb) sb.hidden = !(name === 'lyrics' && this._lyrHeld && S.lyricsType === 'synced' && S.lyrics);
-    if (name === 'lyrics' && prev !== name) this._lyrCatchUp();
+    if (prev !== name) {
+      // Synced lyrics follow the playing line instead of resetting to the top.
+      if (name === 'lyrics' && !this._lyrHeld && S.lyricsType === 'synced' && S.lyrics) this._lyrCatchUp();
+      else this._scrollTabToStart(name);
+    }
   },
 
   /* ═══════════════════ Chat: participant list ═══════════════════
