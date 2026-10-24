@@ -52,9 +52,23 @@ body::after {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.025'/%3E%3C/svg%3E");
 }
 ::-webkit-scrollbar { width: 14px; height: 14px; }
-::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--brd2); border-radius: var(--sh-full); }
-::-webkit-scrollbar-thumb:hover { background: var(--muted2); }
+/* Track is inset from both ends by a fraction of the skin radius so the
+   thumb never runs under a rounded corner of its scroll container. */
+::-webkit-scrollbar-track { background: transparent; margin: min(calc(var(--sh-lg) * .6), 28px); }
+::-webkit-scrollbar-thumb {
+  background: var(--brd2); border-radius: var(--sh-full);
+  border: 4px solid transparent; background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--muted2); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-resizer { background: transparent; }
+
+/* Multi-line fields: padding grows with the corner radius so text and the
+   caret never touch the curve. */
+textarea.hi {
+  padding: calc(10px + var(--sh-md) * .35) calc(14px + var(--sh-md) * .4);
+  line-height: 1.55;
+}
 
 /* ═══════════════ OVERLAYS (mode select / connect / lobby) ═══════════════ */
 .overlay {
