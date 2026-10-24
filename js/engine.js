@@ -45,7 +45,7 @@ const Engine = {
   /* ───────── low-level: actually fetch + play PCM locally ───────── */
   async _localPlay(track, positionMs = 0) {
     S.current = track;
-    S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
+    S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1; S.lyricsFetchedFor = null;
 
     UI.updatePlayerUI();
     UI.setBuffering(true);
@@ -402,7 +402,7 @@ const Engine = {
 
     const showNext = (boundary) => {
       S.current = next;
-      S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
+      S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1; S.lyricsFetchedFor = null;
       if (hardCut) S.player.cutOver(0); else S.player.markTrackBoundary(0, boundary);
       UI.updatePlayerUI();
       UI.renderQueue();
@@ -1017,7 +1017,7 @@ const Engine = {
     const trackChanged = !S.current || S.current.encoded !== state.currentTrack.encoded;
     S.lobby.relayGen = state.relayGen;  // diagnostic only now — see Debug tab; nothing client-side reacts to it changing
     if (trackChanged) {
-      S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
+      S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1; S.lyricsFetchedFor = null;
     }
     S.current = state.currentTrack;
 

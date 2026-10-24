@@ -1170,7 +1170,7 @@ const UI = {
       document.getElementById('lyr-src-lbl').textContent = `Error`;
       document.getElementById('lyr-body').innerHTML = `<div class="empty"><p>${esc(e.message)}</p></div>`;
     }
-    if (!stale()) this._lyrBadge();
+    if (!stale()) { this._lyrBadge(); this._lyrResetScroll(); }
     // Current track's lyrics are settled — now warm up the next one.
     this.preloadNextLyrics();
   },
@@ -1267,7 +1267,8 @@ const UI = {
     if (this._lyrHeld || S.lyricsType !== 'synced' || !S.lyrics) return;
     requestAnimationFrame(() => {
       const active = document.querySelector('.ll.active');
-      if (active && this._lyrTabOpen()) this._lyrCenter(active);
+      if (!this._lyrTabOpen()) return;
+      if (active) this._lyrCenter(active); else this._lyrResetScroll();
     });
   },
 
@@ -1309,7 +1310,10 @@ const UI = {
     if (idx === S._lyrLastIdx) return;
     S._lyrLastIdx = idx;
     document.querySelectorAll('.ll').forEach((el, i) => el.classList.toggle('active', i === idx));
-    if (idx >= 0) {
+    if (idx < 0) {
+      // Before the first line (new track / seeked back to the start): top.
+      if (!this._lyrHeld && this._lyrTabOpen()) this._lyrResetScroll();
+    } else {
       const active = document.querySelector(`.ll[data-i="${idx}"]`);
       if (active && !this._lyrHeld && this._lyrTabOpen()) this._lyrCenter(active);
     }
