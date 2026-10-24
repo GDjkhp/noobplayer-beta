@@ -630,8 +630,10 @@ const UI = {
         </div>
         <div class="qi-bs">
           <button class="qib" data-qa="play" title="Play now"><span class="material-symbols-outlined">play_arrow</span></button>
+          <button class="qib" data-qa="top" title="Move to top"><span class="material-symbols-outlined">keyboard_double_arrow_up</span></button>
           <button class="qib" data-qa="up" title="Move up"><span class="material-symbols-outlined">keyboard_arrow_up</span></button>
           <button class="qib" data-qa="dn" title="Move down"><span class="material-symbols-outlined">keyboard_arrow_down</span></button>
+          <button class="qib" data-qa="bot" title="Move to bottom"><span class="material-symbols-outlined">keyboard_double_arrow_down</span></button>
           <button class="qib" data-qa="link" title="Open track link" ${t.info.uri ? '' : 'disabled'}><span class="material-symbols-outlined">open_in_new</span></button>
           <button class="qib" data-qa="save" title="Save to library"><span class="material-symbols-outlined">bookmark_add</span></button>
           <button class="qib dl" data-qa="dl" title="Download"><span class="material-symbols-outlined">download</span></button>
@@ -674,7 +676,9 @@ const UI = {
     const b = row._btn;
     b.play.disabled = locked;
     b.up.disabled = locked || i === 0;
+    b.top.disabled = locked || i === 0;
     b.dn.disabled = locked || last;
+    b.bot.disabled = locked || last;
 
     // Anyone can pull a track they added themselves; only the host can pull
     // someone else's — same rule the server enforces on /queue/remove.
@@ -715,6 +719,8 @@ const UI = {
         Engine.playTrack(tr);
       } else if (a === 'up' && i > 0) { Engine.moveQueueItem(i, i - 1); }
       else if (a === 'dn' && i < S.queue.length - 1) { Engine.moveQueueItem(i, i + 1); }
+      else if (a === 'top' && i > 0) { Engine.moveQueueItem(i, 0); }
+      else if (a === 'bot' && i < S.queue.length - 1) { Engine.moveQueueItem(i, S.queue.length - 1); }
       else if (a === 'rm') Engine.removeFromQueue(i);
       else if (a === 'save') Library.addTrack(S.queue[i]);
       else if (a === 'dl') UI.openDownloadMenu(btn, S.queue[i]);
