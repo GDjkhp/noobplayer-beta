@@ -209,33 +209,30 @@ fn encode_opus_ogg(pcm: &[u8], bitrate: i32) -> Result<Vec<u8>, String> {
 }
 
 fn encode_mp3(pcm: &[u8], bitrate_kbps: u32) -> Result<Vec<u8>, String> {
-    use mp3lame_encoder::{Bitrate, Builder, FlushNoGap, InterleavedPcm, Quality};
-    let mut b = Builder::new().ok_or("lame init failed")?;
-    b.set_num_channels(PCM_CHANNELS as u8).map_err(|e| format!("{e:?}"))?;
-    b.set_sample_rate(PCM_RATE as u32).map_err(|e| format!("{e:?}"))?;
-    let br = match bitrate_kbps {
-        192 => Bitrate::Kbps192,
-        _ => Bitrate::Kbps192,
-    };
-    b.set_brate(br).map_err(|e| format!("{e:?}"))?;
-    b.set_quality(Quality::Best).map_err(|e| format!("{e:?}"))?;
-    let mut enc = b.build().map_err(|e| format!("{e:?}"))?;
+    use rusty_mp3::{Error, Mp3Encoder, Mp3EncoderConfig};
+    let mut enc = Mp3Encoder::new(Mp3EncoderConfig { bitrate_kbps, vbr_quality: None });
 
     let mut pcm = pcm.to_vec();
     let rem = pcm.len() % PCM_FRAME_BYTES;
     if rem != 0 {
         pcm.resize(pcm.len() + (PCM_FRAME_BYTES - rem), 0);
     }
-    let samples: Vec<i16> = pcm.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
     let mut out: Vec<u8> = Vec::new();
-    for chunk in samples.chunks(PCM_FRAME_SAMPLES * PCM_CHANNELS * 50) {
-        out.reserve(mp3lame_encoder::max_required_buffer_size(chunk.len() / 2));
-        let n = enc.encode(InterleavedPcm(chunk), out.spare_capacity_mut()).map_err(|e| format!("{e:?}"))?;
-        unsafe { out.set_len(out.len() + n) };
+    let drain = |enc: &mut Mp3Encoder, out: &mut Vec<u8>| -> Result<(), String> {
+        loop {
+            match enc.next_packet() {
+                Ok(p) => out.extend_from_slice(&p),
+                Err(Error::Again | Error::Eof) => return Ok(()),
+                Err(e) => return Err(format!("{e:?}")),
+            }
+        }
+    };
+    for chunk in pcm.chunks(PCM_FRAME_BYTES * 50) {
+        enc.push_pcm_s16le(chunk, PCM_CHANNELS as u16, PCM_RATE as u32).map_err(|e| format!("{e:?}"))?;
+        drain(&mut enc, &mut out)?;
     }
-    out.reserve(7200);
-    let n = enc.flush::<FlushNoGap>(out.spare_capacity_mut()).map_err(|e| format!("{e:?}"))?;
-    unsafe { out.set_len(out.len() + n) };
+    enc.finish();
+    drain(&mut enc, &mut out)?;
     Ok(out)
 }
 
@@ -296,4 +293,36 @@ pub async fn download_track(RawQuery(q): RawQuery) -> Response {
     h.insert(header::CONTENT_LENGTH, HeaderValue::from_str(&data.len().to_string()).unwrap());
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(spec.mime));
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mp3_roundtrip() {
+        let secs = 3;
+        let mut pcm = Vec::new();
+        for i in 0..(PCM_RATE as usize * secs) {
+            let v = ((i as f64 / PCM_RATE as f64 * 440.0 * std::f64::consts::TAU).sin() * 12000.0) as i16;
+            pcm.extend_from_slice(&v.to_le_bytes());
+            pcm.extend_from_slice(&v.to_le_bytes());
+        }
+        let mp3 = encode_mp3(&pcm, 192).unwrap();
+        // 192 kbps => ~24000 bytes/s
+        let expect = 24000 * secs;
+        assert!(mp3.len() > expect * 9 / 10 && mp3.len() < expect * 12 / 10, "len {}", mp3.len());
+        let mut d = rusty_mp3::Mp3Decoder::new();
+        d.push(&mp3);
+        d.flush();
+        let mut n = 0usize;
+        let mut peak = 0f32;
+        while let Ok(f) = d.next_frame() {
+            n += f.samples.len();
+            for s in &f.samples { peak = peak.max(s.abs()); }
+        }
+        println!("mp3 bytes {} decoded samples {} peak {}", mp3.len(), n, peak);
+        assert!(n >= PCM_RATE as usize * secs * 2);
+        assert!(peak > 0.3 && peak < 0.5);
+    }
 }

@@ -35,7 +35,7 @@ percent-encoding = "2"
 libc = "0.2"
 time = { version = "0.3", features = ["parsing", "formatting", "macros"] }
 unsafe-libopus = "0.2"
-mp3lame-encoder = "0.2"
+rusty_mp3 = "1"
 ndarray = "0.16"
 realfft = "3"
 rustfft = "6"
