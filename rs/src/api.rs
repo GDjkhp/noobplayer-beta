@@ -11,7 +11,6 @@ use axum::extract::{Path, RawQuery};
 use axum::response::Response;
 use parking_lot::Mutex;
 use rand::seq::SliceRandom;
-use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use crate::auth::{url_pairs, ClientIp};
@@ -1219,6 +1218,3 @@ pub async fn lobby_queue_move(Path(code): Path<String>, body: Bytes) -> Resp {
     let state = push_state(&lobby).await;
     jsonify(json!({"ok": true, "state": state, "fairSnapped": fair_snapped}))
 }
-
-#[allow(dead_code)]
-static _UNUSED: LazyLock<Regex> = LazyLock::new(|| Regex::new("").unwrap());

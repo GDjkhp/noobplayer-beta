@@ -21,7 +21,7 @@ use crate::config;
 use crate::nodelink;
 use crate::relay::Relay;
 use crate::sio;
-use crate::util::{now_ms, now_secs, str_or, trunc_chars, truthy, truthy_opt, TaskDone};
+use crate::util::{now_ms, now_secs, str_or, trunc_chars, truthy, TaskDone};
 
 // ───────────────────────── track helpers ─────────────────────────
 
@@ -788,6 +788,3 @@ pub fn client_id_of(data: &Map<String, Value>) -> Option<String> {
     data.get("clientId").and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
-pub fn truthy_field(data: &Map<String, Value>, key: &str) -> bool {
-    truthy_opt(data.get(key))
-}

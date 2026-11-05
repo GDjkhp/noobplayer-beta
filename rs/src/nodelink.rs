@@ -210,7 +210,6 @@ pub async fn nl_loadstream(body: Bytes) -> Response {
     enum St {
         Start(Value),
         Streaming(std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>),
-        Done,
     }
     let s = stream::unfold(St::Start(data), |st| async move {
         let mut st = st;
@@ -232,7 +231,6 @@ pub async fn nl_loadstream(body: Bytes) -> Response {
                     }
                     Some(Err(_)) | None => return None,
                 },
-                St::Done => return None,
             }
         }
     });

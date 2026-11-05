@@ -54,14 +54,6 @@ pub fn truthy_opt(v: Option<&Value>) -> bool {
     v.map(truthy).unwrap_or(false)
 }
 
-/// `bool(x)` where x came from `data.get(key, default)`.
-pub fn bool_of(v: Option<&Value>, default: bool) -> bool {
-    match v {
-        None => default,
-        Some(v) => truthy(v),
-    }
-}
-
 /// `s[:n]` on a Python str (slices by code point, not by byte).
 pub fn trunc_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()

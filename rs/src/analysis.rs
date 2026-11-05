@@ -1496,7 +1496,6 @@ fn merge_close(rs: &[Run]) -> Vec<Run> {
 }
 
 struct Sec {
-    a: i64,
     b: i64,
     bpm: f64,
     frames: Vec<usize>,
@@ -1584,7 +1583,7 @@ pub fn stage_sections(state: &BeatState, duration: f64) -> StageOut {
                 let core: Vec<usize> = fr.iter().cloned().filter(|&f| (f as i64) >= r.lo && (f as i64) < r.hi).collect();
                 let tt = frames_to_time(&refine_frames_f64(&onset, &core));
                 let (bpm, _) = bpm_from_beats(&tt, r.bpm);
-                Sec { a: r.lo, b: r.hi, bpm, frames: fr }
+                Sec { b: r.hi, bpm, frames: fr }
             })
             .collect()
     });

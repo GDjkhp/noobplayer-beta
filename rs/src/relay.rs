@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 
 use crate::analysis::{self, BeatsOut, StageInfo};
 use crate::config;
-use crate::lobby::{self, populate_recommendations, track_brief, track_encoded, track_info, LobbyHandle, DEBUG_LIST_CAP};
+use crate::lobby::{populate_recommendations, track_brief, track_encoded, track_info, LobbyHandle, DEBUG_LIST_CAP};
 use crate::nodelink;
 use crate::pool;
 use crate::sio;
@@ -171,10 +171,6 @@ impl QuicPcmRelay {
 
     pub fn set_code(&self, code: &str) {
         self.s.lock().code = code.to_string();
-    }
-
-    pub fn code(&self) -> String {
-        self.s.lock().code.clone()
     }
 
     pub fn pos_ms(&self) -> f64 {
