@@ -8,6 +8,7 @@ mod download;
 mod gallery;
 mod lobby;
 mod nodelink;
+mod opus;
 mod pool;
 mod quic;
 mod relay;

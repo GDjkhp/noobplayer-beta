@@ -107,7 +107,7 @@ struct QState {
     running: bool,
     since_sync: u32,
     last_push: Option<Instant>,
-    enc: Option<opus::Encoder>,
+    enc: Option<crate::opus::Encoder>,
     ok: bool,
 }
 
@@ -135,9 +135,9 @@ fn sync_packet(pos_ms: f64, running: bool, cut: bool) -> Bytes {
     Bytes::from(v)
 }
 
-fn make_encoder() -> Result<opus::Encoder, opus::Error> {
-    let mut enc = opus::Encoder::new(PCM_RATE as u32, opus::Channels::Stereo, opus::Application::Audio)?;
-    enc.set_bitrate(opus::Bitrate::Bits(config::QUIC_OPUS_BITRATE))?;
+fn make_encoder() -> Result<crate::opus::Encoder, crate::opus::Error> {
+    let mut enc = crate::opus::Encoder::new(PCM_RATE as u32, crate::opus::Channels::Stereo, crate::opus::Application::Audio)?;
+    enc.set_bitrate(crate::opus::Bitrate::Bits(config::QUIC_OPUS_BITRATE))?;
     enc.set_vbr(true)?;
     enc.set_vbr_constraint(false)?;
     enc.set_complexity(10)?;

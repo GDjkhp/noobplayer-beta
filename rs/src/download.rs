@@ -136,8 +136,8 @@ impl OggWriter {
 }
 
 fn encode_opus_ogg(pcm: &[u8], bitrate: i32) -> Result<Vec<u8>, String> {
-    let mut enc = opus::Encoder::new(PCM_RATE as u32, opus::Channels::Stereo, opus::Application::Audio).map_err(|e| e.to_string())?;
-    enc.set_bitrate(opus::Bitrate::Bits(bitrate)).map_err(|e| e.to_string())?;
+    let mut enc = crate::opus::Encoder::new(PCM_RATE as u32, crate::opus::Channels::Stereo, crate::opus::Application::Audio).map_err(|e| e.to_string())?;
+    enc.set_bitrate(crate::opus::Bitrate::Bits(bitrate)).map_err(|e| e.to_string())?;
     enc.set_vbr(true).map_err(|e| e.to_string())?;
     enc.set_vbr_constraint(false).map_err(|e| e.to_string())?;
     enc.set_complexity(10).map_err(|e| e.to_string())?;
