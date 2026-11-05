@@ -1,0 +1,46 @@
+[package]
+name = "noobplayer"
+version = "0.1.0"
+edition = "2021"
+description = "NodeLink lobby server (Rust port of server.py / analysis.py / config.py)"
+
+[[bin]]
+name = "noobplayer"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+socketioxide = "0.18"
+wtransport = "0.7"
+reqwest = { version = "0.13", features = ["stream", "json", "query"] }
+futures-util = "0.3"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+indexmap = { version = "2", features = ["serde"] }
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+hmac = "0.12"
+sha2 = "0.10"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+subtle = "2"
+regex = "1"
+dotenvy = "0.15"
+mime_guess = "2"
+percent-encoding = "2"
+libc = "0.2"
+time = { version = "0.3", features = ["parsing", "formatting", "macros"] }
+opus = "0.4"
+mp3lame-encoder = "0.2"
+ndarray = "0.16"
+realfft = "3"
+rustfft = "6"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4

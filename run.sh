@@ -1,1 +1,1 @@
-python3 -m uvicorn server:asgi_app --host 0.0.0.0 --port 42069
+cargo run --release --manifest-path "./rs/Cargo.toml"
