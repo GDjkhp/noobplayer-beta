@@ -6,7 +6,7 @@ description = "NodeLink lobby server (Rust port of server.py / analysis.py / con
 
 [[bin]]
 name = "noobplayer"
-path = "src/main.rs"
+path = "rs/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

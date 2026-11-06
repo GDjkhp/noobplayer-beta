@@ -1,1 +1,1 @@
-cargo run --release --manifest-path "./rs/Cargo.toml"
+cargo run --release

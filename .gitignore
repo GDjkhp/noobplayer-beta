@@ -1,4 +1,4 @@
 *.pyc
 *.env
 *.pem
-rs/target
+target
