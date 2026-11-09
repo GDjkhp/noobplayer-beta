@@ -135,7 +135,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // With the queue filter active, Shuffle / Download All / Clear only touch the filtered tracks.
   document.getElementById('btn-qshuf').addEventListener('click', () => {
     const idx = UI.queueFilterIndices();
-    if (idx && !idx.length) { toast('No tracks match the filter', 'warn'); return; }
+    if (idx && !idx.length) { toast('No tracks match the search', 'warn'); return; }
     Engine.shuffleQueue(idx || undefined);
   });
   document.getElementById('btn-qsmart').addEventListener('click', () => Engine.smartShuffle());
@@ -152,7 +152,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('btn-qdl').addEventListener('click', e => {
     const idx = UI.queueFilterIndices();
-    if (idx && !idx.length) { toast('No tracks match the filter', 'warn'); return; }
+    if (idx && !idx.length) { toast('No tracks match the search', 'warn'); return; }
     // The currently playing track isn't in S.queue — put it first, without duplicating it if it's also queued.
     // (With a filter active only the filtered queue tracks are downloaded.)
     const all = !idx && S.current && S.current.encoded ? [S.current] : [];
@@ -163,7 +163,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-qclr').addEventListener('click', () => {
     if (!S.queue.length) { toast('Queue is already empty', 'warn'); return; }
     const idx = UI.queueFilterIndices();
-    if (idx && !idx.length) { toast('No tracks match the filter', 'warn'); return; }
+    if (idx && !idx.length) { toast('No tracks match the search', 'warn'); return; }
     Engine.clearQueue(idx || undefined);
   });
 

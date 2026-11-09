@@ -142,9 +142,10 @@
         </div>
         <div id="lib-hdr">
           <span id="lib-info">Library empty</span>
-          <input id="lib-filter" type="text" placeholder="Filter…" autocomplete="off">
+          <div class="sbox"><span class="material-symbols-outlined">search</span><input id="lib-filter" type="text" placeholder="Search…" autocomplete="off" aria-label="Search library"><button type="button" class="sx" title="Clear search" aria-label="Clear search" hidden><span class="material-symbols-outlined">close</span></button></div>
           <button class="qa" id="btn-lib-qall" title="Add everything shown to the queue"><span class="material-symbols-outlined">playlist_add</span>Queue All</button>
           <button class="qa" id="btn-lib-sall" title="Shuffle everything shown, then add it to the queue"><span class="material-symbols-outlined">shuffle</span>Shuffle Add All</button>
+          <button class="qa" id="btn-lib-rall" title="Re-fetch every playlist from its original link"><span class="material-symbols-outlined">refresh</span><span class="lbl">Refresh All</span></button>
           <button class="qa" id="btn-lib-export" title="Download your whole library as a JSON file"><span class="material-symbols-outlined">upload_file</span>Export</button>
           <button class="qa" id="btn-lib-import" title="Merge a previously exported library file into this one"><span class="material-symbols-outlined">file_open</span>Import</button>
           <input type="file" id="lib-import-file" accept=".json,application/json" hidden>
@@ -175,7 +176,7 @@
       <div class="pane" id="pane-queue">
         <div id="q-hdr">
           <span id="q-info">Queue empty</span>
-          <input id="q-filter" type="text" placeholder="Filter…" autocomplete="off">
+          <div class="sbox"><span class="material-symbols-outlined">search</span><input id="q-filter" type="text" placeholder="Search…" autocomplete="off" aria-label="Search queue"><button type="button" class="sx" title="Clear search" aria-label="Clear search" hidden><span class="material-symbols-outlined">close</span></button></div>
           <button class="qa" id="btn-autoplay" title="Autoplay"><span class="material-symbols-outlined">autoplay</span><span class="lbl">Auto: On</span></button>
           <button class="qa" id="btn-qsmart" title="Smart Shuffle — add tracks like what's playing, then shuffle"><span class="material-symbols-outlined">auto_awesome</span>Smart</button>
           <button class="qa" id="btn-qfair" title="Fair Queue — keeps the queue alternating between whoever added each track"><span class="material-symbols-outlined">balance</span><span class="lbl">Fair: On</span></button>

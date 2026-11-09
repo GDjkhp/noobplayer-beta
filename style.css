@@ -405,10 +405,19 @@ textarea.hi {
 .auth-box .hi { box-sizing: border-box; }
 .auth-err { min-height: 18px; margin-top: 8px; font-family: var(--fm); font-size: 11px; color: var(--red, #e5484d); }
 .auth-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-#q-filter { width: 130px; min-width: 0; background: var(--bg); border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text); font-family: var(--fm); font-size: 11px; padding: 5px 12px; outline: none; }
-#q-filter:focus { border-color: var(--accent); }
+/* Search box (library + queue): search icon, text, clear (x) */
+.sbox { display: inline-flex; align-items: center; gap: 4px; width: 150px; min-width: 0; background: var(--bg); border: 1px solid var(--brd2); border-radius: var(--sh-full); padding: 0 6px 0 10px; transition: border-color .15s; }
+.sbox:focus-within { border-color: var(--accent); }
+.sbox > .material-symbols-outlined { font-size: 15px; color: var(--muted); flex-shrink: 0; transition: color .15s; }
+.sbox:focus-within > .material-symbols-outlined { color: var(--accent); }
+.sbox input { flex: 1; min-width: 0; width: 100%; background: none; border: none; outline: none; color: var(--text); font-family: var(--fm); font-size: 11px; padding: 5px 0; }
+.sbox input::placeholder { color: var(--muted); }
+.sx { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; flex-shrink: 0; background: none; border: none; border-radius: 50%; color: var(--muted); cursor: pointer; transition: all .15s; }
+.sx[hidden] { display: none; }
+.sx:hover { color: var(--text); background: var(--st-hover); }
+.sx .material-symbols-outlined { font-size: 14px; }
 
-/* Filter hits (library + queue) */
+/* Search hits (library + queue) */
 mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: inherit; border-radius: var(--sh-xs); padding: 0 1px; }
 
 /* Thumbnail wrapper: lets a circular source badge sit on the artwork's corner. */
@@ -1274,8 +1283,6 @@ body.pad-active.pad-tabs-focused .pane :focus {
 #btn-lib-add:disabled { opacity: .5; cursor: wait; }
 #lib-hdr { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--brd); flex-shrink: 0; flex-wrap: wrap; }
 #lib-info { flex: 1; min-width: 90px; font-family: var(--fm); font-size: 10px; color: var(--muted); }
-#lib-filter { width: 130px; background: var(--bg); border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text); font-family: var(--fm); font-size: 11px; padding: 5px 12px; outline: none; }
-#lib-filter:focus { border-color: var(--accent); }
 #lib-list { flex: 1; overflow-y: auto; min-height: 0; container: rows / inline-size; }
 .lib-item { border-bottom: 1px solid transparent; }
 .lib-item.open { border-bottom-color: var(--brd); }
@@ -1284,6 +1291,9 @@ body.pad-active.pad-tabs-focused .pane :focus {
 .lib-sub { padding: 0 0 6px 34px; }
 .lib-trow { cursor: default; }
 .lib-trow .si-th, .lib-trow .si-nth { width: 34px; height: 34px; }
+.lib-ref { opacity: .8; margin-top: 1px; }
+#btn-lib-rall.busy { pointer-events: none; opacity: .7; }
+#btn-lib-rall.busy .material-symbols-outlined { animation: spin 1s linear infinite; }
 .lib-del:hover { background: var(--red, #e5484d); border-color: var(--red, #e5484d); }
 /* touch screens have no hover — keep the row actions visible */
 @media (hover: none) { .lib-acts, .lib-trow .si-acts { opacity: 1; } }

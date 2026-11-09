@@ -10,9 +10,12 @@
 
    Everything is stored as a "library item":
      { id, kind: 'track' | 'collection', name, author, artwork,
+       artworkData,       // collections: the thumbnail as a base64 data: URL, because the
+                          //   `artwork` URL (signed / CDN links) expires; shown in preference to it
        source,            // the link it was resolved from (collections), used by Refresh
        tracks: [track…],  // full NodeLink track objects (a 'track' item holds exactly one)
-       added }
+       added,
+       refreshed }        // collections: when the tracks were last fetched from `source`
    Collections (albums / playlists / several links) keep a snapshot of their
    tracks, so queueing is instant and doesn't hit the node. Refresh re-resolves
    the source link to pick up changes.
@@ -35,6 +38,8 @@ const Library = {
     $('btn-lib-add').addEventListener('click', () => this.addFromInput());
     $('lib-in').addEventListener('keydown', e => { if (e.key === 'Enter') this.addFromInput(); });
     $('lib-filter').addEventListener('input', e => { this._filter = e.target.value.trim().toLowerCase(); this._lLimit = this._LCHUNK; this._subLimit.clear(); this.render(); });
+    wireSearchBox($('lib-filter'));
+    $('btn-lib-rall').addEventListener('click', () => this.refreshAll());
     $('btn-lib-qall').addEventListener('click', () => this._bulk(this._visibleTracks(), false, 'library'));
     $('btn-lib-sall').addEventListener('click', () => this._bulk(this._visibleTracks(), true, 'library'));
     $('lib-list').addEventListener('click', e => this._onListClick(e));
@@ -117,6 +122,7 @@ const Library = {
       const known = new Set(this.items.map(i => i.id));
       const loaded = stored.filter(i => i && i.id && Array.isArray(i.tracks) && i.tracks.length && !known.has(i.id));
       this.items = [...this.items, ...loaded].sort((a, b) => (b.added || 0) - (a.added || 0));
+      setTimeout(() => this._backfillArt(), 0);   // playlists saved before thumbnails were cached
     } catch (e) {
       this._db = null;
       console.error('Library storage error:', e);
@@ -267,11 +273,12 @@ const Library = {
       name: name || 'Untitled collection',
       author: author || this._commonAuthor(tracks),
       artwork: artwork || tracks[0].info.artworkUrl || '',
-      source: source || '', tracks: tracks.map(t => this._slim(t)), added: Date.now(),
+      source: source || '', tracks: tracks.map(t => this._slim(t)), added: Date.now(), refreshed: Date.now(),
     });
     const item = this.items[0];
     this.render();
     this._persist(item, () => this._dropFromMemory(item.id));
+    this._cacheArtAndSave(item);     // thumbnail URLs expire — keep a copy of the image itself
     if (!quiet) toast(`Saved to library: ${name || 'collection'} (${tracks.length} tracks)`, 'success', 2200);
     return true;
   },
@@ -320,18 +327,24 @@ const Library = {
     if (failed) toast(`${failed} link${failed !== 1 ? 's' : ''} could not be loaded`, 'warn');
   },
 
-  async refresh(id) {
+  // quiet: no toasts (Refresh All reports once at the end).
+  // Resolves { ok, delta } on success, { ok: false } on failure, or
+  // { ok: false, skipped: true } when there was nothing to do.
+  async refresh(id, { quiet = false } = {}) {
     const item = this.items.find(i => i.id === id);
-    if (!item || !item.source) return;
-    const op = toast.loading(`Refreshing ${item.name}…`);
+    if (!item || !item.source || this._refreshing.has(id)) return { ok: false, skipped: true };
+    this._refreshing.add(id);
+    const op = quiet ? null : toast.loading(`Refreshing ${item.name}…`);
+    const say = (...a) => { if (op) op.update(...a); };
     try {
       const d = await Backend.loadtracks(item.source);
+      if (!this.items.includes(item)) { if (op) op.dismiss(); return { ok: false, skipped: true }; }   // removed meanwhile
       let tracks = [];
       if (d && d.loadType === 'playlist') tracks = d.data.tracks || [];
       else if (d && d.loadType === 'search') tracks = d.data || [];
       else if (d && d.loadType === 'track') tracks = [d.data];
       tracks = this._uniq(tracks);
-      if (!tracks.length) { op.update('Could not refresh — nothing came back', 'warn'); return; }
+      if (!tracks.length) { say('Could not refresh — nothing came back', 'warn'); return { ok: false }; }
       const delta = tracks.length - item.tracks.length;
       item.tracks = tracks.map(t => this._slim(t));
       // Also re-read the playlist's own name / author / thumbnail — this is what
@@ -342,10 +355,126 @@ const Library = {
         item.author = m.author || this._commonAuthor(item.tracks);
         item.artwork = m.artwork || item.tracks[0].info.artworkUrl || '';
       }
+      item.refreshed = Date.now();
       this.render();
       this._persist(item);
-      op.update(`Refreshed ${item.name} (${delta >= 0 ? '+' : ''}${delta})`, 'success', 2200);
-    } catch (e) { op.update(`Refresh failed: ${e.message}`, 'error', 5000); }
+      // Grab the fresh thumbnail too (the old copy is kept if this download fails).
+      if (item.kind === 'collection') this._cacheArtAndSave(item, true);
+      say(`Refreshed ${item.name} (${delta >= 0 ? '+' : ''}${delta})`, 'success', 2200);
+      return { ok: true, delta };
+    } catch (e) {
+      say(`Refresh failed: ${e.message}`, 'error', 5000);
+      return { ok: false };
+    } finally { this._refreshing.delete(id); }
+  },
+
+  // Refreshes every playlist that has a source link (two at a time, to go easy on the node).
+  async refreshAll() {
+    if (this._rallBusy) return;
+    const targets = this.items.filter(i => i.kind === 'collection' && i.source);
+    if (!targets.length) { toast('No playlists to refresh', 'warn'); return; }
+    this._rallBusy = true; this._rallDone = 0; this._rallTotal = targets.length;
+    this._syncRefreshAll();
+    let ok = 0, failed = 0, next = 0;
+    const worker = async () => {
+      while (next < targets.length) {
+        const r = await this.refresh(targets[next++].id, { quiet: true });
+        if (r.ok) ok++; else if (!r.skipped) failed++;
+        this._rallDone++; this._syncRefreshAll();
+      }
+    };
+    try { await Promise.all([worker(), worker()]); }
+    finally { this._rallBusy = false; this._syncRefreshAll(); }
+    const n = x => `${x} playlist${x !== 1 ? 's' : ''}`;
+    if (!failed) toast(`Refreshed ${n(ok)}`, 'success', 2500);
+    else toast(`Refreshed ${n(ok)} · ${failed} failed`, ok ? 'warn' : 'error', 4500);
+  },
+
+  _refreshing: new Set(),   // ids being refreshed right now
+  _rallBusy: false, _rallDone: 0, _rallTotal: 0,
+
+  _syncRefreshAll() {
+    const b = document.getElementById('btn-lib-rall');
+    if (!b) return;
+    const any = this.items.some(i => i.kind === 'collection' && i.source);
+    b.disabled = !any;
+    b.classList.toggle('busy', this._rallBusy);
+    const l = b.querySelector('.lbl');
+    if (l) l.textContent = this._rallBusy ? `Refreshing ${this._rallDone}/${this._rallTotal}` : 'Refresh All';
+  },
+
+  /* ───────── cached thumbnails ─────────
+     Thumbnail URLs (signed / CDN links) expire, which leaves blank playlist
+     covers. So a playlist's cover is also stored in the item as a small base64
+     data: URL (artworkData) and shown in preference to the link. It needs the
+     image host to allow cross-origin reads; when it doesn't (or the link has
+     already expired) the download just fails quietly and the link is used. */
+  _artBusy: new Set(),
+  THUMB_PX: 192,
+
+  async _fetchThumb(url) {
+    if (!/^https?:\/\//i.test(url || '')) return '';
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 15000);
+    try {
+      const r = await fetch(url, { mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer', signal: ctl.signal });
+      if (!r.ok) return '';
+      const blob = await r.blob();
+      if (!/^image\//i.test(blob.type) || blob.size > 8 * 1024 * 1024) return '';
+      return await this._blobToThumb(blob);
+    } catch (e) {
+      console.debug('Thumbnail not cached:', url, e && e.message);
+      return '';
+    } finally { clearTimeout(timer); }
+  },
+
+  // Downscale to THUMB_PX (JPEG); if the browser can't decode/draw it, keep the raw bytes when small.
+  async _blobToThumb(blob) {
+    try {
+      const bmp = await createImageBitmap(blob);
+      const k = Math.min(1, this.THUMB_PX / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(bmp.width * k)); c.height = Math.max(1, Math.round(bmp.height * k));
+      const g = c.getContext('2d');
+      g.fillStyle = '#000'; g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(bmp, 0, 0, c.width, c.height);
+      if (bmp.close) bmp.close();
+      return c.toDataURL('image/jpeg', 0.82);
+    } catch (_) {
+      if (blob.size > 400 * 1024) return '';
+      return await new Promise(res => {
+        const fr = new FileReader();
+        fr.onload = () => res(String(fr.result || ''));
+        fr.onerror = () => res('');
+        fr.readAsDataURL(blob);
+      });
+    }
+  },
+
+  // force: re-download even if a copy exists (Refresh). A failed download never wipes the old copy.
+  async _cacheArt(item, force = false) {
+    if (!item || item.kind !== 'collection' || (item.artworkData && !force)) return false;
+    const data = await this._fetchThumb(item.artwork);
+    if (!data || !data.startsWith('data:image/') || !this.items.includes(item)) return false;
+    item.artworkData = data;
+    return true;
+  },
+
+  async _cacheArtAndSave(item, force = false) {
+    if (this._artBusy.has(item.id)) return;
+    this._artBusy.add(item.id);
+    try {
+      if (await this._cacheArt(item, force)) { this.render(); this._persist(item); }
+    } catch (e) { console.debug('Thumbnail cache failed:', e); }
+    finally { this._artBusy.delete(item.id); }
+  },
+
+  // One-off pass over playlists saved before covers were cached (3 at a time).
+  async _backfillArt() {
+    const todo = this.items.filter(i => i.kind === 'collection' && !i.artworkData && /^https?:\/\//i.test(i.artwork || ''));
+    let next = 0;
+    const worker = async () => { while (next < todo.length) await this._cacheArtAndSave(todo[next++]); };
+    await Promise.all([worker(), worker(), worker()]);
   },
 
   remove(id) {
@@ -383,6 +512,8 @@ const Library = {
     if (!tracks.length) return null;
     const kind = raw.kind === 'collection' ? 'collection' : 'track';
     const first = tracks[0].info;
+    const art = typeof raw.artworkData === 'string' && raw.artworkData.length <= 1500000
+      && /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(raw.artworkData) ? raw.artworkData : '';
     return {
       id: str(raw.id, 60) || this._newId(),
       kind: kind === 'track' ? 'track' : 'collection',
@@ -393,6 +524,8 @@ const Library = {
       source: str(raw.source, 2000),
       tracks: kind === 'track' ? [tracks[0]] : tracks,
       added: Number.isFinite(raw.added) ? raw.added : Date.now(),
+      ...(kind === 'collection' && art ? { artworkData: art } : {}),
+      ...(kind === 'collection' && Number.isFinite(raw.refreshed) ? { refreshed: raw.refreshed } : {}),
     };
   },
 
@@ -483,6 +616,7 @@ const Library = {
     if (badge) badge.textContent = this.items.length ? `(${this.items.length})` : '';
     const none = !this.items.length;
     ['btn-lib-qall', 'btn-lib-sall', 'btn-lib-export'].forEach(id => { document.getElementById(id).disabled = none; });
+    this._syncRefreshAll();
 
     if (none) {
       list.innerHTML = `<div class="empty"><span class="material-symbols-outlined">library_music</span><p>Paste a link above, or tap the bookmark on any search result,<br>to keep tracks, albums and playlists here</p></div>`;
@@ -538,6 +672,12 @@ const Library = {
       : hl(item.author || '', q);
     const dur = fmt(view.rows.reduce((a, r) => a + (r.t.info.length || 0), 0));
     const srcKey = isCol ? collectionSrc(item) : trackSrc(item.tracks[0]);
+    // Playlists that can be refreshed show when they last were (items saved before
+    // this was tracked fall back to the date they were added — that's when they were fetched).
+    const refTs = isCol && item.source ? (item.refreshed || item.added) : 0;
+    const refHtml = refTs && !isNaN(new Date(refTs))
+      ? `<div class="si-a lib-ref" title="${esc(new Date(refTs).toLocaleString())}">Refreshed ${esc(new Date(refTs).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }))}</div>`
+      : '';
     const acts = isCol
       ? `<button class="add-btn" data-la="queue" title="Add every track to the queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">Queue</span></button>
          <button class="add-btn" data-la="shuffle" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span><span class="lbl">Shuffle</span></button>
@@ -549,10 +689,10 @@ const Library = {
     let html = `<div class="lib-item ${isCol ? 'col' : ''} ${open ? 'open' : ''}" data-id="${esc(item.id)}">
         <div class="si lib-row" data-la="${isCol ? 'toggle' : ''}">
           ${isCol ? `<span class="material-symbols-outlined lib-chev">${open ? 'expand_more' : 'chevron_right'}</span>` : ''}
-          ${this._thumb(item.artwork, 'si-th', isCol ? 'library_music' : 'music_note', srcKey)}
+          ${this._thumb(item.artworkData || item.artwork, 'si-th', isCol ? 'library_music' : 'music_note', srcKey)}
           <div class="si-meta">
             <div class="si-t">${hl(item.name, q)}</div>
-            <div class="si-a">${sub}</div>
+            <div class="si-a">${sub}</div>${refHtml}
           </div>
           <div class="si-acts lib-acts">${acts}
             <button class="add-btn lib-del" data-la="remove" title="Remove from library"><span class="material-symbols-outlined">delete</span></button>

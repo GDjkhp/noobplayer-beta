@@ -763,7 +763,7 @@ const Engine = {
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/shuffle', part ? { clientId: S.lobby.clientId, indices } : { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
-        toast(part ? `Shuffled ${indices.length} filtered track${indices.length !== 1 ? 's' : ''}` : 'Queue shuffled', 'info', 1500);
+        toast(part ? `Shuffled ${indices.length} matching track${indices.length !== 1 ? 's' : ''}` : 'Queue shuffled', 'info', 1500);
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
@@ -775,7 +775,7 @@ const Engine = {
         [picked[i], picked[j]] = [picked[j], picked[i]];
       }
       pos.forEach((qi, k) => { S.queue[qi] = picked[k]; });
-      UI.renderQueue(); toast(`Shuffled ${pos.length} filtered track${pos.length !== 1 ? 's' : ''}`, 'info', 1500);
+      UI.renderQueue(); toast(`Shuffled ${pos.length} matching track${pos.length !== 1 ? 's' : ''}`, 'info', 1500);
       this._ensurePreload();
       return;
     }
@@ -860,7 +860,7 @@ const Engine = {
       try {
         const r = await LobbyAPI.control(S.lobby.code, 'queue/clear', part ? { clientId: S.lobby.clientId, indices } : { clientId: S.lobby.clientId });
         Lobby.applyControlResult(r);
-        toast(part ? `Removed ${r.removed} filtered track${r.removed !== 1 ? 's' : ''}` : `Queue cleared (${r.removed} removed)`, 'info', 1500);
+        toast(part ? `Removed ${r.removed} matching track${r.removed !== 1 ? 's' : ''}` : `Queue cleared (${r.removed} removed)`, 'info', 1500);
       } catch (e) { toast(`Error: ${e.message}`, 'error'); }
       return;
     }
@@ -868,7 +868,7 @@ const Engine = {
       const gone = new Set(indices);
       S.queue = S.queue.filter((_, i) => !gone.has(i));
       UI.renderQueue(); UI.updateQueueHeader();
-      toast(`Removed ${gone.size} filtered track${gone.size !== 1 ? 's' : ''}`, 'info', 1500);
+      toast(`Removed ${gone.size} matching track${gone.size !== 1 ? 's' : ''}`, 'info', 1500);
       this._ensurePreload();
       return;
     }

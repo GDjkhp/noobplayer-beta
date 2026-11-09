@@ -30,6 +30,25 @@ function hl(text, q) {
   return out + esc(s.slice(last));
 }
 
+/* ───────── search boxes ─────────
+   Wires the clear (x) button of a `.sbox` (search icon + <input> + x): the x
+   only shows while there is text, and clicking it empties the input and fires
+   a normal 'input' event so whatever listens to the box updates itself. */
+function wireSearchBox(input) {
+  const box = input && input.closest('.sbox');
+  const x = box && box.querySelector('.sx');
+  if (!x) return;
+  const sync = () => { x.hidden = !input.value; };
+  input.addEventListener('input', sync);
+  x.addEventListener('click', () => {
+    input.value = '';
+    sync();
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+  });
+  sync();
+}
+
 /* ───────── source icons ─────────
    Circle badge for the service a track / playlist came from. Sources with no
    icon here render nothing at all. */

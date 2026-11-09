@@ -701,7 +701,7 @@ const UI = {
   // One set of delegated listeners for the whole list (wired once).
   _wireQueueEvents(el) {
     const qf = document.getElementById('q-filter');
-    if (qf) qf.addEventListener('input', e => this.setQueueFilter(e.target.value));
+    if (qf) { qf.addEventListener('input', e => this.setQueueFilter(e.target.value)); wireSearchBox(qf); }
     el.addEventListener('click', e => {
       const more = e.target.closest('.q-more');
       if (more) { this._qLoadMore(); return; }
