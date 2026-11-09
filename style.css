@@ -916,44 +916,34 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 .dbg-list-row.dbg-row-err { border-left-color: var(--red); color: var(--red); }
 .dbg-list-row.dbg-row-warn { border-left-color: var(--amber); color: var(--amber); }
 .dbg-muted { color: var(--muted); margin-left: auto; }
-/* ═══════════════ STICKY PLAYER + TABS ═══════════════
-   The tab panes grow with their content and the *page* scrolls (they don't
-   scroll internally), so left to itself both the player AND the #tabs bar
-   scroll away with them — including a very long search/queue list, or the
-   lyrics pane's own auto-scroll to the active line. #tabs is pinned right
-   alongside the player so the tab buttons stay reachable no matter how far
-   the pane content has scrolled. Two layouts, matching how the player is
-   laid out:
+/* ═══════════════ PLAYER + TABS LAYOUT ═══════════════
+   The page itself never scrolls any more: the header stays put and everything
+   under it is exactly one viewport tall. Two layouts:
 
-   1) Side-by-side (desktop, and any phone/tablet held in landscape): the
-      whole player column stays pinned to the side, and #tabs pins to the
-      top of the #right column right next to it.
-   2) Stacked (portrait phone): the album art scrolls away, but the bottom
-      half of the player — title, progress, controls — stays frozen at the
-      top of the screen, and #tabs pins directly beneath it.
-
-   Both need #main AND #right to be overflow:visible: overflow:hidden turns
-   whichever one still has it into the element sticky positioning is
-   measured against, and — since that element never scrolls itself, the
-   *page* does — nothing would ever actually stick to the viewport. */
+   1) Side-by-side (desktop, and any phone/tablet in landscape): the player
+      column fills the full height on the left and never moves; the tab strip
+      stays at the top of the right column and the *tab content* scrolls
+      inside its own box (each pane's list / body has its own overflow).
+      The column width is fitted to the viewport height in main.js
+      (_initFitPlayerHeight) so the square art + controls leave no gap.
+   2) Stacked (portrait phone): see the last block below. */
+html, body { overflow: hidden; }
+body { height: 100vh; height: 100dvh; }
+/* #app is a viewport-tall column: header (+ CORS note) on top, #main fills the rest. */
+#app { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#app > .hdr, #app > #cors-note { flex-shrink: 0; }
+#main { min-height: 0; overflow: hidden; }
 
 /* ── 1) side-by-side ── */
 @media (min-width: 1001px), (max-width: 1000px) and (orientation: landscape) {
-  #main {
-    --left-w: 480px;
-    overflow: visible;
-    /* #left is no longer stretched to the full page height, so paint its
-       column background here to keep the sidebar look all the way down. */
-    background: linear-gradient(to right, var(--surf) var(--left-w), transparent var(--left-w));
-  }
+  #main { --left-w: 480px; }
   #left {
-    position: sticky; top: 0; align-self: flex-start;
-    width: var(--left-w);
-    max-height: 100vh; max-height: 100dvh;   /* never taller than the screen; scrolls inside itself if it has to */
-    border-right: none;
+    width: var(--left-w); height: 100%; min-height: 0;
+    border-right: none;      /* #right draws the divider */
+    overflow-y: auto;        /* only if the controls ever outgrow the screen */
   }
-  #right { overflow: visible; border-left: 1px solid var(--brd); }
-  #tabs { position: sticky; top: 0; z-index: 20; box-shadow: var(--ev2); }
+  #right { overflow: hidden; border-left: 1px solid var(--brd); }
+  #tabs { z-index: 20; box-shadow: var(--ev2); }
 }
 
 /* Landscape phones / small tablets: side-by-side instead of the portrait
@@ -973,23 +963,23 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
   #vol-row { flex: 1 1 100%; order: 10; }
 }
 
-/* ── 2) stacked, portrait ── */
+/* ── 2) stacked, portrait ──
+   The art scrolls away and the player's bottom half (title, progress,
+   controls) stays frozen at the top, with #tabs pinned beneath it. That only
+   works if the art, the panel and the tab content share ONE scroller, so in
+   this layout the scroller is #main (everything below the header) — the
+   header and the browser page no longer scroll. #left sticks once its top edge
+   reaches a *negative* offset: the art's height minus the panel's height. The
+   two heights are measured in main.js (_initStickyPlayer). */
 @media (max-width: 1000px) and (orientation: portrait) {
-  #main { overflow: visible; }
-  /* Sticks once its top edge reaches a *negative* offset: exactly the art's
-     height minus the panel's height. So the art scrolls off the top and the
-     panel (which sits at the bottom of #left) is what stays on screen.
-     The two heights are measured in main.js (_initStickyPlayer) because the
-     panel wraps to different heights on different screens. */
+  #main { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
   #left {
+    flex: none;
     position: sticky; z-index: 30;
     top: calc(var(--player-panel-h, 190px) - var(--player-left-h, 100vw));
     box-shadow: var(--ev3);
   }
-  #right { overflow: visible; }
-  /* Sticks right below the frozen player panel (rather than at the very
-     top of the viewport, like the side-by-side layout above) — the panel
-     itself already occupies that space once #left has stuck. */
+  #right { flex: none; overflow: visible; }
   #tabs {
     position: sticky; z-index: 20;
     top: var(--player-panel-h, 190px);

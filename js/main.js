@@ -92,7 +92,7 @@ const Main = {
         const vw = window.innerWidth;
         const minW = vw > 1000 ? 480 : Math.min(380, Math.max(280, vw * 0.36));   // the stylesheet's own widths
         const maxW = Math.max(minW, Math.floor(vw * 0.6));                         // always leave room for the tabs
-        const avail = window.innerHeight - main.offsetTop;                         // viewport height below the header
+        const avail = main.clientHeight;                                           // the page doesn't scroll: #main is exactly the height under the header
         let w = minW;
         // The panel can re-wrap as the width changes, so settle over a few passes.
         for (let i = 0; i < 4; i++) {
@@ -104,7 +104,7 @@ const Main = {
       } finally { busy = false; }
     };
     fit();
-    if (window.ResizeObserver) new ResizeObserver(fit).observe(panel);
+    if (window.ResizeObserver) { const ro = new ResizeObserver(fit); ro.observe(panel); ro.observe(main); }
     window.addEventListener('resize', fit);
     window.addEventListener('orientationchange', fit);
     sideBySide.addEventListener('change', fit);

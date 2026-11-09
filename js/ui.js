@@ -1268,9 +1268,8 @@ const UI = {
     if (b) { b.hidden = !(on && S.lyricsType === 'synced' && S.lyrics && this._lyrTabOpen()); if (!b.hidden) this._lyrPlaceSync(); }
   },
 
-  // The button is fixed to the bottom of the VIEWPORT (the page itself scrolls
-  // in the stacked layouts, so an absolute position ended up at the very end
-  // of the lyrics). Horizontally it is centred on the lyrics column.
+  // The button is fixed to the bottom of the VIEWPORT (so it stays put while
+  // the lyrics scroll). Horizontally it is centred on the lyrics column.
   _lyrPlaceSync() {
     const b = document.getElementById('btn-lyr-sync'), body = document.getElementById('lyr-body');
     if (!b || !body) return;
@@ -1284,13 +1283,23 @@ const UI = {
   // the "centred" line landed underneath them. Instead, measure the visible
   // band (below the sticky tabs, above the viewport bottom, clipped to the
   // lyrics box when it scrolls on its own) and scroll by the difference.
+  // The element that scrolls the tab content when the tab panes themselves
+  // don't: #main in the stacked portrait layout (the page never scrolls). Null
+  // in the side-by-side layout, where every pane scrolls inside its own box.
+  _outerScroller() {
+    const m = document.getElementById('main');
+    return m && getComputedStyle(m).overflowY === 'auto' ? m : null;
+  },
+
   _lyrCenter(el) {
     const body = document.getElementById('lyr-body');
     if (!el || !body) return;
+    const outer = this._outerScroller();
     const vh = window.innerHeight || document.documentElement.clientHeight;
     const tabs = document.getElementById('tabs');
     let top = 0, bottom = vh;
-    if (tabs) top = Math.max(0, tabs.getBoundingClientRect().bottom);
+    if (outer) { const o = outer.getBoundingClientRect(); top = Math.max(0, o.top); bottom = Math.min(vh, o.bottom); }
+    if (tabs) top = Math.max(top, tabs.getBoundingClientRect().bottom);
     const own = body.scrollHeight > body.clientHeight + 1;
     if (own) {
       const r = body.getBoundingClientRect();
@@ -1301,25 +1310,29 @@ const UI = {
     const delta = (er.top + er.height / 2) - (top + (bottom - top) / 2);
     if (Math.abs(delta) < 2) return;
     if (own) body.scrollBy({ top: delta, behavior: 'smooth' });
-    else window.scrollBy({ top: delta, behavior: 'smooth' });
+    else if (outer) outer.scrollBy({ top: delta, behavior: 'smooth' });
   },
 
-  // After switching tabs, glide back to the start of the new pane: the page
-  // itself (it scrolls in the stacked and side-by-side layouts, so a long
-  // list left you mid-way down the next tab) plus any list inside the pane
-  // that still remembers a scroll position.
+  // After switching tabs, glide back to the start of the new pane: any list
+  // inside it that still remembers a scroll position, plus (stacked portrait
+  // layout) the #main scroller, so a long list doesn't leave you mid-way down
+  // the next tab.
   _scrollTabToStart(name) {
     requestAnimationFrame(() => {
       const pane = document.getElementById('pane-' + name);
       if (!pane || S.activeTab !== name) return;
-      pane.querySelectorAll('*').forEach(el => {
+      [pane, ...pane.querySelectorAll('*')].forEach(el => {
         if (el.scrollTop > 0 && el.scrollHeight > el.clientHeight) el.scrollTo({ top: 0, behavior: 'smooth' });
       });
+      // Stacked portrait layout only: #main scrolls the tab content under the
+      // pinned player + tabs. (Side-by-side, the panes above are all there is.)
+      const outer = this._outerScroller();
+      if (!outer) return;
       const tabs = document.getElementById('tabs');
       const stick = tabs ? Math.max(0, tabs.getBoundingClientRect().bottom) : 0;
       const delta = pane.getBoundingClientRect().top - stick;
       // Only ever scroll UP to the pane's first row; never push down into it.
-      if (delta < -1) window.scrollBy({ top: delta, behavior: 'smooth' });
+      if (delta < -1) outer.scrollBy({ top: delta, behavior: 'smooth' });
     });
   },
 
