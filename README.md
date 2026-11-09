@@ -2,12 +2,7 @@
 A __very basic yet complex__ audio web player that plays copyrighted content straight off Google's servers.
 
 ## Source code
-
-### Rust
 https://github.com/GDjkhp/noobplayer-beta
-
-### Python
-https://github.com/GDjkhp/noobplayer-beta/tree/aioquic
 
 ## License
 [Do What The Fuck You Want To Public License](https://www.wtfpl.net)

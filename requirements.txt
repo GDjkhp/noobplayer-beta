@@ -1,0 +1,11 @@
+quart
+quart-cors
+aiohttp
+av
+numpy
+uvicorn
+python-socketio
+python-dotenv
+aioquic
+cryptography
+scipy

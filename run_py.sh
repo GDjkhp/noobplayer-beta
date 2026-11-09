@@ -1,0 +1,1 @@
+python3 -m uvicorn server:asgi_app --app-dir py --host 0.0.0.0 --port 42069
