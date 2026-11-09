@@ -162,6 +162,68 @@ const UI = {
     });
   },
 
+  /* YouTube pads sddefault / hqdefault / default (4:3) with black bars above and
+     below the real 16:9 frame; maxresdefault and mqdefault (16:9) have none.
+     Measure the bars on a canvas and cut the largest centred square out of
+     what's left, so the player shows the square artwork and never a black band.
+     Anything without bars (or an image the canvas can't read) is returned as-is
+     — the <img> is object-fit: cover, so it is squared by the CSS as before. */
+  _artBlobs: [],       // object URLs made by _artSquare (revoked once they're 3 tracks old)
+
+  _artSquare(url) {
+    if (!/^https:\/\/i\.ytimg\.com\//.test(url)) return Promise.resolve(url);
+    return new Promise(resolve => {
+      const im = new Image();
+      im.crossOrigin = 'anonymous';               // needed to read pixels back; falls back to the plain URL below
+      im.onerror = () => resolve(url);
+      im.onload = () => {
+        try {
+          const W = im.naturalWidth, H = im.naturalHeight;
+          if (!W || !H) { resolve(url); return; }
+          const probe = document.createElement('canvas');
+          probe.width = W; probe.height = H;
+          const pc = probe.getContext('2d', { willReadFrequently: true });
+          pc.drawImage(im, 0, 0);
+          const data = pc.getImageData(0, 0, W, H).data;
+          const step = Math.max(1, Math.floor(W / 64));
+          const cols = Math.ceil(W / step);
+          // A row is "black bar" when (nearly) every sampled pixel is near-black.
+          const isBar = y => {
+            let dark = 0;
+            for (let x = 0; x < W; x += step) {
+              const i = (y * W + x) * 4;
+              if (Math.max(data[i], data[i + 1], data[i + 2]) <= 24) dark++;
+            }
+            return dark >= cols * 0.98;
+          };
+          const maxBar = Math.floor(H * 0.3);
+          let top = 0, bottom = 0;
+          while (top < maxBar && isBar(top)) top++;
+          while (bottom < maxBar && isBar(H - 1 - bottom)) bottom++;
+          if (top + bottom < 2) { resolve(url); return; }          // no bars (maxres / mq): nothing to crop
+          // JPEG ringing blurs the bar edge by a pixel or two — step in a touch so no dark line survives.
+          const inset = Math.max(1, Math.round(H * 0.004));
+          const y0 = top + inset;
+          const contentH = H - top - bottom - inset * 2;           // height with the black bars removed
+          const side = Math.min(contentH, W);                      // the square artwork
+          if (side < 8) { resolve(url); return; }
+          const x0 = Math.floor((W - side) / 2);
+          const out = document.createElement('canvas');
+          out.width = out.height = side;
+          out.getContext('2d').drawImage(im, x0, y0, side, side, 0, 0, side, side);
+          out.toBlob(blob => {
+            if (!blob) { resolve(url); return; }
+            const obj = URL.createObjectURL(blob);
+            this._artBlobs.push(obj);
+            while (this._artBlobs.length > 3) URL.revokeObjectURL(this._artBlobs.shift());
+            resolve(obj);
+          }, 'image/jpeg', 0.95);
+        } catch (_) { resolve(url); }                              // tainted canvas etc.
+      };
+      im.src = url;
+    });
+  },
+
   _artClean(img) {
     this._artAnims.forEach(a => { try { a.cancel(); } catch (_) {} });
     this._artAnims = [];
@@ -180,7 +242,7 @@ const UI = {
       this._artClean(img); img.classList.remove('vis'); empty.style.display = 'flex';
       return;
     }
-    this._artProbe(urls).then(url => {
+    this._artProbe(urls).then(url => url ? this._artSquare(url) : url).then(url => {
       if (tok !== this._artTok) return;            // a newer track took over
       if (!url) { this._artClean(img); img.classList.remove('vis'); empty.style.display = 'flex'; return; }
       this._artShow(img, empty, url, dir);
@@ -236,6 +298,10 @@ const UI = {
       document.getElementById('info-title').textContent = t.info.title;
       document.getElementById('info-title').style.color = 'var(--text)';
       document.getElementById('info-artist').textContent = t.info.author;
+      const reqEl = document.getElementById('info-req');
+      const reqName = t.requester && t.requester.name;
+      reqEl.textContent = reqName ? `Requested by: ${reqName}` : '';
+      reqEl.hidden = !reqName;
       document.getElementById('t-tot').textContent = fmt(t.info.length);
       // Lyrics used to need a manual "Fetch Lyrics" click — now they load
       // automatically whenever the current track changes. fetchLyrics()
@@ -250,6 +316,8 @@ const UI = {
       document.getElementById('info-title').textContent = 'Nothing playing';
       document.getElementById('info-title').style.color = 'var(--muted)';
       document.getElementById('info-artist').textContent = '—';
+      const reqIdle = document.getElementById('info-req');
+      reqIdle.textContent = ''; reqIdle.hidden = true;
       document.getElementById('t-cur').textContent = '0:00';
       document.getElementById('t-tot').textContent = '0:00';
       document.getElementById('prog-fill').style.width = '0%';

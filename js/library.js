@@ -676,7 +676,7 @@ const Library = {
     // this was tracked fall back to the date they were added — that's when they were fetched).
     const refTs = isCol && item.source ? (item.refreshed || item.added) : 0;
     const refHtml = refTs && !isNaN(new Date(refTs))
-      ? `<div class="si-a lib-ref" title="${esc(new Date(refTs).toLocaleString())}">Refreshed ${esc(new Date(refTs).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }))}</div>`
+      ? `<div class="si-a lib-ref">Last refreshed: ${esc(new Date(refTs).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</div>`
       : '';
     const acts = isCol
       ? `<button class="add-btn" data-la="queue" title="Add every track to the queue"><span class="material-symbols-outlined m-ico">playlist_add</span><span class="lbl">Queue</span></button>

@@ -70,6 +70,45 @@ const Main = {
     window.addEventListener('resize', sync);
     window.addEventListener('orientationchange', sync);
   },
+
+  // Side-by-side layout only: the player column is as wide as the viewport is
+  // tall, minus the controls panel, so the square artwork + panel fill the
+  // column top to bottom and there's no empty gap under the player. The width
+  // is measured because the panel's height varies (its rows wrap, the title
+  // and "Requested by" line come and go). Portrait phones/tablets use the
+  // overlaid-square layout, which has no gap, so the override is removed there.
+  _initFitPlayerHeight() {
+    const main = document.getElementById('main');
+    const left = document.getElementById('left');
+    const panel = document.getElementById('player-panel');
+    if (!main || !left || !panel) return;
+    const sideBySide = window.matchMedia('(min-width: 1001px), (max-width: 1000px) and (orientation: landscape)');
+    let busy = false;
+    const fit = () => {
+      if (busy) return;
+      busy = true;
+      try {
+        if (!sideBySide.matches) { main.style.removeProperty('--left-w'); return; }
+        const vw = window.innerWidth;
+        const minW = vw > 1000 ? 480 : Math.min(380, Math.max(280, vw * 0.36));   // the stylesheet's own widths
+        const maxW = Math.max(minW, Math.floor(vw * 0.6));                         // always leave room for the tabs
+        const avail = window.innerHeight - main.offsetTop;                         // viewport height below the header
+        let w = minW;
+        // The panel can re-wrap as the width changes, so settle over a few passes.
+        for (let i = 0; i < 4; i++) {
+          main.style.setProperty('--left-w', w + 'px');
+          const next = Math.min(maxW, Math.max(minW, Math.floor(avail - panel.offsetHeight)));
+          if (next === w) break;
+          w = next;
+        }
+      } finally { busy = false; }
+    };
+    fit();
+    if (window.ResizeObserver) new ResizeObserver(fit).observe(panel);
+    window.addEventListener('resize', fit);
+    window.addEventListener('orientationchange', fit);
+    sideBySide.addEventListener('change', fit);
+  },
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -82,6 +121,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   Viz.init();
   UI.setupProgressBar();
   Main._initStickyPlayer();
+  Main._initFitPlayerHeight();
 
   /* ───────── App header (standalone) ───────── */
   document.getElementById('btn-disconnect-sa').addEventListener('click', () => Standalone.disconnect());
