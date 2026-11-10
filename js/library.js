@@ -406,18 +406,27 @@ const Library = {
   /* ───────── cached thumbnails ─────────
      Thumbnail URLs (signed / CDN links) expire, which leaves blank playlist
      covers. So a playlist's cover is also stored in the item as a small base64
-     data: URL (artworkData) and shown in preference to the link. It needs the
-     image host to allow cross-origin reads; when it doesn't (or the link has
-     already expired) the download just fails quietly and the link is used. */
+     data: URL (artworkData) and shown in preference to the link.
+
+     Image CDNs don't send CORS headers, so the page can't read their bytes
+     directly (a cross-origin fetch just fails and nothing ever got cached).
+     The download therefore goes through the noobplayer server's image proxy,
+     GET /api/img?url=…, which fetches the image server-side. Only when there
+     is no server at all (page opened from file://) does it fall back to a
+     direct fetch. If the link has already expired the download fails quietly
+     and the link is used (Refresh re-reads a fresh one and caches it). */
   _artBusy: new Set(),
   THUMB_PX: 192,
 
   async _fetchThumb(url) {
     if (!/^https?:\/\//i.test(url || '')) return '';
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 15000);
+    const timer = setTimeout(() => ctl.abort(), 20000);
     try {
-      const r = await fetch(url, { mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer', signal: ctl.signal });
+      const base = Backend.serverUrl;
+      const r = base
+        ? await fetch(`${base}/api/img?url=${encodeURIComponent(url)}`, { credentials: 'omit', signal: ctl.signal })
+        : await fetch(url, { mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer', signal: ctl.signal });
       if (!r.ok) return '';
       const blob = await r.blob();
       if (!/^image\//i.test(blob.type) || blob.size > 8 * 1024 * 1024) return '';

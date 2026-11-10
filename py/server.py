@@ -83,10 +83,12 @@ import datetime
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
 import os
 import random
 import re
+import socket
 import string
 import struct
 import time
@@ -100,10 +102,12 @@ import aiohttp
 import av
 import numpy as np
 import socketio
+from aiohttp.abc import AbstractResolver
+from aiohttp.resolver import DefaultResolver
 from socketio.exceptions import ConnectionRefusedError as SioConnectionRefused
 from quart import Quart, Response, jsonify, request, send_from_directory
 from quart_cors import cors
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 # ── QUIC / WebTransport (live lobby audio relay) ──
 # See _make_quic_cert / QuicPcmRelay / start_quic_server below. This is
@@ -232,6 +236,10 @@ if not NL_HOST or not NL_PASS:
 
 
 http_session: aiohttp.ClientSession | None = None
+# Separate session for the /api/img thumbnail proxy: it talks to arbitrary
+# third-party hosts, so it must NOT share http_session (which is allowed to
+# reach NodeLink on localhost / a private address). See _PublicOnlyResolver.
+img_session: aiohttp.ClientSession | None = None
 
 # The relay's NodeLink /v4/loadstream connection is long-lived and can sit
 # idle for an arbitrarily long time — the relay deliberately stops reading
@@ -331,8 +339,13 @@ class _InstrumentedSession:
 
 @app.before_serving
 async def startup():
-    global http_session
+    global http_session, img_session
     http_session = _InstrumentedSession(aiohttp.ClientSession())
+    img_session = aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(resolver=_PublicOnlyResolver(), limit=16),
+        timeout=IMG_PROXY_TIMEOUT,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; noobplayer-thumbnail-proxy)"},
+    )
     # Fire-and-forget: the QUIC/WebTransport listener (see
     # start_quic_server further down) runs as its own UDP server
     # alongside whatever's actually serving `asgi_app` over TCP — it
@@ -352,6 +365,8 @@ async def startup():
 async def shutdown():
     if http_session:
         await http_session.close()
+    if img_session:
+        await img_session.close()
     if _quic_server is not None:
         _quic_server.close()
     if _analysis_pool is not None:
@@ -2728,6 +2743,122 @@ async def nl_loadstream():
                     yield chunk
 
     return Response(gen(), mimetype="application/octet-stream")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Thumbnail image proxy.
+#
+# Playlist covers are saved in the browser as small base64 data: URLs
+# because the CDN links expire. Reading the image's bytes from the page
+# needs the image host to send CORS headers, and the big ones (YouTube,
+# Spotify, Deezer … CDNs) don't — so the browser asks THIS server for the
+# image instead (GET /api/img?url=…) and the server fetches it. This route
+# makes outbound requests to a caller-chosen URL, so it is locked down:
+#   • http/https on ports 80/443 only, no credentials in the URL
+#   • only PUBLIC addresses — loopback, private (10/8, 192.168/16 …),
+#     link-local (cloud metadata), CGNAT etc. are refused. The check runs
+#     at connect time inside the resolver (so DNS rebinding can't swap the
+#     address after validation) and again for IP-literal hosts, which
+#     bypass the resolver
+#   • redirects are followed by hand (≤4), each hop re-validated
+#   • raster images only (never SVG — it would be script-capable on this
+#     origin), capped at IMG_PROXY_MAX_BYTES, 15s total timeout
+# ═══════════════════════════════════════════════════════════════════
+IMG_PROXY_MAX_BYTES = 8 * 1024 * 1024
+IMG_PROXY_MAX_HOPS = 4
+IMG_PROXY_TIMEOUT = aiohttp.ClientTimeout(total=15)
+IMG_PROXY_TYPES = {
+    "image/jpeg", "image/jpg", "image/png", "image/webp",
+    "image/gif", "image/avif", "image/bmp",
+}
+
+
+def _ip_is_public(addr):
+    """True only for globally routable unicast addresses."""
+    try:
+        ip = ipaddress.ip_address(str(addr).split("%", 1)[0])
+    except ValueError:
+        return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:          # ::ffff:127.0.0.1 and friends
+        ip = mapped
+    return ip.is_global and not ip.is_multicast
+
+
+class _PublicOnlyResolver(AbstractResolver):
+    """DNS resolver for the image proxy's connector: drops (and, if nothing
+    is left, refuses) every address that isn't public."""
+
+    def __init__(self):
+        self._inner = DefaultResolver()
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        infos = await self._inner.resolve(host, port, family)
+        safe = [i for i in infos if _ip_is_public(i["host"])]
+        if not safe:
+            raise OSError(f"{host} does not resolve to a public address")
+        return safe
+
+    async def close(self):
+        await self._inner.close()
+
+
+def _img_error(status, msg):
+    return jsonify({"error": msg}), status
+
+
+@app.route("/api/img")
+async def image_proxy():
+    url = (request.args.get("url") or "").strip()
+    if not url or len(url) > 2048:
+        return _img_error(400, "url required")
+    try:
+        for _ in range(IMG_PROXY_MAX_HOPS + 1):
+            parts = urlsplit(url)
+            try:
+                port = parts.port
+            except ValueError:
+                return _img_error(400, "bad url")
+            host = parts.hostname
+            if (parts.scheme not in ("http", "https") or not host
+                    or parts.username or parts.password
+                    or port not in (None, 80, 443)):
+                return _img_error(400, "unsupported url")
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                pass                              # a name — the resolver vets it
+            else:
+                if not _ip_is_public(host):       # an IP literal skips the resolver
+                    return _img_error(400, "unsupported url")
+
+            async with img_session.get(url, allow_redirects=False,
+                                       headers={"Accept": "image/*,*/*;q=0.5"}) as r:
+                if r.status in (301, 302, 303, 307, 308):
+                    loc = r.headers.get("Location")
+                    if not loc:
+                        return _img_error(502, "bad redirect")
+                    url = urljoin(url, loc)
+                    continue
+                if r.status != 200:
+                    return _img_error(502, f"upstream returned {r.status}")
+                ctype = (r.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                if ctype not in IMG_PROXY_TYPES:
+                    return _img_error(415, "not a supported image")
+                if r.content_length and r.content_length > IMG_PROXY_MAX_BYTES:
+                    return _img_error(413, "image too large")
+                buf = bytearray()
+                async for chunk in r.content.iter_chunked(65536):
+                    buf.extend(chunk)
+                    if len(buf) > IMG_PROXY_MAX_BYTES:
+                        return _img_error(413, "image too large")
+            return Response(bytes(buf), mimetype=ctype, headers={
+                "Cache-Control": "private, max-age=86400",
+                "X-Content-Type-Options": "nosniff",
+            })
+        return _img_error(502, "too many redirects")
+    except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as e:
+        return _img_error(502, f"failed to fetch image: {str(e)[:120]}")
 
 
 # ═══════════════════════════════════════════════════════════════════

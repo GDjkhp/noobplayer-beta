@@ -6,6 +6,7 @@ mod auth;
 mod config;
 mod download;
 mod gallery;
+mod imgproxy;
 mod lobby;
 mod nodelink;
 mod opus;
@@ -49,6 +50,7 @@ fn router() -> Router {
         .route("/api/nodelink/loadlyrics", get(nodelink::nl_loadlyrics).fallback(fb))
         .route("/api/nodelink/meaning", get(nodelink::nl_meaning).fallback(fb))
         .route("/api/nodelink/loadstream", post(nodelink::nl_loadstream).fallback(fb))
+        .route("/api/img", get(imgproxy::image_proxy).fallback(fb))
         .route("/api/download", get(download::download_track).fallback(fb))
         .route("/api/lobby/create", post(api::create_lobby).fallback(fb))
         .route("/api/lobby/join", post(api::join_lobby).fallback(fb))
