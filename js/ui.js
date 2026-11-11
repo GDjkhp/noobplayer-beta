@@ -452,6 +452,28 @@ const UI = {
     if (!this._logoRaf) this._logoRaf = requestAnimationFrame(t => this._logoLoop());
   },
 
+  // Logo icons — click the header logo to cycle through them (choice is remembered).
+  LOGO_BASE: 'https://gdjkhp.github.io/img/gdkit/',
+  LOGOS: ['cube_42', 'ship_28', 'ball_34', 'ufo_19', 'wave_10', 'robot_19', 'spider_7', 'swing_32', 'jetpack_5'],
+  _logoIdx: 0,
+
+  applyLogo() {
+    const name = this.LOGOS[this._logoIdx] || this.LOGOS[0];
+    document.querySelectorAll('.logo-hex').forEach(el => { el.src = `${this.LOGO_BASE}${name}.png`; el.title = `${name} — click to change`; });
+  },
+
+  cycleLogo() {
+    this._logoIdx = (this._logoIdx + 1) % this.LOGOS.length;
+    try { localStorage.setItem('np_logo', String(this._logoIdx)); } catch (_) {}
+    this.applyLogo();
+  },
+
+  initLogo() {
+    try { const i = parseInt(localStorage.getItem('np_logo'), 10); if (i >= 0 && i < this.LOGOS.length) this._logoIdx = i; } catch (_) {}
+    this.applyLogo();
+    document.addEventListener('click', e => { if (e.target.closest && e.target.closest('.logo-hex')) UI.cycleLogo(); });
+  },
+
   _logoLvl: 0, _logoPlaying: false, _logoRaf: 0, _logoSpec: null,
 
   _logoLoop() {
@@ -1959,3 +1981,5 @@ const UI = {
     });
   },
 };
+
+UI.initLogo();

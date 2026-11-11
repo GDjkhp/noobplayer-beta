@@ -185,6 +185,8 @@ textarea.hi {
    Pulse is audio-reactive: JS (UI._logoLoop) sets `scale`, `opacity` and --lvl. */
 .logo-hex {
   display: inline-block; --lvl: 0;
+  width: 28px; height: 28px; object-fit: contain; cursor: pointer;
+  user-select: none; -webkit-user-drag: none;
   animation: logo-spin 6s linear infinite; animation-play-state: paused;
   filter: drop-shadow(0 0 calc(var(--lvl) * 10px) var(--accent));
   will-change: rotate, scale;
