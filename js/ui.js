@@ -322,7 +322,6 @@ const UI = {
       document.getElementById('t-tot').textContent = '0:00';
       document.getElementById('prog-fill').style.width = '0%';
       document.getElementById('prog-thumb').style.left = '0%';
-      document.getElementById('pcm-meter').classList.remove('active');
       document.getElementById('lyr-body').innerHTML =
         `<div class="empty"><span class="material-symbols-outlined">lyrics</span><p>Play a track and fetch lyrics</p></div>`;
       document.getElementById('lyr-src-lbl').textContent = 'No lyrics loaded';
@@ -443,30 +442,57 @@ const UI = {
     if (this._dlMenuEsc) { document.removeEventListener('keydown', this._dlMenuEsc); this._dlMenuEsc = null; }
   },
 
+  // Header hexagon logo: spins while playing (CSS play-state, so it freezes in
+  // place on pause/skip/stop and resumes from the same angle) and pulses to the
+  // music's bass/level like a visualizer. Driven by one rAF loop.
   updateEQ() {
-    const playing = S.current && S.player && !S.player.isPaused;
-    document.getElementById('eq').classList.toggle('active', playing);
-    document.getElementById('eq').querySelectorAll('.eb').forEach(b => b.classList.toggle('paused', !playing));
+    const playing = !!(S.current && S.player && !S.player.isPaused);
+    document.querySelectorAll('.logo').forEach(l => l.classList.toggle('playing', playing));
+    this._logoPlaying = playing;
+    if (!this._logoRaf) this._logoRaf = requestAnimationFrame(t => this._logoLoop());
   },
 
-  updateLevelMeter() {
-    if (!S.player || S.player.isPaused) {
-      document.getElementById('pm-l').style.height = '0%';
-      document.getElementById('pm-r').style.height = '0%';
-      document.getElementById('pcm-meter').classList.remove('active');
-      return;
+  _logoLvl: 0, _logoPlaying: false, _logoRaf: 0, _logoSpec: null,
+
+  _logoLoop() {
+    this._logoRaf = requestAnimationFrame(() => this._logoLoop());
+    const P = S.player;
+    const playing = !!(S.current && P && !P.isPaused);
+    if (playing !== this._logoPlaying) this.updateEQ();
+
+    let target = 0;
+    if (playing) {
+      try {
+        // Bass-weighted energy from the spectrum, blended with the peak level.
+        const spec = P.getSpectrum ? P.getSpectrum(this._logoSpec) : null;
+        if (spec) {
+          this._logoSpec = spec;
+          const n = Math.max(4, Math.floor(spec.length * 0.08));
+          let sum = 0; for (let i = 0; i < n; i++) sum += spec[i];
+          target = (sum / n) / 255;
+          target = Math.pow(target, 1.6);            // widen the dynamic range
+        }
+        if (P.getLevels) target = Math.max(target, Math.min(P.getLevels()[0], 1) * 0.6);
+      } catch (_) {}
     }
-    document.getElementById('pcm-meter').classList.add('active');
-    const [l, r] = S.player.getLevels();
-    document.getElementById('pm-l').style.height = (Math.min(l, 1) * 100) + '%';
-    document.getElementById('pm-r').style.height = (Math.min(r, 1) * 100) + '%';
+    // fast attack, slower release = punchy pulse
+    const k = target > this._logoLvl ? 0.55 : 0.12;
+    this._logoLvl += (target - this._logoLvl) * k;
+    const v = Math.min(this._logoLvl, 1);
+
+    const els = document.querySelectorAll('.logo-hex');
+    for (const el of els) {
+      el.style.scale = (0.9 + v * 0.45).toFixed(3);
+      el.style.opacity = (0.65 + v * 0.35).toFixed(3);
+      el.style.setProperty('--lvl', v.toFixed(3));
+    }
   },
 
   startPosTimer() {
     if (S.posTimer) clearInterval(S.posTimer);
     S.posTimer = setInterval(() => {
       if (!S.current || !S.player) return;
-      UI.updateProgress(); UI.syncLyrics(); UI.updateLevelMeter();
+      UI.updateProgress(); UI.syncLyrics(); UI.updateEQ();
     }, 100);
   },
 

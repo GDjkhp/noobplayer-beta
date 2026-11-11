@@ -180,6 +180,18 @@ textarea.hi {
   padding: 10px 18px; border-bottom: 1px solid var(--brd);
   background: var(--surf); flex-wrap: wrap; flex-shrink: 0; z-index: 10;
 }
+/* Hexagon logo. The spin animation is always attached but PAUSED unless a track
+   is playing, so pausing/skipping freezes the rotation instead of resetting it.
+   Pulse is audio-reactive: JS (UI._logoLoop) sets `scale`, `opacity` and --lvl. */
+.logo-hex {
+  display: inline-block; --lvl: 0;
+  animation: logo-spin 6s linear infinite; animation-play-state: paused;
+  filter: drop-shadow(0 0 calc(var(--lvl) * 10px) var(--accent));
+  will-change: rotate, scale;
+}
+.logo.playing .logo-hex { animation-play-state: running; }
+@keyframes logo-spin { to { rotate: 360deg; } }
+@media (prefers-reduced-motion: reduce) { .logo-hex { animation: none; } }
 .logo { gap: 10px; display: flex; font-size: 17px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; color: var(--accent); flex-shrink: 0; }
 .pcm-badge {
   font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .12em;
@@ -252,27 +264,12 @@ textarea.hi {
 }
 #art-empty .material-symbols-outlined { font-size: 52px; opacity: .4; }
 #art-empty span { font-family: var(--fm); font-size: 10px; letter-spacing: .1em; }
-#eq {
-  position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
-  display: flex; gap: 3px; align-items: flex-end; height: 22px; opacity: 0; transition: opacity .3s;
-}
-#eq.active { opacity: 1; }
-.eb { width: 4px; border-radius: var(--sh-full); background: var(--accent); transform-origin: bottom; animation: eq .7s ease-in-out infinite alternate; }
-.eb:nth-child(1){height:6px; animation-delay:0s} .eb:nth-child(2){height:13px;animation-delay:.12s}
-.eb:nth-child(3){height:20px;animation-delay:.24s} .eb:nth-child(4){height:10px;animation-delay:.06s}
-.eb:nth-child(5){height:17px;animation-delay:.18s}
-@keyframes eq { from{transform:scaleY(1)} to{transform:scaleY(.25)} }
-.eb.paused { animation-play-state: paused; }
 #buf-ring {
   display: none; position: absolute; top: 8px; right: 8px; width: 18px; height: 18px;
   border: 2px solid var(--brd2); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite;
 }
 #buf-ring.show { display: block; }
 @keyframes spin { to{ transform: rotate(360deg); } }
-#pcm-meter { position: absolute; top: 8px; left: 8px; display: flex; flex-direction: column; gap: 2px; opacity: 0; transition: opacity .3s; }
-#pcm-meter.active { opacity: 1; }
-.pm-bar { width: 3px; background: var(--brd2); border-radius: var(--sh-full); height: 40px; position: relative; overflow: hidden; }
-.pm-fill { position: absolute; bottom: 0; left: 0; right: 0; background: var(--green); border-radius: var(--sh-full); height: 0%; transition: height .1s; }
 
 #info { padding: 14px 16px; border-bottom: 1px solid var(--brd); }
 #info-src { font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase; color: var(--accent2); margin-bottom: 5px; display: flex; align-items: center; gap: 6px; }

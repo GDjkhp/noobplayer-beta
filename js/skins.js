@@ -278,8 +278,8 @@ const Skins = {
       .si-th,.qi-th,.si-nth,.qi-nth,.cfg-mode-btn,.radio-opt,
       #viz-stage,.viz-frame,.viz-card,.viz-tab,.viz-error,.hi.viz-code,
       .dbg-card,.dbg-section,.dbg-wave-canvas,.dbg-seg-btn,.dbg-seg-toggle,.dbg-table,
-      .bnd-btn,.bnd-x,.skin-badge,.hdr-btn,.lobby-code-badge,.skin-tab,.tab,.eb,
-      .pm-bar,.pm-fill,.skin-swatch,.skin-sw,.qib,.skin-card,.chat-msg,.cu-item{border-radius:${r}}`);
+      .bnd-btn,.bnd-x,.skin-badge,.hdr-btn,.lobby-code-badge,.skin-tab,.tab,
+      .skin-swatch,.skin-sw,.qib,.skin-card,.chat-msg,.cu-item{border-radius:${r}}`);
     // Every rounded element in style.css takes its radius from one of the
     // --sh-* tokens, so pointing all of them at the skin's radius makes
     // EVERYTHING follow it (debug rows/cards, session rows, timing bars,
