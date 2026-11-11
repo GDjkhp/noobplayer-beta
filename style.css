@@ -180,21 +180,17 @@ textarea.hi {
   padding: 10px 18px; border-bottom: 1px solid var(--brd);
   background: var(--surf); flex-wrap: wrap; flex-shrink: 0; z-index: 10;
 }
-/* Hexagon logo. The spin animation is always attached but PAUSED unless a track
-   is playing, so pausing/skipping freezes the rotation instead of resetting it.
-   Pulse is audio-reactive: JS (UI._logoLoop) sets `scale`, `opacity` and --lvl. */
+/* Logo icon. Rotation is driven from JS (UI._logoLoop) so its speed can follow the
+   song's BPM without the angle ever jumping; it just stops accumulating when paused.
+   Pulse is audio-reactive: JS sets `scale`, `opacity` and --lvl. */
 .logo-hex {
   display: inline-block; --lvl: 0;
   width: 28px; height: 28px; object-fit: contain; cursor: pointer;
   user-select: none; -webkit-user-drag: none;
-  animation: logo-spin 6s linear infinite; animation-play-state: paused;
   filter: drop-shadow(0 0 calc(var(--lvl) * 10px) var(--accent));
   will-change: rotate, scale;
 }
-.logo.playing .logo-hex { animation-play-state: running; }
-@keyframes logo-spin { to { rotate: 360deg; } }
-@media (prefers-reduced-motion: reduce) { .logo-hex { animation: none; } }
-.logo { gap: 10px; display: flex; font-size: 17px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; color: var(--accent); flex-shrink: 0; }
+.logo { gap: 10px; display: flex; align-items: center; font-size: 17px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; color: var(--accent); flex-shrink: 0; }
 .pcm-badge {
   font-family: var(--fm); font-size: 9px; font-weight: 600; letter-spacing: .12em;
   background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);

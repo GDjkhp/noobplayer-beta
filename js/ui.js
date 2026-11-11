@@ -442,8 +442,8 @@ const UI = {
     if (this._dlMenuEsc) { document.removeEventListener('keydown', this._dlMenuEsc); this._dlMenuEsc = null; }
   },
 
-  // Header hexagon logo: spins while playing (CSS play-state, so it freezes in
-  // place on pause/skip/stop and resumes from the same angle) and pulses to the
+  // Header logo: spins while playing (angle kept in JS, so it freezes in place on
+  // pause/skip/stop and resumes from the same angle; speed follows the song's BPM) and pulses to the
   // music's bass/level like a visualizer. Driven by one rAF loop.
   updateEQ() {
     const playing = !!(S.current && S.player && !S.player.isPaused);
@@ -474,7 +474,30 @@ const UI = {
     document.addEventListener('click', e => { if (e.target.closest && e.target.closest('.logo-hex')) UI.cycleLogo(); });
   },
 
+  // Spin speed. With server beat tracking, RPM follows the playing song's BPM
+  // (one revolution every LOGO_BEATS_PER_REV beats); otherwise LOGO_DEFAULT_RPM.
+  LOGO_BEATS_PER_REV: 4,
+  LOGO_DEFAULT_RPM: 10,
+  LOGO_MAX_RPM: 90,
+
   _logoLvl: 0, _logoPlaying: false, _logoRaf: 0, _logoSpec: null,
+  _logoAngle: 0, _logoRpm: 10, _logoT: 0, _logoSyncT: 0,
+
+  // Target RPM for the current track, or null when the server isn't beat tracking.
+  _logoTargetRpm() {
+    try {
+      const A = (typeof AudioAnalysis !== 'undefined') ? AudioAnalysis : null;
+      if (!A || !A.available() || !S.current) return null;
+      const now = performance.now();
+      if (now - this._logoSyncT > 500) { this._logoSyncT = now; A.sync(); }   // cheap; fetches once per track
+      const st = A.status;
+      if (st === 'disabled' || st === 'unavailable' || st === 'unsupported' || st === 'error') return null;
+      const pos = S.player && S.player.getPositionMs ? S.player.getPositionMs() : 0;
+      const r = A.bpmAt(pos);                 // follows tempo changes; null until the beats stage lands
+      if (!r || !(r.bpm > 0)) return null;
+      return Math.min(r.bpm / this.LOGO_BEATS_PER_REV, this.LOGO_MAX_RPM);
+    } catch (_) { return null; }
+  },
 
   _logoLoop() {
     this._logoRaf = requestAnimationFrame(() => this._logoLoop());
@@ -502,8 +525,21 @@ const UI = {
     this._logoLvl += (target - this._logoLvl) * k;
     const v = Math.min(this._logoLvl, 1);
 
+    // Spin: accumulate the angle ourselves, so pause/skip freezes it in place and
+    // a BPM change only changes the speed (never the position).
+    const nowT = performance.now();
+    const dt = Math.min(nowT - (this._logoT || nowT), 100) / 1000;
+    this._logoT = nowT;
+    if (playing) {
+      const rpm = this._logoTargetRpm();
+      const goal = rpm == null ? this.LOGO_DEFAULT_RPM : rpm;
+      this._logoRpm += (goal - this._logoRpm) * Math.min(1, dt * 4);   // ease between tempos
+      this._logoAngle = (this._logoAngle + this._logoRpm * 6 * dt) % 360;   // rpm * 360/60 deg/s
+    }
+
     const els = document.querySelectorAll('.logo-hex');
     for (const el of els) {
+      el.style.rotate = this._logoAngle.toFixed(2) + 'deg';
       el.style.scale = (0.9 + v * 0.45).toFixed(3);
       el.style.opacity = (0.65 + v * 0.35).toFixed(3);
       el.style.setProperty('--lvl', v.toFixed(3));
