@@ -1168,12 +1168,81 @@ const UI = {
     const b = document.getElementById('lyr-badge');
     if (!b) return;
     const kind = S.lyrics && S.lyrics.length ? S.lyricsType : null;
-    if (kind !== 'synced' && kind !== 'plain') { b.hidden = true; b.className = ''; b.innerHTML = ''; return; }
+    if (kind !== 'synced' && kind !== 'plain') { b.hidden = true; b.className = ''; b.innerHTML = ''; this._lyrLangPaint(); return; }
     const synced = kind === 'synced';
     b.hidden = false;
     b.className = synced ? 'synced' : '';
     b.title = synced ? 'These lyrics are timed to the song' : 'These lyrics have no timing, so they will not follow the song';
     b.innerHTML = `<span class="material-symbols-outlined">${synced ? 'sync' : 'sync_disabled'}</span>${synced ? 'Synced' : 'Not synced'}`;
+    this._lyrLangPaint();
+  },
+
+  /* ───────── Original-language label ─────────
+     A pill next to Synced / Not synced naming the language the song is in.
+     Detected with the same "gtx" endpoint as the translation (its 3rd field is
+     the detected source language), from a sample of several distinct lines sent
+     as ONE request, which is far more reliable than guessing from a single
+     line. Independent of the Translate toggle. Cached per track; like the
+     translation it only runs while the Lyrics tab is open. */
+  _lyrLangCache: new Map(),     // encoded -> language code
+  _lyrLangBusy: new Set(),      // encoded tracks being detected right now
+  _LANG_NAMES: { 'zh-CN': 'Chinese (Simplified)', 'zh-TW': 'Chinese (Traditional)', tl: 'Filipino', iw: 'Hebrew', jw: 'Javanese' },
+
+  _langName(code) {
+    if (this._LANG_NAMES[code]) return this._LANG_NAMES[code];
+    try { return new Intl.DisplayNames(['en'], { type: 'language' }).of(code) || code; } catch (_) { return code; }
+  },
+
+  _lyrLangPaint() {
+    const el = document.getElementById('lyr-lang');
+    if (!el) return;
+    const code = S.lyrics && S.lyrics.length ? this._lyrLangCache.get(S.lyricsFetchedFor) : null;
+    if (!code) { el.hidden = true; el.innerHTML = ''; return; }
+    el.hidden = false;
+    el.title = 'Original language of the lyrics (auto-detected)';
+    el.innerHTML = `<span class="material-symbols-outlined">language</span>${esc(this._langName(code))}`;
+  },
+
+  // Up to ~8 distinct lines (≤500 chars), starting a quarter of the way in so
+  // intro / credit lines don't skew it.
+  _lyrLangSample() {
+    const seen = new Set(), lines = [];
+    for (const l of S.lyrics || []) {
+      const t = l.txt.trim();
+      if (/\p{L}/u.test(t) && !seen.has(t)) { seen.add(t); lines.push(t); }
+    }
+    if (!lines.length) return '';
+    const from = Math.min(Math.floor(lines.length * 0.25), Math.max(0, lines.length - 8));
+    const out = [];
+    let len = 0;
+    for (const t of lines.slice(from)) {
+      if (out.length >= 8 || (out.length && len + t.length > 500)) break;
+      out.push(t); len += t.length;
+    }
+    return out.join('\n').slice(0, 500);
+  },
+
+  async _lyrDetectLang() {
+    const enc = S.lyricsFetchedFor;
+    if (!enc || !S.lyrics || !S.lyrics.length || !this._lyrTabOpen()) return;
+    if (this._lyrLangCache.has(enc) || this._lyrLangBusy.has(enc)) return;
+    const sample = this._lyrLangSample();
+    if (!sample) return;
+    this._lyrLangBusy.add(enc);
+    try {
+      const res = await fetch(`${this._TR_URL}?client=gtx&sl=auto&tl=en&dt=t&q=${encodeURIComponent(sample)}`);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const d = await res.json();
+      const code = d && typeof d[2] === 'string' ? d[2] : '';
+      if (!code || code === 'und') return;
+      if (this._lyrLangCache.size >= 200) this._lyrLangCache.delete(this._lyrLangCache.keys().next().value);
+      this._lyrLangCache.set(enc, code);
+      if (S.lyricsFetchedFor === enc) this._lyrLangPaint();
+    } catch (_) {
+      // No label rather than an error; the next time the tab opens it tries again.
+    } finally {
+      this._lyrLangBusy.delete(enc);
+    }
   },
 
   /* ───────── Lyrics translation ─────────
@@ -1362,6 +1431,7 @@ const UI = {
           });
         }
         this._lyrTranslate().catch(() => {});
+        this._lyrDetectLang().catch(() => {});
       } else {
         S.lyrics = null; S.lyricsType = null;
         document.getElementById('lyr-src-lbl').textContent = 'No lyrics found';
@@ -1586,7 +1656,7 @@ const UI = {
     // The floating Sync button belongs to the Lyrics tab only.
     const sb = document.getElementById('btn-lyr-sync');
     if (sb) sb.hidden = !(name === 'lyrics' && this._lyrHeld && S.lyricsType === 'synced' && S.lyrics);
-    if (name === 'lyrics') this._lyrTranslate().catch(() => {});
+    if (name === 'lyrics') { this._lyrTranslate().catch(() => {}); this._lyrDetectLang().catch(() => {}); }
     if (prev !== name) {
       // Synced lyrics follow the playing line instead of resetting to the top.
       if (name === 'lyrics' && !this._lyrHeld && S.lyricsType === 'synced' && S.lyrics) this._lyrCatchUp();
