@@ -109,6 +109,80 @@ const Main = {
     window.addEventListener('orientationchange', fit);
     sideBySide.addEventListener('change', fit);
   },
+
+  // Portrait only: collapse the header and the secondary player controls
+  // (loop / gapless / shuffle / info / download / volume) while the user
+  // scrolls down, so the list below gets the room and only the now-playing
+  // card, progress bar and transport row stay pinned. Scrolling back up
+  // (64px of it) or reaching the very top brings them back. This only sets
+  // body.np-compact; the CSS does the rest ("portrait phone: one-line header"
+  // in style.css).
+  //
+  // Two things keep it from misfiring:
+  //  • Collapsing the header makes #main taller, which lowers its maximum
+  //    scrollTop. Near the end of a short list that would clamp the scroll
+  //    position, which looks like the user scrolling up, which would flip the
+  //    state straight back (flicker). So it only collapses when more than the
+  //    header's height is left to scroll.
+  //  • Only real gestures count (finger drag + its momentum, wheel, scroll
+  //    keys). The app scrolls by itself too (switching tabs, lyrics following
+  //    the song) and a plain tap on a tab must not toggle anything.
+  _initPortraitCompact() {
+    const main = document.getElementById('main');
+    if (!main) return;
+    const mq = window.matchMedia('(max-width: 1000px) and (orientation: portrait)');
+    const ENTER = 40;     // px scrolled from the top before it may collapse
+    const DOWN = 10;      // px of continuous downward scrolling that triggers it
+    const UP = 64;        // px of continuous upward scrolling that brings it back
+    const TOP = 6;        // at (or within this of) the top everything is shown
+    const MOMENTUM = 1200;   // ms after the last gesture that scrolling still counts as the user's
+    let compact = false, last = main.scrollTop, run = 0, dragging = false, lastInput = 0;
+
+    const set = (on) => {
+      if (on === compact) return;
+      compact = on;
+      document.body.classList.toggle('np-compact', on);
+    };
+    const headerH = () => {
+      for (const id of ['hdr-lobby', 'hdr-standalone']) {
+        const h = document.getElementById(id);
+        if (h && h.style.display !== 'none') return h.offsetHeight;
+      }
+      return 0;
+    };
+    const input = () => { lastInput = performance.now(); };
+
+    main.addEventListener('touchstart', () => { dragging = false; }, { passive: true });
+    main.addEventListener('touchmove', () => { dragging = true; input(); }, { passive: true });
+    const release = () => { if (dragging) input(); dragging = false; };
+    main.addEventListener('touchend', release, { passive: true });
+    main.addEventListener('touchcancel', release, { passive: true });
+    main.addEventListener('wheel', input, { passive: true });
+    window.addEventListener('keydown', (e) => {
+      if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)
+          && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '')) input();
+    });
+
+    main.addEventListener('scroll', () => {
+      if (!mq.matches) return;
+      const st = Math.max(0, main.scrollTop);        // iOS rubber-banding can go negative
+      const d = st - last;
+      last = st;
+      if (st <= TOP) { run = 0; set(false); return; }
+      if (!dragging && performance.now() - lastInput > MOMENTUM) { run = 0; return; }   // not the user's scroll
+      if (!d) return;
+      run = (d > 0) === (run > 0) ? run + d : d;     // signed length of the current one-direction run
+      if (!compact && run >= DOWN && st > ENTER) {
+        const room = main.scrollHeight - main.clientHeight - st;
+        if (room > headerH() + 8) set(true);
+      } else if (compact && run <= -UP) {
+        set(false);
+      }
+    }, { passive: true });
+
+    // Rotating / leaving the portrait layout: back to the normal, full header.
+    mq.addEventListener('change', () => { set(false); run = 0; last = main.scrollTop; });
+  },
 };
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -122,6 +196,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   UI.setupProgressBar();
   Main._initStickyPlayer();
   Main._initFitPlayerHeight();
+  Main._initPortraitCompact();
 
   /* ───────── App header (standalone) ───────── */
   document.getElementById('btn-disconnect-sa').addEventListener('click', () => Standalone.disconnect());
@@ -129,6 +204,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   /* ───────── App header (lobby) ───────── */
   document.getElementById('btn-copy-code').addEventListener('click', () => Lobby.copyCode());
   document.getElementById('btn-leave-lobby').addEventListener('click', () => Lobby.requestLeave());
+  // The avatars squish to fit the one-line portrait header; re-fit whenever
+  // the room they have changes (the pad badge appears, the screen rotates…).
+  (() => {
+    const strip = document.getElementById('participants-strip');
+    if (strip && window.ResizeObserver) new ResizeObserver(() => Lobby._fitParticipants()).observe(strip);
+    window.matchMedia('(max-width: 1000px) and (orientation: portrait)').addEventListener('change', () => Lobby._fitParticipants());
+  })();
 
   /* ───────── Playback controls ───────── */
   document.getElementById('btn-play').addEventListener('click', () => Engine.togglePause());

@@ -466,8 +466,30 @@ const Lobby = {
       const initial = (p.name || '?').trim().charAt(0).toUpperCase() || '?';
       return `<div class="pchip ${p.isHost ? 'is-host' : ''} ${p.isDj ? 'is-dj' : ''}" title="${esc(p.name)}${p.isHost ? ' (host)' : p.isDj ? ' (DJ)' : ''}">${esc(initial)}</div>`;
     }).join('');
+    this._fitParticipants();
     UI.renderChatUsers(list);
     UI.renderDjCard(list);
+  },
+
+  // Portrait header is a single line, so the avatars never wrap: when the strip
+  // runs out of room they overlap more, like a fanned stack of cards (C C C C O)
+  // with each avatar only showing a sliver of itself under the next one.
+  // CSS reads --pstep (how far each chip is offset from the previous one);
+  // unset = the natural overlap. Re-run whenever the strip's width changes
+  // (main.js watches it), because the room depends on the other header items.
+  _PCHIP_MIN_STEP: 4,
+  _fitParticipants() {
+    const strip = document.getElementById('participants-strip');
+    if (!strip) return;
+    const n = strip.children.length;
+    const portrait = window.matchMedia('(max-width: 1000px) and (orientation: portrait)').matches;
+    const size = n ? strip.children[0].offsetWidth : 0;
+    const avail = strip.clientWidth;
+    if (n < 2 || !portrait || !size || !avail) { strip.style.removeProperty('--pstep'); return; }
+    const natural = size - 8;                                          // the normal overlap
+    const step = Math.max(this._PCHIP_MIN_STEP, Math.min(natural, (avail - size) / (n - 1)));
+    if (step < natural) strip.style.setProperty('--pstep', step.toFixed(2) + 'px');
+    else strip.style.removeProperty('--pstep');
   },
 
   _applyChat(msg) {

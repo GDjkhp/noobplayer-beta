@@ -995,6 +995,55 @@ body { height: 100vh; height: 100dvh; }
   }
 }
 
+/* ── portrait phone: one-line header + collapse-on-scroll ──
+   The page is one scroller (#main) under a header, so the header and the
+   secondary controls (loop / gapless / shuffle / info / download / volume)
+   used to take a big slice of a small screen for good. main.js
+   (_initPortraitCompact) toggles body.np-compact while the user scrolls
+   down and removes it again on a scroll up or at the very top. Compact =
+   the header is gone and only the now-playing card, progress bar and the
+   transport row stay pinned. Both collapse through max-height (animated);
+   `visibility` flips after the animation so hidden buttons can't be tabbed
+   to or tapped. The header is also forced onto ONE line: "NP" instead of
+   the wordmark, and the participants overlap like a fanned stack of cards
+   (see Lobby._fitParticipants, which sets --pstep from the room available). */
+.logo-short { display: none; }
+@media (max-width: 1000px) and (orientation: portrait) {
+  .hdr {
+    flex-wrap: nowrap; gap: 8px; padding: 8px 12px; overflow: hidden; max-height: 64px;
+    transition: max-height .2s ease, padding .2s ease, opacity .15s ease, border-width .2s ease, visibility 0s;
+  }
+  .logo { gap: 4px; font-size: 15px; letter-spacing: .1em; }
+  .logo-full { display: none; }
+  .logo-short { display: inline; }
+  .pcm-badge { display: none; }
+  #stxt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .hdr-btn { padding: 6px 12px; }
+  .hdr-btn.ghost { padding: 0; }
+  .lobby-code-badge { font-size: 12px; letter-spacing: .16em; padding: 4px 9px; }
+
+  /* The strip takes whatever width is left on the line, flush against Leave. */
+  #hdr-lobby .hdr-fill { display: none; }
+  #participants-strip { --psize: 24px; flex: 1 1 0; min-width: 0; justify-content: flex-end; overflow: hidden; }
+  #participants-strip .pchip { width: var(--psize); height: var(--psize); flex-shrink: 0; margin-left: calc(var(--pstep, 16px) - var(--psize)); }
+  #participants-strip .pchip:first-child { margin-left: 0; }
+
+  #ctrls-sec { overflow: hidden; max-height: 200px; transition: max-height .2s ease, opacity .15s ease, visibility 0s; }
+  #ctrls-main { transition: margin-bottom .2s ease; }
+  #ctrls { transition: padding .2s ease; }
+
+  body.np-compact .hdr {
+    max-height: 0; padding-top: 0; padding-bottom: 0; opacity: 0; border-bottom-width: 0; visibility: hidden;
+    transition: max-height .2s ease, padding .2s ease, opacity .15s ease, border-width .2s ease, visibility 0s .2s;
+  }
+  body.np-compact #ctrls-sec { max-height: 0; opacity: 0; visibility: hidden; transition: max-height .2s ease, opacity .15s ease, visibility 0s .2s; }
+  body.np-compact #ctrls-main { margin-bottom: 0; }
+  body.np-compact #ctrls { padding-top: 8px; padding-bottom: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hdr, #ctrls-sec, #ctrls-main, #ctrls { transition: none !important; }
+}
+
 /* buffered-waveform legend (Debug tab) */
 .dbg-key { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; font-family: var(--fm); font-size: 9px; font-weight: 400; color: var(--muted); }
 .dbg-key-sw { display: inline-block; width: 8px; height: 8px; border-radius: var(--sh-xs); }
