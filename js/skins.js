@@ -63,14 +63,14 @@ const SKIN_OPT_DEFAULTS = {
 // Built-in starting points. Each only overrides what it cares about —
 // Skins.normalize() fills the rest in from the stock theme.
 const SKIN_PRESETS = {
-  'Midnight (default)': { vars: {}, opts: {} },
+  'Midnight': { vars: {}, opts: {} },
   'Vaporwave': {
     vars: { bg:'#1a0b2e', surf:'#241041', surf2:'#2d1452', surf3:'#3a1a68', brd:'#3d1f66',
             brd2:'#552d8c', text:'#ffe9ff', muted:'#a97fd4', muted2:'#7a5aa0',
             accent:'#ff71ce', accent2:'#01cdfe', green:'#05ffa1', pink:'#ff71ce' },
     opts: { radius: 32, glow: 14, noise: 5 },
   },
-  'Terminal': {
+  'Terminal (default)': {
     vars: { bg:'#000000', surf:'#050f05', surf2:'#0a1a0a', surf3:'#0f230f', brd:'#123d12',
             brd2:'#1c5c1c', text:'#c8ffc8', muted:'#4f9e4f', muted2:'#2f6b2f',
             accent:'#00ff66', accent2:'#8bff00', fn:"'JetBrains Mono', monospace" },
@@ -124,6 +124,7 @@ const SKIN_PRESETS = {
   },
 };
 
+const DEFAULT_SKIN = 'Terminal (default)';   // used when the user hasn't picked a skin
 const LS_ACTIVE = 'nl_skin_active';
 const LS_LIBRARY = 'nl_skins';
 const LS_DRAFT   = 'nl_skin_draft';
@@ -148,13 +149,22 @@ const Skins = {
         S.skins.active = skin;
         S.skins.activeId = skin._id || null;
         this.apply(skin, { persist: false });
+      } else {
+        this._applyDefault();
       }
-    } catch (_) { Store.removeItem(LS_ACTIVE); }
+    } catch (_) { Store.removeItem(LS_ACTIVE); this._applyDefault(); }
 
     try {
       const draft = Store.getItem(LS_DRAFT);
       S.skins.draft = draft ? this.normalize(JSON.parse(draft)) : this.normalize(S.skins.active || {});
     } catch (_) { S.skins.draft = this.normalize({}); }
+  },
+
+  // The built-in default look (Terminal). Not persisted, so a user who never picks a
+  // skin always follows whatever DEFAULT_SKIN is; picking one (incl. Midnight) sticks.
+  _applyDefault() {
+    const p = SKIN_PRESETS[DEFAULT_SKIN];
+    this.apply({ name: DEFAULT_SKIN.split(' (')[0], vars: { ...p.vars }, opts: { ...SKIN_OPT_DEFAULTS, ...p.opts } }, { persist: false });
   },
 
   // Read the stock theme straight off the stylesheet so "Reset" and any
@@ -253,11 +263,8 @@ const Skins = {
   },
 
   reset() {
-    this._clearVars();
-    this._ensureStyleEl().textContent = '';
-    S.skins.active = null;
-    S.skins.activeId = null;
     Store.removeItem(LS_ACTIVE);
+    this._applyDefault();
     toast('Back to the default look', 'info', 1500);
   },
 

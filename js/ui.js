@@ -481,15 +481,13 @@ const UI = {
   LOGO_MAX_RPM: 90,
 
   _logoLvl: 0, _logoPlaying: false, _logoRaf: 0, _logoSpec: null,
-  _logoAngle: 0, _logoRpm: 10, _logoT: 0, _logoSyncT: 0,
+  _logoAngle: 0, _logoRpm: 10, _logoT: 0,
 
   // Target RPM for the current track, or null when the server isn't beat tracking.
   _logoTargetRpm() {
     try {
       const A = (typeof AudioAnalysis !== 'undefined') ? AudioAnalysis : null;
       if (!A || !A.available() || !S.current) return null;
-      const now = performance.now();
-      if (now - this._logoSyncT > 500) { this._logoSyncT = now; A.sync(); }   // cheap; fetches once per track
       const st = A.status;
       if (st === 'disabled' || st === 'unavailable' || st === 'unsupported' || st === 'error') return null;
       const pos = S.player && S.player.getPositionMs ? S.player.getPositionMs() : 0;

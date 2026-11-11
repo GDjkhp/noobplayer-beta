@@ -336,3 +336,10 @@ const AudioAnalysis = {
     o.start(t); o.stop(t + 0.08);
   },
 };
+
+// Always-on driver. Previously sync() was only reached from the Debug tab's render
+// loop, so the socket listener / per-track snapshot only happened while that tab was
+// open. sync() is cheap (it no-ops outside a server lobby and takes ONE snapshot per
+// track), so run it in the background regardless of which tab is focused. Anything
+// that needs BPM / beats (e.g. the header logo's spin speed) can then rely on it.
+setInterval(() => { try { AudioAnalysis.sync(); } catch (_) {} }, 500);
