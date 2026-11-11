@@ -113,8 +113,9 @@ const Main = {
   // Portrait only: collapse the header and the secondary player controls
   // (loop / gapless / shuffle / info / download / volume) while the user
   // scrolls down, so the list below gets the room and only the now-playing
-  // card, progress bar and transport row stay pinned. Scrolling back up
-  // (64px of it) or reaching the very top brings them back. This only sets
+  // card, progress bar and transport row stay pinned. Scrolling back up does NOT
+  // bring them back: they only expand again once the list is back at the very
+  // top. This only sets
   // body.np-compact; the CSS does the rest ("portrait phone: one-line header"
   // in style.css).
   //
@@ -133,7 +134,6 @@ const Main = {
     const mq = window.matchMedia('(max-width: 1000px) and (orientation: portrait)');
     const ENTER = 40;     // px scrolled from the top before it may collapse
     const DOWN = 10;      // px of continuous downward scrolling that triggers it
-    const UP = 64;        // px of continuous upward scrolling that brings it back
     const TOP = 6;        // at (or within this of) the top everything is shown
     const MOMENTUM = 1200;   // ms after the last gesture that scrolling still counts as the user's
     let compact = false, last = main.scrollTop, run = 0, dragging = false, lastInput = 0;
@@ -172,11 +172,12 @@ const Main = {
       if (!dragging && performance.now() - lastInput > MOMENTUM) { run = 0; return; }   // not the user's scroll
       if (!d) return;
       run = (d > 0) === (run > 0) ? run + d : d;     // signed length of the current one-direction run
+      // Collapse while scrolling down. Expanding is handled only by the
+      // `st <= TOP` check above (i.e. when the top is reached) — never by
+      // scrolling up part-way.
       if (!compact && run >= DOWN && st > ENTER) {
         const room = main.scrollHeight - main.clientHeight - st;
         if (room > headerH() + 8) set(true);
-      } else if (compact && run <= -UP) {
-        set(false);
       }
     }, { passive: true });
 
