@@ -268,6 +268,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   /* ───────── Lyrics ───────── */
+  UI.initLyricsTranslate();
+  document.getElementById('btn-lyr-tr').addEventListener('click', () => UI.toggleLyricsTranslate());
+  document.getElementById('lyr-tr-lang').addEventListener('change', e => UI.setLyricsTranslateLang(e.target.value));
 
   /* ───────── Download (now-playing) ───────── */
   document.getElementById('btn-dl').addEventListener('click', e => UI.openDownloadMenu(e.currentTarget, S.current));

@@ -1176,6 +1176,131 @@ const UI = {
     b.innerHTML = `<span class="material-symbols-outlined">${synced ? 'sync' : 'sync_disabled'}</span>${synced ? 'Synced' : 'Not synced'}`;
   },
 
+  /* ───────── Lyrics translation ─────────
+     Every lyric line is translated through Google's public "gtx" endpoint and
+     shown as a smaller line under the original. On by default; the toggle and
+     the target language are remembered (Store keys nl_lyr_tr / nl_lyr_tr_lang).
+     Work only happens while the Lyrics tab is open (lyrics are auto-fetched for
+     every track, and translating lines nobody is looking at would just burn
+     requests); opening the tab, toggling on, or changing language starts it.
+     Lines are requested one by one, a few at a time, de-duplicated (choruses)
+     and cached per language so replays and language flips are instant. */
+  _TR_URL: 'https://translate.googleapis.com/translate_a/single',
+  _TR_LANGS: [
+    ['en', 'English'], ['tl', 'Filipino'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'],
+    ['it', 'Italian'], ['pt', 'Portuguese'], ['ru', 'Russian'], ['ja', 'Japanese'], ['ko', 'Korean'],
+    ['zh-CN', 'Chinese (Simplified)'], ['zh-TW', 'Chinese (Traditional)'], ['ar', 'Arabic'],
+    ['hi', 'Hindi'], ['id', 'Indonesian'], ['th', 'Thai'], ['vi', 'Vietnamese'], ['tr', 'Turkish'],
+  ],
+  _TR_CACHE_MAX: 4000,
+  _TR_CONCURRENCY: 4,
+  _trCache: new Map(),    // `${lang}\n${text}` -> { tr, src }   (tr '' = nothing worth showing)
+  _trGen: 0,              // bumped on every (re)start / cancel so older runs stop
+  _trWarned: false,
+
+  _trOn() { let v = null; try { v = Store.getItem('nl_lyr_tr'); } catch (_) {} return v !== '0'; },
+  _trLang() {
+    let v = null; try { v = Store.getItem('nl_lyr_tr_lang'); } catch (_) {}
+    return this._TR_LANGS.some(l => l[0] === v) ? v : 'en';
+  },
+  _trKey(lang, text) { return lang + '\n' + text; },
+
+  initLyricsTranslate() {
+    const sel = document.getElementById('lyr-tr-lang');
+    if (!sel) return;
+    sel.innerHTML = this._TR_LANGS.map(([c, n]) => `<option value="${c}">${esc(n)}</option>`).join('');
+    sel.value = this._trLang();
+    this._trSync();
+  },
+
+  _trSync() {
+    const on = this._trOn();
+    const b = document.getElementById('btn-lyr-tr');
+    if (b) { b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+    const body = document.getElementById('lyr-body');
+    if (body) body.classList.toggle('tr-off', !on);
+  },
+
+  toggleLyricsTranslate() {
+    const on = !this._trOn();
+    try { Store.setItem('nl_lyr_tr', on ? '1' : '0'); } catch (_) {}
+    this._trSync();
+    if (on) this._lyrTranslate().catch(() => {});
+    else this._trGen++;                       // cancel anything still running
+  },
+
+  setLyricsTranslateLang(lang) {
+    try { Store.setItem('nl_lyr_tr_lang', lang); } catch (_) {}
+    this._trWarned = false;
+    this._lyrTranslate().catch(() => {});
+  },
+
+  // Fill every .ll-tr from the cache (blank where we have nothing yet, so a
+  // previous language never lingers under the new one).
+  _trPaint() {
+    if (!S.lyrics) return;
+    const lang = this._trLang();
+    document.querySelectorAll('#lyr-body .ll').forEach((el, i) => {
+      const t = el.querySelector('.ll-tr'), l = S.lyrics[i];
+      if (!t || !l) return;
+      const hit = this._trCache.get(this._trKey(lang, l.txt.trim()));
+      t.textContent = hit && hit.tr ? hit.tr : '';
+    });
+  },
+
+  async _trLine(text, lang) {
+    const url = `${this._TR_URL}?client=gtx&sl=auto&tl=${encodeURIComponent(lang)}&dt=t&q=${encodeURIComponent(text)}`;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        // [[ [translated, original, …], … ], null, detectedLang, …]
+        const out = Array.isArray(d && d[0]) ? d[0].map(s => (s && s[0]) || '').join('').trim() : '';
+        const src = d && typeof d[2] === 'string' ? d[2] : '';
+        const base = c => c.toLowerCase().split('-')[0];
+        const sameLang = !!src && (src.toLowerCase() === lang.toLowerCase() || (base(src) === base(lang) && base(lang) !== 'zh'));
+        const same = !out || out.toLowerCase() === text.toLowerCase() || sameLang;
+        return { tr: same ? '' : out, src };
+      } catch (e) {
+        if (attempt >= 1) throw e;
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+  },
+
+  async _lyrTranslate() {
+    const gen = ++this._trGen;
+    this._trPaint();
+    if (!this._trOn() || !S.lyrics || !S.lyrics.length || !this._lyrTabOpen()) return;
+    const lang = this._trLang(), enc = S.lyricsFetchedFor;
+    // Unique lines that contain at least one letter (skips "♪", "...", numbers).
+    const todo = [...new Set(S.lyrics.map(l => l.txt.trim()).filter(t => /\p{L}/u.test(t)))]
+      .filter(t => !this._trCache.has(this._trKey(lang, t)));
+    if (!todo.length) return;
+    const stale = () => gen !== this._trGen || enc !== S.lyricsFetchedFor;
+    let fails = 0;
+    const worker = async () => {
+      while (todo.length && !stale() && fails < 3) {
+        const text = todo.shift();
+        try {
+          const r = await this._trLine(text, lang);
+          if (stale()) return;
+          if (this._trCache.size >= this._TR_CACHE_MAX) this._trCache.delete(this._trCache.keys().next().value);
+          this._trCache.set(this._trKey(lang, text), r);
+          this._trPaint();
+        } catch (e) {
+          fails++;       // not cached, so the next toggle / tab open retries it
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: this._TR_CONCURRENCY }, worker));
+    if (fails >= 3 && !stale() && !this._trWarned) {
+      this._trWarned = true;
+      toast('Lyrics translation is unavailable right now', 'warn');
+    }
+  },
+
   // The button is disabled while a fetch is running (and with no track).
   _lyrBusy(busy) {
     const b = document.getElementById('btn-lyr-refetch');
@@ -1230,12 +1355,13 @@ const UI = {
         S.lyricsType = d.synced ? 'synced' : 'plain';
         S.lyrics = d.lines.map(l => ({ t: typeof l.time === 'number' ? l.time : parseFloat(l.time || 0), txt: l.text || '' }));
         document.getElementById('lyr-body').innerHTML =
-          S.lyrics.map((l, i) => `<div class="ll" data-i="${i}" data-t="${l.t}">${esc(l.txt) || '<span class="material-symbols-outlined ll-note">music_note</span>'}</div>`).join('');
+          S.lyrics.map((l, i) => `<div class="ll" data-i="${i}" data-t="${l.t}"><span class="ll-txt">${esc(l.txt) || '<span class="material-symbols-outlined ll-note">music_note</span>'}</span><span class="ll-tr"></span></div>`).join('');
         if (d.synced) {
           document.querySelectorAll('.ll').forEach(el => {
             el.addEventListener('click', () => { this._lyrHold(false); Engine.seekTo(parseFloat(el.dataset.t)); });
           });
         }
+        this._lyrTranslate().catch(() => {});
       } else {
         S.lyrics = null; S.lyricsType = null;
         document.getElementById('lyr-src-lbl').textContent = 'No lyrics found';
@@ -1460,6 +1586,7 @@ const UI = {
     // The floating Sync button belongs to the Lyrics tab only.
     const sb = document.getElementById('btn-lyr-sync');
     if (sb) sb.hidden = !(name === 'lyrics' && this._lyrHeld && S.lyricsType === 'synced' && S.lyrics);
+    if (name === 'lyrics') this._lyrTranslate().catch(() => {});
     if (prev !== name) {
       // Synced lyrics follow the playing line instead of resetting to the top.
       if (name === 'lyrics' && !this._lyrHeld && S.lyricsType === 'synced' && S.lyrics) this._lyrCatchUp();
