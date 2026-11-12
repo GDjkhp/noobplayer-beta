@@ -566,7 +566,9 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
    itself (which is the viewport minus the side-by-side player on desktop),
    not the viewport — two columns when there's room, one when there isn't. */
 #cfg-body { padding: 18px; display: flex; flex-direction: column; gap: 20px; container-type: inline-size; }
-.cfg-mode-row, .skins-tabs, .viz-tabs { display: flex; gap: 8px; }
+.cfg-mode-row, .skins-tabs, .viz-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Skins / Visualizer pills keep their natural width and drop to the next line when the row is too narrow. */
+.skin-tab, .viz-tab { flex: 1 0 auto; white-space: nowrap; }
 /* M3 outlined → tonal on select (segmented-button style). */
 .cfg-mode-btn, .skin-tab, .viz-tab {
   display: flex; align-items: center; justify-content: center; gap: 6px;
@@ -605,11 +607,12 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 .cfg-block .overlay-form { gap: 6px; }
 .cfg-block label { font-family: var(--fm); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .cfg-label { font-family: var(--fn); font-weight: 700; font-size: 12px; color: var(--text); margin-bottom: 4px; }
-.cfg-row { display: flex; align-items: center; gap: 10px; margin-bottom: 2px;}
+.cfg-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-bottom: 2px;}
 .cfg-row label { margin-top: 0; }
-.mono-sm, .mono-lg.sm { font-family: var(--fm); font-size: 13px; letter-spacing: .1em; color: var(--accent); }
+.mono-sm, .mono-lg.sm { font-family: var(--fm); font-size: 13px; letter-spacing: .1em; color: var(--accent); min-width: 0; overflow-wrap: anywhere; }
 .radio-row.inline { flex-direction: row; }
-.radio-row.inline .radio-opt { flex: 1; }
+.radio-row.inline { flex-wrap: wrap; }
+.radio-row.inline .radio-opt { flex: 1 1 0; min-width: 0; flex-wrap: wrap; }   /* the (hint) drops to its own line instead of clipping */
 #cfg-lobby-name:disabled, #cfg-display-name:disabled { opacity: .5; cursor: not-allowed; }
 .radio-row.inline input:disabled { cursor: not-allowed; }
 
