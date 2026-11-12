@@ -1384,3 +1384,31 @@ body.pad-active.pad-tabs-focused .pane :focus {
 .md table { border-collapse: collapse; margin: 0 0 1em; }
 .md th, .md td { border: 1px solid var(--brd); padding: 6px 10px; }
 .md img { max-width: 100%; }
+/* ═══════════════ Narrow / portrait: tidy tab toolbars ═══════════════
+   On a phone the Queue, Library and Lyrics toolbars wrapped wherever the
+   widths happened to land. Put them on a 6-column grid instead so every row
+   is full and every button in a row is the same width. */
+@media (max-width: 700px) {
+  #q-hdr, #lib-hdr, #lyr-hdr {
+    display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 8px 6px; align-items: center;
+  }
+  /* info text + search box share the first row (2 + 4 columns) */
+  #q-info, #lib-info { grid-column: span 2; flex: none; min-width: 0; }
+  #q-hdr > .sbox, #lib-hdr > .sbox { grid-column: span 4; width: auto; }
+  /* buttons: three to a row, equal width */
+  #q-hdr > .qa, #lib-hdr > .qa {
+    grid-column: span 2; justify-content: center; min-width: 0;
+    padding-left: 4px; padding-right: 4px; gap: 3px; white-space: nowrap;
+  }
+  /* library: the two "add to queue" actions are the long ones, so they pair up on their own row */
+  #lib-hdr > #btn-lib-qall, #lib-hdr > #btn-lib-sall { grid-column: span 3; }
+
+  /* lyrics: source label on its own row, then [translate][language], then Fetch full width */
+  #lyr-src-lbl { grid-column: 1 / -1; flex: none; min-width: 0; }
+  #lyr-badge, #lyr-lang { grid-column: span 3; justify-content: center; }
+  #btn-lyr-tr { grid-column: span 2; justify-content: center; }
+  #btn-lyr-tr .lbl { display: inline; }
+  #lyr-tr-lang { grid-column: span 4; width: 100%; min-width: 0; }
+  #btn-lyr-refetch { grid-column: 1 / -1; justify-content: center; }
+}
