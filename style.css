@@ -1091,6 +1091,10 @@ body { height: 100vh; height: 100dvh; }
 @media (max-width: 700px) {
   .bnd-col-h, .bnd-row { grid-template-columns: 1fr 100px 100px; }
   .bnd-head-txt p { max-width: none; }
+  /* the two reset buttons share a full-width row at equal widths */
+  .bnd-head-txt { flex: 1 1 100%; }
+  .bnd-head-acts { flex: 1 1 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .bnd-head-acts .add-btn { justify-content: center; min-width: 0; padding-left: 4px; padding-right: 4px; white-space: nowrap; }
 }
 
 /* ═══════════════ ON-SCREEN KEYBOARD ═══════════════ */
