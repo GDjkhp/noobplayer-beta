@@ -47,7 +47,9 @@ const VIZ_BUILTINS = [
 {
   name: 'Bars',
   author: 'Noobplayer',
-  code: `// Classic spectrum bars.
+  code: `// Classic spectrum bars. v.freq is raw; the smoothing is done here, with v.ease
+// (rise / fall = time constants in seconds; 0 = instant). Tune RISE and FALL to taste.
+const RISE = 0.03, FALL = 0.12;
 function draw(ctx, v) {
   ctx.clearRect(0, 0, v.w, v.h);
   const bars = 64;
@@ -55,11 +57,15 @@ function draw(ctx, v) {
   const usable = v.usable || v.freq.length;
   const step = Math.max(1, Math.floor(usable / bars));
   const bw = v.w / bars;
+  const raw = new Array(bars);
   for (let i = 0; i < bars; i++) {
     let sum = 0;
     for (let j = 0; j < step; j++) sum += v.freq[i * step + j] || 0;
-    const amp = (sum / step) / 255;
-    const h = amp * v.h * 0.9;
+    raw[i] = (sum / step) / 255;
+  }
+  const amps = v.ease('bars', raw, RISE, FALL);
+  for (let i = 0; i < bars; i++) {
+    const h = amps[i] * v.h * 0.9;
     const grad = ctx.createLinearGradient(0, v.h, 0, v.h - h);
     grad.addColorStop(0, v.theme.accent);
     grad.addColorStop(1, v.theme.accent2);
@@ -90,15 +96,19 @@ function draw(ctx, v) {
 {
   name: 'Radial',
   author: 'Noobplayer',
-  code: `// Spectrum spokes around a pulsing core.
+  code: `// Spectrum spokes around a pulsing core. The analyser data is raw; this visualizer
+// smooths it itself with v.ease (rise / fall = time constants in seconds).
+const RISE = 0.03, FALL = 0.12;
 function draw(ctx, v) {
   ctx.clearRect(0, 0, v.w, v.h);
   const cx = v.w / 2, cy = v.h / 2;
   const base = Math.min(v.w, v.h) * 0.16;
-  const r = base * (1 + v.bass * 0.5);
+  const bass = v.ease('bass', v.bass, RISE, FALL);
+  const level = v.ease('level', v.level, RISE, FALL);
+  const r = base * (1 + bass * 0.5);
 
   ctx.fillStyle = v.theme.accent2;
-  ctx.globalAlpha = 0.25 + v.level * 0.5;
+  ctx.globalAlpha = 0.25 + level * 0.5;
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.fill();
@@ -107,10 +117,13 @@ function draw(ctx, v) {
   const spokes = 96;
   const usable = v.usable || v.freq.length;   // only bins with sound, so the ring is full
   const step = Math.max(1, Math.floor(usable / spokes));
+  const raw = new Array(spokes);
+  for (let i = 0; i < spokes; i++) raw[i] = (v.freq[i * step] || 0) / 255;
+  const amps = v.ease('spokes', raw, RISE, FALL);
   ctx.strokeStyle = v.theme.accent;
   ctx.lineWidth = 2;
   for (let i = 0; i < spokes; i++) {
-    const amp = v.freq[i * step] / 255;
+    const amp = amps[i];
     const a = (i / spokes) * Math.PI * 2 + v.t * 0.15;
     const len = r + amp * Math.min(v.w, v.h) * 0.3;
     ctx.beginPath();
@@ -136,7 +149,10 @@ function draw(ctx, v) {
   ctx.fillStyle = 'rgba(0,0,0,0.28)';
   ctx.fillRect(0, 0, v.w, v.h);
   const cx = v.w / 2, cy = v.h / 2;
-  const speed = (0.06 + v.bass * 0.55) * v.dt * 60;
+  // v.bass / v.level are raw; ease them here (quick up, slow down) so the speed surges smoothly
+  const bass = v.ease('bass', v.bass, 0.05, 0.25);
+  const level = v.ease('level', v.level, 0.05, 0.25);
+  const speed = (0.06 + bass * 0.55) * v.dt * 60;
   ctx.fillStyle = v.theme.text;
   for (const s of stars) {
     s.z -= speed * 0.01;
@@ -146,7 +162,7 @@ function draw(ctx, v) {
     const y = cy + s.y * k * v.h;
     if (x < 0 || x > v.w || y < 0 || y > v.h) continue;
     const size = Math.max(0.5, (1 - s.z) * 2.6);
-    ctx.globalAlpha = Math.min(1, 1 - s.z + v.level * 0.4);
+    ctx.globalAlpha = Math.min(1, 1 - s.z + level * 0.4);
     ctx.fillRect(x, y, size, size);
   }
   ctx.globalAlpha = 1;
