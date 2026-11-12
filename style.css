@@ -945,6 +945,9 @@ body { height: 100vh; height: 100dvh; }
     border-right: none;      /* #right draws the divider */
     overflow-y: auto;        /* only if the controls ever outgrow the screen */
   }
+  /* Cover height is fitted to the window by main.js (_initFitPlayerHeight) so the player
+     never needs a scrollbar; square when there's room, shorter (image crops) when not. */
+  #art-wrap { height: var(--art-h, var(--left-w)); aspect-ratio: auto; }
   #right { overflow: hidden; border-left: 1px solid var(--brd); }
   #tabs { z-index: 20; box-shadow: var(--ev2); }
 }

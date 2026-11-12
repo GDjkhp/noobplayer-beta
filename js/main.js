@@ -77,6 +77,8 @@ const Main = {
   // is measured because the panel's height varies (its rows wrap, the title
   // and "Requested by" line come and go). Portrait phones/tablets use the
   // overlaid-square layout, which has no gap, so the override is removed there.
+  // The cover's height (--art-h) is fitted the same way, so a short window shrinks the
+  // cover instead of making the player scroll.
   _initFitPlayerHeight() {
     const main = document.getElementById('main');
     const left = document.getElementById('left');
@@ -88,7 +90,7 @@ const Main = {
       if (busy) return;
       busy = true;
       try {
-        if (!sideBySide.matches) { main.style.removeProperty('--left-w'); return; }
+        if (!sideBySide.matches) { main.style.removeProperty('--left-w'); main.style.removeProperty('--art-h'); return; }
         const vw = window.innerWidth;
         const minW = vw > 1000 ? 480 : Math.min(380, Math.max(280, vw * 0.36));   // the stylesheet's own widths
         const maxW = Math.max(minW, Math.floor(vw * 0.6));                         // always leave room for the tabs
@@ -101,6 +103,13 @@ const Main = {
           if (next === w) break;
           w = next;
         }
+        // On a short window the column can't get narrower than minW, so a square cover
+        // plus the panel would be taller than the screen and #left would show a scrollbar.
+        // So the cover gives up the height instead: it is as tall as what's left under
+        // the panel (never taller than it is wide), and the image crops to fill it.
+        const MIN_ART = 96;
+        const artH = Math.max(MIN_ART, Math.min(w, avail - panel.offsetHeight));
+        main.style.setProperty('--art-h', artH + 'px');
       } finally { busy = false; }
     };
     fit();
