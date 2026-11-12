@@ -503,23 +503,11 @@ const UI = {
     const playing = !!(S.current && P && !P.isPaused);
     if (playing !== this._logoPlaying) this.updateEQ();
 
+    // Kick-drum pulse (0 between beats, ~1 on a beat) from the player's low-end detector.
     let target = 0;
-    if (playing) {
-      try {
-        // Bass-weighted energy from the spectrum, blended with the peak level.
-        const spec = P.getSpectrum ? P.getSpectrum(this._logoSpec) : null;
-        if (spec) {
-          this._logoSpec = spec;
-          const n = Math.max(4, Math.floor(spec.length * 0.08));
-          let sum = 0; for (let i = 0; i < n; i++) sum += spec[i];
-          target = (sum / n) / 255;
-          target = Math.pow(target, 1.6);            // widen the dynamic range
-        }
-        if (P.getLevels) target = Math.max(target, Math.min(P.getLevels()[0], 1) * 0.6);
-      } catch (_) {}
-    }
+    if (playing) { try { target = P.getBeat ? P.getBeat() : 0; } catch (_) {} }
     // fast attack, slower release = punchy pulse
-    const k = target > this._logoLvl ? 0.55 : 0.12;
+    const k = target > this._logoLvl ? 0.8 : 0.25;
     this._logoLvl += (target - this._logoLvl) * k;
     const v = Math.min(this._logoLvl, 1);
 
@@ -538,7 +526,7 @@ const UI = {
     const els = document.querySelectorAll('.logo-hex');
     for (const el of els) {
       el.style.rotate = this._logoAngle.toFixed(2) + 'deg';
-      el.style.scale = (0.9 + v * 0.45).toFixed(3);
+      el.style.scale = (0.9 + v * 0.5).toFixed(3);
       el.style.opacity = (0.65 + v * 0.35).toFixed(3);
       el.style.setProperty('--lvl', v.toFixed(3));
     }

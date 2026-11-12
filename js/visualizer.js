@@ -51,11 +51,13 @@ const VIZ_BUILTINS = [
 function draw(ctx, v) {
   ctx.clearRect(0, 0, v.w, v.h);
   const bars = 64;
-  const step = Math.floor(v.freq.length / bars);
+  // only the bins that carry sound, so the bars fill the whole width
+  const usable = v.usable || v.freq.length;
+  const step = Math.max(1, Math.floor(usable / bars));
   const bw = v.w / bars;
   for (let i = 0; i < bars; i++) {
     let sum = 0;
-    for (let j = 0; j < step; j++) sum += v.freq[i * step + j];
+    for (let j = 0; j < step; j++) sum += v.freq[i * step + j] || 0;
     const amp = (sum / step) / 255;
     const h = amp * v.h * 0.9;
     const grad = ctx.createLinearGradient(0, v.h, 0, v.h - h);
@@ -102,7 +104,8 @@ function draw(ctx, v) {
   ctx.globalAlpha = 1;
 
   const spokes = 96;
-  const step = Math.floor(v.freq.length / spokes) || 1;
+  const usable = v.usable || v.freq.length;   // only bins with sound, so the ring is full
+  const step = Math.max(1, Math.floor(usable / spokes));
   ctx.strokeStyle = v.theme.accent;
   ctx.lineWidth = 2;
   for (let i = 0; i < spokes; i++) {
@@ -159,7 +162,8 @@ function draw(ctx, v) {
 // and laid under itself as glow.
 //
 // The original has no beat detection at all: loudness is just a 0.15 s moving
-// average, and the noise moves faster the louder it gets.
+// average. Here the amplitude follows the kick drum (v.beat) over a 0.04 s window, so
+// the sphere swells on the beat and settles in between; the noise moves faster with it.
 const perm = new Uint8Array(512);
 (function () {
   const p = Array.from({ length: 256 }, (_, i) => i);
@@ -242,9 +246,10 @@ function draw(ctx, v) {
 
   // ── motion (the original's model): amplitude = trailing 0.15 s average of loudness
   const dt = Math.min(v.dt, 1 / 30);
-  const level = v.paused ? 0 : loudness(v);
+  // the pulse follows the kick (v.beat: ~0 between beats, ~1 on one) instead of overall loudness
+  const level = v.paused ? 0 : (v.beat == null ? loudness(v) : 0.04 + 0.96 * v.beat);
   hist.push(dt, level); histSum += dt * level; histTime += dt;
-  while (histTime > 0.15 && hist.length > 2) { const d = hist.shift(), l = hist.shift(); histSum -= d * l; histTime -= d; }
+  while (histTime > 0.04 && hist.length > 2) { const d = hist.shift(), l = hist.shift(); histSum -= d * l; histTime -= d; }
   amp = histTime > 0 ? histSum / histTime : level;
   noiseOffset += dt * 0.75 * (0.5 + amp);
 
@@ -435,9 +440,9 @@ function draw(ctx, v) {
   if (hist.length > 8) hist.shift();
 
   // beat multiplier: quick up, slow down
-  const lo = Math.max(0, (0.7 * v.bass + 0.3 * v.mid - fl) / (1 - fl));
-  const target = v.paused ? 0 : Math.min(1, Math.pow(lo, 0.9) * Math.pow(energy, 0.9) * 1.3);
-  mult += (target - mult) * (target > mult ? 0.3 : 0.08);
+  // driven by the kick drum (v.beat: ~0 between beats, ~1 on one), not by overall loudness
+  const target = v.paused ? 0 : Math.min(1, v.beat || 0);
+  mult += (target - mult) * (target > mult ? 0.6 : 0.2);
 
   const rad = m * (0.15 + 0.035 * mult);
   const maxH = m * 0.24;
@@ -592,6 +597,9 @@ const VIZ_TEMPLATE = `// draw() runs once per animation frame.
 //   v.freq  Uint8Array  spectrum, 0-255 per bin (low -> high)
 //   v.wave  Uint8Array  waveform, 128 = silence
 //   v.level v.bass v.mid v.treble   0-1
+//   v.beat      0-1  kick/bass pulse: ~0 between beats, ~1 on a beat (any song)
+//   v.usable    number of v.freq bins that carry sound (the top is empty on lossy audio;
+//               use v.freq[0 .. v.usable) to fill your whole canvas)
 //   v.t  seconds playing   v.dt  seconds since last frame
 //   v.w  v.h  canvas size    v.paused
 //   v.track {title, author, length} or null
@@ -912,6 +920,7 @@ canvas{display:block;width:100%;height:100%}</style>
     this._specBuf = player?.getSpectrum ? player.getSpectrum(this._specBuf) : this._specBuf;
     this._waveBuf = player?.getWaveform ? player.getWaveform(this._waveBuf) : this._waveBuf;
     const freq = this._specBuf || new Uint8Array(256);
+    const paused = !player || player.isPaused;
     const wave = this._waveBuf || new Uint8Array(512).fill(128);
 
     const rect = stage.getBoundingClientRect();
@@ -922,6 +931,8 @@ canvas{display:block;width:100%;height:100%}</style>
       probe: this._probing,
       freq, wave,
       level: player?.getLevels ? Math.min(1, player.getLevels()[0]) : 0,
+      usable: this._usableBins(freq, paused),
+      beat: !paused && player?.getBeat ? player.getBeat() : 0,
       bass: this._band(freq, 0, 0.12),
       mid: this._band(freq, 0.12, 0.45),
       treble: this._band(freq, 0.45, 1),
@@ -929,11 +940,33 @@ canvas{display:block;width:100%;height:100%}</style>
       dt,
       w: Math.max(1, Math.round(rect.width)),
       h: Math.max(1, Math.round(rect.height)),
-      paused: !player || player.isPaused,
+      paused,
       positionMs: player?.getPositionMs ? player.getPositionMs() : 0,
       track: t ? { title: t.info.title, author: t.info.author, length: t.info.length } : null,
       theme: this._theme(),
     }, '*');
+  },
+
+  // How many of the spectrum's bins actually carry sound. Lossy audio (YouTube's AAC/Opus)
+  // is low-passed around 16-20 kHz, so the top of the spectrum is permanently empty, and
+  // anything that spreads bins evenly across its width leaves that share of the screen
+  // blank. This finds the highest bin that has had signal lately (a slowly decaying
+  // per-bin maximum) so visualizers can stretch the useful part over the whole width.
+  _usableBins(freq, paused) {
+    const n = freq.length;
+    if (!this._hold || this._hold.length !== n) { this._hold = new Float32Array(n); this._usable = 0; }
+    if (!paused) {
+      const h = this._hold;
+      let top = 0;
+      for (let i = 0; i < n; i++) {
+        h[i] = Math.max(freq[i], h[i] * 0.998);
+        if (h[i] > 10) top = i + 1;
+      }
+      const want = Math.max(Math.round(n * 0.25), top);
+      if (!this._usable || want > this._usable) this._usable = want;
+      else this._usable += (want - this._usable) * 0.02;
+    }
+    return Math.round(this._usable || n);
   },
 
   _band(freq, from, to) {

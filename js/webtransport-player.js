@@ -234,6 +234,7 @@ class WebTransportPlayer {
   get binCount() { return this._pcm.binCount; }
   getSpectrum(out) { return this._pcm.getSpectrum(out); }
   getWaveform(out) { return this._pcm.getWaveform(out); }
+  getBeat() { return this._pcm.getBeat(); }
 
   async destroy() {
     this._closed = true;

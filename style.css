@@ -1352,6 +1352,10 @@ body.pad-active.pad-tabs-focused .pane :focus {
 /* ───────── About tab (rendered README) ───────── */
 #about-body { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 24px 32px; }
 .md { color: var(--text); line-height: 1.65; font-size: 14px; max-width: 760px; }
+/* The scroller is the full-width pane (so its scrollbar sits at the far right edge);
+   the 760px reading width is applied to what's inside it instead. */
+#about-body { max-width: none; }
+#about-body > * { max-width: 760px; }
 .md h1, .md h2, .md h3 { font-family: var(--fn); margin: 1.4em 0 .5em; line-height: 1.25; }
 .md h1 { font-size: 26px; margin-top: 0; }
 .md h2 { font-size: 18px; padding-bottom: 6px; border-bottom: 1px solid var(--brd); }

@@ -45,6 +45,16 @@ class PCMPlayer {
     this.analyser.smoothingTimeConstant = 0.75;
     this.gain.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
+    // Dedicated low-end tap for beat detection. The main analyser's bins are ~94 Hz wide,
+    // so the whole kick/bass range (35-140 Hz) is squeezed into two bins and it is smoothed
+    // too much to show transients. This one has ~23 Hz bins and no smoothing.
+    this.beatAnalyser = this.ctx.createAnalyser();
+    this.beatAnalyser.fftSize = 2048;
+    this.beatAnalyser.smoothingTimeConstant = 0;
+    this.beatAnalyser.minDecibels = -90;
+    this.beatAnalyser.maxDecibels = -20;
+    this.gain.connect(this.beatAnalyser);
+    this._beat = { out: 0, floor: 0, peak: 0, t: 0, buf: null };
     this.nextTime = this.ctx.currentTime + 0.08;
     this.startCtxTime = null;
     this.remainder = new Uint8Array(0);
@@ -176,6 +186,43 @@ class PCMPlayer {
     return [peak, peak];
   }
 
+  // Beat pulse, 0-1. Looks only at the kick/bass range (BEAT_LO-BEAT_HI Hz) and rates it
+  // against what that band has been doing lately, so it is ~0 between beats and ~1 on a
+  // kick, for quiet and loud songs alike (the old 0-2.9 kHz average sat near max all song).
+  //   floor = slow average of the band      peak = recent maximum (decays over ~3 s)
+  //   pulse = (now - floor) / (peak - floor), then a fast-attack / ~0.14 s release.
+  // Safe to call from several places per frame: it only recomputes every few ms.
+  getBeat() {
+    const a = this.beatAnalyser, b = this._beat;
+    if (!a || !b) return 0;
+    const now = performance.now();
+    if (b.t && now - b.t < 6) return b.out;
+    const dt = b.t ? Math.min((now - b.t) / 1000, 0.1) : 0.016;
+    b.t = now;
+    if (this.isPaused) { b.out *= Math.exp(-dt / 0.1); return b.out; }
+
+    const n = a.frequencyBinCount;
+    if (!b.buf || b.buf.length !== n) b.buf = new Uint8Array(n);
+    a.getByteFrequencyData(b.buf);
+    const hz = this.ctx.sampleRate / a.fftSize;
+    const lo = Math.max(1, Math.round(PCMPlayer.BEAT_LO / hz));
+    const hi = Math.max(lo + 1, Math.round(PCMPlayer.BEAT_HI / hz));
+    let sum = 0;
+    for (let i = lo; i <= hi; i++) sum += b.buf[i];
+    const x = sum / (hi - lo + 1) / 255;
+
+    b.floor += (x - b.floor) * (1 - Math.exp(-dt / 0.8));
+    b.peak = x > b.peak ? x : b.peak + (x - b.peak) * (1 - Math.exp(-dt / 3));
+    let target = 0;
+    if (b.peak > 0.08) {                                   // silence gate
+      const range = Math.max(b.peak - b.floor, 0.1);
+      const norm = Math.max(0, Math.min(1, (x - b.floor) / range));
+      target = norm < 0.12 ? 0 : Math.pow(norm, 1.25);
+    }
+    b.out = target > b.out ? b.out + (target - b.out) * 0.7 : b.out * Math.exp(-dt / 0.14);
+    return b.out;
+  }
+
   // ── visualizer feeds ──
   // Both players expose these identically (see AudioElPlayer), so
   // visualizer.js never has to know which mode is running — same reason
@@ -244,3 +291,7 @@ class PCMPlayer {
     this._sources = [];
   }
 }
+
+// Band the beat pulse listens to (Hz): the kick drum / sub-bass. Change these to retune it.
+PCMPlayer.BEAT_LO = 35;
+PCMPlayer.BEAT_HI = 140;
