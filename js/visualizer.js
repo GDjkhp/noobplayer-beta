@@ -216,9 +216,9 @@ const NG = 56;                               // the noise only varies slowly, so
 const nfield = new Float32Array((NG + 1) * (NG + 1));
 let noiseOffset = 0, amp = 0;
 let off = null, offCtx = null, img = null, data32 = null, buf = null;
-let S = 0, K = 0, quality = 1, kernelFor = '';
+let S = 0, K = 0, quality = 0.6, kernelFor = '';   // start light and ramp up: a cold start is the slowest the code will ever run
 let kOff = null, kVal = null, kLen = null;   // dot stamp for each of QxQ sub-pixel positions
-let costAvg = 8, frames = 0;
+let costAvg = 0, gapAvg = 17, frames = 0, sinceChange = 0;
 let rgbKey = '', rgb32 = 0;
 const Q = 4;
 
@@ -269,7 +269,7 @@ function draw(ctx, v) {
 
   // ── square viewport, buffers, dot stamp
   const size = Math.max(64, Math.floor(Math.min(W, H)));
-  const kWanted = Math.max(64, Math.min(322, Math.round(size / 1.86 * quality)));
+  const kWanted = Math.max(64, Math.round(Math.min(322, size / 1.86) * quality));   // quality is relative to the most dots this size would ever get
   if (size !== S || !off) {
     S = size;
     off = document.createElement('canvas'); off.width = S; off.height = S;
@@ -337,11 +337,23 @@ function draw(ctx, v) {
   } catch (e) {}
   ctx.drawImage(off, ox, oy);
 
-  // ── adapt: if this machine can't keep up, use fewer (slightly bigger) dots
-  costAvg += (performance.now() - t0 - costAvg) * 0.1;
-  if (++frames % 40 === 0) {
-    if (costAvg > 12 && quality > 0.4) quality = Math.max(0.4, quality * 0.8);
-    else if (costAvg < 5 && quality < 1) quality = Math.min(1, quality * 1.15);
+  // ── adapt: find the number of dots this machine can keep up with, and find it fast.
+  // The first frames are the slowest the code will ever run (cold JIT, fresh buffers), so
+  // they aren't measured. Cost grows with the dot count, i.e. with quality squared, so a step
+  // is sized from how far off budget the last few frames were instead of a fixed 20% nudge
+  // every 40 frames (which took several seconds to settle on a slow machine). It re-checks
+  // every 6 frames for the first 2 seconds, then every 30.
+  frames++; sinceChange++;
+  if (frames > 2) {
+    costAvg = costAvg ? costAvg + (performance.now() - t0 - costAvg) * 0.3 : performance.now() - t0;
+    gapAvg += (Math.min(v.dt * 1000, 60) - gapAvg) * 0.15;
+  }
+  if (costAvg && sinceChange >= (frames < 120 ? 6 : 30)) {
+    const before = quality;
+    if (gapAvg > 28 && costAvg > 4) quality = Math.max(0.47, quality * 0.85);   // frames arrive late: the blur/upload is the bottleneck, which draw() can't time
+    else if (costAvg > 10) quality = Math.max(0.47, quality * Math.max(0.6, Math.sqrt(8 / costAvg)));
+    else if (costAvg < 6 && gapAvg < 24 && quality < 1) quality = Math.min(1, quality * Math.min(1.2, Math.sqrt(8 / Math.max(costAvg, 1))));
+    if (quality !== before) { sinceChange = 0; costAvg = 0; }                  // re-measure at the new size
   }
 }`
 },
@@ -1018,11 +1030,16 @@ canvas{display:block;width:100%;height:100%}</style>
   // Handed to every visualizer so they can match the active skin instead
   // of hardcoding colours that clash with whatever the user picked.
   _theme() {
+    // Read at most every 400 ms: this runs once per frame and getComputedStyle + 14
+    // property reads is real main-thread work that also competes with the audio analysis.
+    const now = performance.now();
+    if (this._themeCache && now - this._themeAt < 400) return this._themeCache;
     const cs = getComputedStyle(document.documentElement);
     const out = {};
     for (const k of ['bg','surf','surf2','surf3','brd','brd2','text','muted','accent','accent2','green','red','amber','pink']) {
       out[k] = (cs.getPropertyValue('--' + k) || '').trim() || '#888';
     }
+    this._themeCache = out; this._themeAt = now;
     return out;
   },
 

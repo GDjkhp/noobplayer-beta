@@ -763,6 +763,10 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 
 .skin-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
 .skin-actions .overlay-btn { margin-top: 0; }
+/* Skins: Save | Publish | Reset on the first row, Export | Import on the second. */
+.skin-actions-main { grid-template-columns: repeat(6, 1fr); }
+.skin-actions-main .overlay-btn { grid-column: span 2; }
+.skin-actions-main .overlay-btn:nth-child(n+4) { grid-column: span 3; }
 
 .skin-browse-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
 .skin-sort { display: flex; gap: 4px; flex: 1; }
@@ -787,7 +791,8 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 .skin-card-acts { display: flex; gap: 5px; flex-shrink: 0; }
 
 @media (max-width: 700px) {
-  .skin-actions { grid-template-columns: 1fr; }
+  .skin-actions, .skin-actions-main { grid-template-columns: 1fr; }
+  .skin-actions-main .overlay-btn, .skin-actions-main .overlay-btn:nth-child(n+4) { grid-column: auto; }
   .skin-color-grid { grid-template-columns: 1fr 1fr; }
   .skin-card { flex-wrap: wrap; }
 }
@@ -800,9 +805,21 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 }
 .viz-tabs { flex: 1 1 100%; min-width: 0; }
 #viz-mine-count { color: var(--muted2); }
+/* Name + fullscreen sit in the stage's top-right corner, invisible until the
+   pointer is over the stage (or something inside the group has focus). */
+.viz-overlay {
+  position: absolute; top: 10px; right: 10px; z-index: 2;
+  display: flex; align-items: center; gap: 8px; max-width: calc(100% - 20px);
+  padding: 4px 4px 4px 12px; border-radius: var(--sh-full);
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  opacity: 0; pointer-events: none; transition: opacity .2s;
+}
+#viz-stage:hover .viz-overlay, .viz-overlay:focus-within { opacity: 1; pointer-events: auto; }
+@media (hover: none) { .viz-overlay { opacity: .75; pointer-events: auto; } }   /* touch has no hover */
 .viz-active-name {
-  flex: 1; text-align: right; font-family: var(--fm); font-size: 10px;
-  color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; text-align: right; font-family: var(--fm); font-size: 10px;
+  color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 #viz-body { flex: 1; overflow-y: auto; padding: 16px; min-height: 0; }

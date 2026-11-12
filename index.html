@@ -227,7 +227,6 @@
             <button class="skin-tab" data-stab="mine"><span class="material-symbols-outlined">folder</span>My Skins <span id="skins-mine-count"></span></button>
             <button class="skin-tab" data-stab="browse"><span class="material-symbols-outlined">explore</span>Browse</button>
           </div>
-          <button class="qa" id="btn-skin-reset" title="Back to the built-in look"><span class="material-symbols-outlined">restart_alt</span>Reset</button>
         </div>
 
         <div id="skins-body">
@@ -289,9 +288,10 @@
               </div>
             </div>
 
-            <div class="skin-actions">
+            <div class="skin-actions skin-actions-main">
               <button id="btn-skin-save" class="overlay-btn">Save Skin</button>
               <button id="btn-skin-publish" class="overlay-btn ghost">Publish to Gallery</button>
+              <button id="btn-skin-reset" class="overlay-btn ghost" title="Back to the built-in look">Reset</button>
               <button id="btn-skin-export" class="overlay-btn ghost">Export JSON</button>
               <button id="btn-skin-import" class="overlay-btn ghost">Import JSON</button>
             </div>
@@ -325,15 +325,18 @@
             <button class="viz-tab" data-vtab="mine"><span class="material-symbols-outlined">video_library</span>Library <span id="viz-mine-count"></span></button>
             <button class="viz-tab" data-vtab="browse"><span class="material-symbols-outlined">explore</span>Browse</button>
           </div>
-          <span id="viz-active-name" class="viz-active-name">—</span>
-          <button class="qa" id="btn-viz-full" title="Fullscreen"><span class="material-symbols-outlined">fullscreen</span></button>
         </div>
 
         <div id="viz-body">
 
           <!-- ───────── Stage ───────── -->
           <div class="viz-pane on" id="vtab-stage">
-            <div id="viz-stage"></div>
+            <div id="viz-stage">
+              <div class="viz-overlay">
+                <span id="viz-active-name" class="viz-active-name">—</span>
+                <button class="qa" id="btn-viz-full" title="Fullscreen"><span class="material-symbols-outlined">fullscreen</span></button>
+              </div>
+            </div>
             <div id="viz-error" class="viz-error"></div>
             <div class="viz-stage-note">
               Visualizers run in a sandboxed frame with no network access and no
