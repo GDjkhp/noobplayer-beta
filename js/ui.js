@@ -506,7 +506,7 @@ const UI = {
     // Kick-drum pulse (0 between beats, ~1 on a beat) from the player's low-end detector.
     let target = 0;
     if (playing) { try { target = P.getBeat ? P.getBeat() : 0; } catch (_) {} }
-    // fast attack, slower release = punchy pulse
+    // the beat detector is raw; the logo does its own easing: fast attack, slower release
     const k = target > this._logoLvl ? 0.8 : 0.25;
     this._logoLvl += (target - this._logoLvl) * k;
     const v = Math.min(this._logoLvl, 1);

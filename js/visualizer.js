@@ -71,7 +71,8 @@ function draw(ctx, v) {
 {
   name: 'Oscilloscope',
   author: 'Noobplayer',
-  code: `// Waveform trace with a soft afterglow.
+  code: `// Waveform trace with a soft afterglow (the waveform itself is raw; the afterglow is this
+// visualizer's own smoothing - change the 0.18, or use clearRect to drop it).
 function draw(ctx, v) {
   ctx.fillStyle = 'rgba(0,0,0,0.18)';
   ctx.fillRect(0, 0, v.w, v.h);
@@ -162,8 +163,9 @@ function draw(ctx, v) {
 // and laid under itself as glow.
 //
 // The original has no beat detection at all: loudness is just a 0.15 s moving
-// average. Here the amplitude follows the kick drum (v.beat) over a 0.04 s window, so
-// the sphere swells on the beat and settles in between; the noise moves faster with it.
+// average. Here the amplitude follows the kick drum (v.beat, which is raw) through a short
+// ease (rise 0.02 s / fall 0.06 s, see the v.ease call below), so the sphere swells on the
+// beat and settles in between; the noise moves faster with it.
 const perm = new Uint8Array(512);
 (function () {
   const p = Array.from({ length: 256 }, (_, i) => i);
@@ -196,8 +198,6 @@ function fractal(x, y, z) {
 
 const NG = 56;                               // the noise only varies slowly, so sample it on a coarse grid
 const nfield = new Float32Array((NG + 1) * (NG + 1));
-let hist = [];                               // [dt, level] pairs for the 0.15 s moving average
-let histSum = 0, histTime = 0;
 let noiseOffset = 0, amp = 0;
 let off = null, offCtx = null, img = null, data32 = null, buf = null;
 let S = 0, K = 0, quality = 1, kernelFor = '';
@@ -248,9 +248,7 @@ function draw(ctx, v) {
   const dt = Math.min(v.dt, 1 / 30);
   // the pulse follows the kick (v.beat: ~0 between beats, ~1 on one) instead of overall loudness
   const level = v.paused ? 0 : (v.beat == null ? loudness(v) : 0.04 + 0.96 * v.beat);
-  hist.push(dt, level); histSum += dt * level; histTime += dt;
-  while (histTime > 0.04 && hist.length > 2) { const d = hist.shift(), l = hist.shift(); histSum -= d * l; histTime -= d; }
-  amp = histTime > 0 ? histSum / histTime : level;
+  amp = v.ease('amp', level, 0.02, 0.06);       // this visualizer's own smoothing: snap up, settle down
   noiseOffset += dt * 0.75 * (0.5 + amp);
 
   // ── square viewport, buffers, dot stamp
@@ -346,7 +344,6 @@ let hist = [];
 let parts = [];
 let mult = 0;
 let energy = 0;                 // smoothed overall loudness, 0-1
-let shown = null;               // smoothed spectrum actually drawn
 
 function setup(ctx, v) {
   hist = [];
@@ -427,22 +424,21 @@ function draw(ctx, v) {
   }
   // The contrast floor above only shows shape; how big the picture gets has to
   // follow how loud the music really is, or a calm song looks as wild as a drop.
-  const e = v.paused ? 0 : loudness(v);
-  energy += (e - energy) * (e > energy ? 0.25 : 0.06);
+  energy = v.ease('energy', v.paused ? 0 : loudness(v), 0.058, 0.27);   // smoothed loudness
   const gain = Math.pow(energy, 1.1) * 1.15;
-  if (!shown) shown = new Array(BINS).fill(0);
   for (let i = 0; i < BINS; i++) {
-    const tgt = Math.min(1, cur[i] * gain);
-    shown[i] += (tgt - shown[i]) * (tgt > shown[i] ? 0.4 : 0.12);   // rise quickly, settle slowly
-    cur[i] = shown[i];
+    cur[i] = Math.min(1, cur[i] * gain);
   }
+  // the analyser is raw; this visualizer eases it (quick rise, slower settle)
+  const shown = v.ease('spectrum', cur, 0.033, 0.13);
+  for (let i = 0; i < BINS; i++) cur[i] = shown[i];
   hist.push(cur);
   if (hist.length > 8) hist.shift();
 
   // beat multiplier: quick up, slow down
   // driven by the kick drum (v.beat: ~0 between beats, ~1 on one), not by overall loudness
   const target = v.paused ? 0 : Math.min(1, v.beat || 0);
-  mult += (target - mult) * (target > mult ? 0.6 : 0.2);
+  mult = v.ease('beat', target, 0.018, 0.075);   // quick up, slow down
 
   const rad = m * (0.15 + 0.035 * mult);
   const maxH = m * 0.24;
@@ -511,7 +507,6 @@ function draw(ctx, v) {
 // title underneath, clipped to the width of the bars.
 const BARS = 63;
 let vals = new Array(BARS).fill(0.01);
-let prev = new Array(BARS).fill(0);
 
 // The analyser tends to report most of the audible range as loud, which would
 // flatten everything to full height. So measure how loud the spectrum is overall
@@ -543,13 +538,13 @@ function draw(ctx, v) {
     const x = Math.max(0, (mx / 255 - fl) / (1 - fl));
     raw[i] = v.paused ? 0 : Math.min(1, Math.pow(x, 1.7) * (1 + 0.25 * i / BARS));
   }
-  const kd = 1 - Math.exp(-v.dt / 0.05);
+  const target = new Array(BARS);
   for (let i = 0; i < BARS; i++) {
     // neighbouring bands bleed into each other, like the skin's smoothed measures
     const t = (raw[Math.max(0, i - 1)] + raw[i] * 2 + raw[Math.min(BARS - 1, i + 1)]) / 4;
-    const target = 0.01 + t * 0.99;
-    vals[i] = target > vals[i] ? target : vals[i] + (target - vals[i]) * kd;
+    target[i] = 0.01 + t * 0.99;
   }
+  vals = v.ease('bars', target, 0, 0.05);   // instant attack, ~50 ms fall
 
   // layout: pitch = bar + gap = 18 + 7
   const left = W * 0.08, span = W * 0.84;
@@ -601,6 +596,10 @@ const VIZ_TEMPLATE = `// draw() runs once per animation frame.
 //   v.usable    number of v.freq bins that carry sound (the top is empty on lossy audio;
 //               use v.freq[0 .. v.usable) to fill your whole canvas)
 //   v.t  seconds playing   v.dt  seconds since last frame
+//   v.freq, v.wave and v.beat are RAW (the analyser does no smoothing at all). Smoothing is
+//   yours to choose: v.ease(key, target, rise, fall) eases a number or an array toward
+//   target (rise / fall = time constants in seconds, 0 = instant), e.g.
+//     const bars = v.ease('bars', myBarHeights, 0.03, 0.12);   // quick up, slower down
 //   v.w  v.h  canvas size    v.paused
 //   v.track {title, author, length} or null
 //   v.theme {bg, surf, text, accent, accent2, ...} from your active skin
@@ -712,6 +711,29 @@ canvas{display:block;width:100%;height:100%}</style>
   var dpr = Math.min(window.devicePixelRatio || 1, 2);
   var didSetup = false, errs = 0, dead = false, n = 0, lastAck = 0;
 
+  // v.ease(key, target, rise, fall): opt-in smoothing for visualizers. The analyser
+  // data (v.freq / v.wave / v.beat) is RAW; if you want it smoother, ease it here.
+  // target is a number or an array; rise / fall are time constants in SECONDS
+  // (0 = instant, bigger = slower). key names the value (each key keeps its own state).
+  // Frame-rate independent. Returns the eased value (an array stays an array).
+  var easeState = {};
+  function ease(dt, key, target, rise, fall) {
+    var st = easeState[key], i, tau, a;
+    if (target != null && typeof target === 'object' && target.length != null) {
+      if (!st || st.length !== target.length) st = easeState[key] = Float32Array.from(target);
+      for (i = 0; i < target.length; i++) {
+        tau = target[i] > st[i] ? rise : fall;
+        a = tau > 0 ? 1 - Math.exp(-dt / tau) : 1;
+        st[i] += (target[i] - st[i]) * a;
+      }
+      return st;
+    }
+    if (st == null) st = easeState[key] = target;
+    tau = target > st ? rise : fall;
+    a = tau > 0 ? 1 - Math.exp(-dt / tau) : 1;
+    return (easeState[key] = st + (target - st) * a);
+  }
+
   function resize(w, h) {
     canvas.width = Math.max(1, Math.round(w * dpr));
     canvas.height = Math.max(1, Math.round(h * dpr));
@@ -742,6 +764,7 @@ canvas{display:block;width:100%;height:100%}</style>
         if (typeof setup === 'function') setup(ctx, d);
       }
       if (typeof draw !== 'function') { fail(new Error('No draw(ctx, v) function defined')); return; }
+      d.ease = function (key, target, rise, fall) { return ease(d.dt, key, target, rise || 0, fall || 0); };
       draw(ctx, d);
       errs = 0;
     } catch (e) { fail(e); }

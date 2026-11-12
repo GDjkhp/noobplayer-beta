@@ -38,22 +38,14 @@ class PCMPlayer {
     this.gain = this.ctx.createGain();
     this.gain.gain.value = volume;
     this.analyser = this.ctx.createAnalyser();
-    // 512 (256 bins) rather than 256: the level meter only ever needed a
-    // peak, but visualizers want enough frequency resolution to look like
-    // something. Still cheap enough to read every animation frame.
-    this.analyser.fftSize = 512;
-    this.analyser.smoothingTimeConstant = 0.75;
+    // ONE analyser feeds everything (levels, visualizers, beat detection), raw:
+    // no smoothing, so transients arrive untouched. 2048 (1024 bins, ~23 Hz each at
+    // 48 kHz) is what resolves the kick/bass range; at 512 it was two ~94 Hz bins.
+    // Visualizers that want smoother motion do their own smoothing.
+    this.analyser.fftSize = 2048;
+    this.analyser.smoothingTimeConstant = 0;
     this.gain.connect(this.analyser);
     this.analyser.connect(this.ctx.destination);
-    // Dedicated low-end tap for beat detection. The main analyser's bins are ~94 Hz wide,
-    // so the whole kick/bass range (35-140 Hz) is squeezed into two bins and it is smoothed
-    // too much to show transients. This one has ~23 Hz bins and no smoothing.
-    this.beatAnalyser = this.ctx.createAnalyser();
-    this.beatAnalyser.fftSize = 2048;
-    this.beatAnalyser.smoothingTimeConstant = 0;
-    this.beatAnalyser.minDecibels = -90;
-    this.beatAnalyser.maxDecibels = -20;
-    this.gain.connect(this.beatAnalyser);
     this._beat = { out: 0, floor: 0, peak: 0, t: 0, buf: null };
     this.nextTime = this.ctx.currentTime + 0.08;
     this.startCtxTime = null;
@@ -186,20 +178,20 @@ class PCMPlayer {
     return [peak, peak];
   }
 
-  // Beat pulse, 0-1. Looks only at the kick/bass range (BEAT_LO-BEAT_HI Hz) and rates it
+  // Beat pulse, 0-1, from the same raw analyser as everything else. Looks only at the kick/bass range (BEAT_LO-BEAT_HI Hz) and rates it
   // against what that band has been doing lately, so it is ~0 between beats and ~1 on a
   // kick, for quiet and loud songs alike (the old 0-2.9 kHz average sat near max all song).
   //   floor = slow average of the band      peak = recent maximum (decays over ~3 s)
-  //   pulse = (now - floor) / (peak - floor), then a fast-attack / ~0.14 s release.
+  //   pulse = (now - floor) / (peak - floor), taken raw each frame.
   // Safe to call from several places per frame: it only recomputes every few ms.
   getBeat() {
-    const a = this.beatAnalyser, b = this._beat;
+    const a = this.analyser, b = this._beat;
     if (!a || !b) return 0;
     const now = performance.now();
     if (b.t && now - b.t < 6) return b.out;
     const dt = b.t ? Math.min((now - b.t) / 1000, 0.1) : 0.016;
     b.t = now;
-    if (this.isPaused) { b.out *= Math.exp(-dt / 0.1); return b.out; }
+    if (this.isPaused) { b.out = 0; return 0; }
 
     const n = a.frequencyBinCount;
     if (!b.buf || b.buf.length !== n) b.buf = new Uint8Array(n);
@@ -219,7 +211,7 @@ class PCMPlayer {
       const norm = Math.max(0, Math.min(1, (x - b.floor) / range));
       target = norm < 0.12 ? 0 : Math.pow(norm, 1.25);
     }
-    b.out = target > b.out ? b.out + (target - b.out) * 0.7 : b.out * Math.exp(-dt / 0.14);
+    b.out = target;                                         // raw, this frame only
     return b.out;
   }
 
