@@ -1576,7 +1576,11 @@ const UI = {
     const delta = (er.top + er.height / 2) - (top + (bottom - top) / 2);
     if (Math.abs(delta) < 2) return;
     if (own) body.scrollBy({ top: delta, behavior: 'smooth' });
-    else if (outer) outer.scrollBy({ top: delta, behavior: 'smooth' });
+    else if (outer) {
+      // the lyrics scrolling the page counts as scrolling for the portrait player (it collapses)
+      if (typeof Main !== 'undefined' && Main._compactAutoScroll) Main._compactAutoScroll();
+      outer.scrollBy({ top: delta, behavior: 'smooth' });
+    }
   },
 
   // After switching tabs, glide back to the start of the new pane: any list

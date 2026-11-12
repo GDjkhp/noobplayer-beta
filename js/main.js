@@ -170,6 +170,12 @@ const Main = {
       return 0;
     };
     const input = () => { lastInput = performance.now(); };
+    // The lyrics follow the song by scrolling #main themselves (see UI._lyrCenter). That is
+    // scrolling the user can see, so it has to be able to collapse the player like a finger
+    // does: UI calls this right before it scrolls, which lets the scroll events that follow
+    // (the smooth scroll lasts well under MOMENTUM ms) count as input. Everything else the
+    // app scrolls on its own (switching tabs, back to the top) still doesn't.
+    Main._compactAutoScroll = input;
 
     main.addEventListener('touchstart', () => { dragging = false; }, { passive: true });
     main.addEventListener('touchmove', () => { dragging = true; input(); }, { passive: true });
