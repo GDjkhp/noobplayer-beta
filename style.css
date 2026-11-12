@@ -1409,6 +1409,21 @@ body.pad-active.pad-tabs-focused .pane :focus {
   #lyr-badge, #lyr-lang { grid-column: span 3; justify-content: center; }
   #btn-lyr-tr { grid-column: span 2; justify-content: center; }
   #btn-lyr-tr .lbl { display: inline; }
-  #lyr-tr-lang { grid-column: span 4; width: 100%; min-width: 0; }
+  #lyr-tr-lang { grid-column: span 4; width: 100%; min-width: 0; max-width: none; }
   #btn-lyr-refetch { grid-column: 1 / -1; justify-content: center; }
+}
+
+/* Search-result toolbar (built in ui.js): the info text is wrapped in .sres-info,
+   which is transparent to layout on wide screens (display: contents) so nothing
+   changes there. On a phone it takes the whole first row and the buttons share
+   the rows below at equal widths. */
+.sres-info { display: contents; }
+@media (max-width: 700px) {
+  .sres-bar { display: grid !important; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px 6px !important; }
+  .sres-bar > .sres-info { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; grid-column: 1 / -1; min-width: 0; }
+  .sres-bar > .add-btn {
+    grid-column: span 2; margin-left: 0 !important; justify-content: center; min-width: 0;
+    padding-left: 4px; padding-right: 4px; white-space: nowrap;
+  }
+  .sres-bar.n4 > .add-btn { grid-column: span 3; }   /* playlists have four actions: two by two */
 }

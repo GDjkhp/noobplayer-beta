@@ -1091,7 +1091,7 @@ const UI = {
           }
         }
         if (failed) toast(`${failed} of ${links.length} links could not be loaded`, 'warn');
-        banner = `<div style="${bannerCss}"><span style="color:var(--text);font-weight:600">${links.length} links</span><span>${tracks.length} tracks</span>${actions}</div>`;
+        banner = `<div class="sres-bar" style="${bannerCss}"><div class="sres-info"><span style="color:var(--text);font-weight:600">${links.length} links</span><span>${tracks.length} tracks</span></div>${actions}</div>`;
         data = { loadType: tracks.length ? 'multi' : 'empty' };
       } else {
         data = await Backend.loadtracks(id);
@@ -1103,9 +1103,9 @@ const UI = {
       if (data.loadType === 'playlist') {
         tracks = data.data.tracks;
         plMeta = Library.playlistMeta(data, id);
-        banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px">
-          ${srcBadge(srcFromUrl(id) || trackSrc(tracks[0]), 'inline')}<span style="color:var(--text);font-weight:600">${esc(data.data.info?.name || 'Playlist')}</span>
-          <span>${tracks.length} tracks</span>
+        banner = `<div class="sres-bar n4" style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px">
+          <div class="sres-info">${srcBadge(srcFromUrl(id) || trackSrc(tracks[0]), 'inline')}<span style="color:var(--text);font-weight:600">${esc(data.data.info?.name || 'Playlist')}</span>
+          <span>${tracks.length} tracks</span></div>
           <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button><button class="add-btn" id="btn-shuf-all" style="opacity:1" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span>Shuffle Add</button>
           <button class="add-btn" id="btn-lib-save" style="opacity:1" title="Save this playlist to your library"><span class="material-symbols-outlined">bookmark_add</span>Save</button>
           <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every track in this playlist"><span class="material-symbols-outlined">download</span>Download All</button>
@@ -1120,8 +1120,8 @@ const UI = {
       if (!tracks.length) { res.innerHTML = `<div class="empty"><p>No results</p></div>`; return; }
 
       if (!banner && tracks.length > 1) {
-        banner = `<div style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px">
-          <span>${tracks.length} results</span>
+        banner = `<div class="sres-bar" style="padding:8px 12px;font-family:var(--fm);font-size:10px;color:var(--muted);border-bottom:1px solid var(--brd);display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px">
+          <div class="sres-info"><span>${tracks.length} results</span></div>
           <button class="add-btn" id="btn-add-all" style="opacity:1;margin-left:auto"><span class="material-symbols-outlined m-ico">playlist_add</span>Add All</button><button class="add-btn" id="btn-shuf-all" style="opacity:1" title="Shuffle these tracks, then add them to the queue"><span class="material-symbols-outlined m-ico">shuffle</span>Shuffle Add</button>
           <button class="add-btn" id="btn-dl-all" style="opacity:1" title="Download every result"><span class="material-symbols-outlined">download</span>Download All</button>
         </div>`;
