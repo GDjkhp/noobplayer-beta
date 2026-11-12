@@ -1527,6 +1527,8 @@ const UI = {
   // #lyr-body) is what scrolls in the stacked layouts.
   _lyrHeld: false,
   _lyrBound: false,
+  _lyrQuietUntil: 0,   // scroll events before this time are ours (or layout's), not the user's
+  _lyrQuiet(ms) { this._lyrQuietUntil = Math.max(this._lyrQuietUntil, performance.now() + ms); },
 
   _lyrHold(on) {
     this._lyrHeld = on;
@@ -1575,6 +1577,7 @@ const UI = {
     const er = el.getBoundingClientRect();
     const delta = (er.top + er.height / 2) - (top + (bottom - top) / 2);
     if (Math.abs(delta) < 2) return;
+    this._lyrQuiet(1200);   // the smooth scroll below fires scroll events: not the user
     if (own) body.scrollBy({ top: delta, behavior: 'smooth' });
     else if (outer) {
       // the lyrics scrolling the page counts as scrolling for the portrait player (it collapses)
@@ -1602,7 +1605,7 @@ const UI = {
       const stick = tabs ? Math.max(0, tabs.getBoundingClientRect().bottom) : 0;
       const delta = pane.getBoundingClientRect().top - stick;
       // Only ever scroll UP to the pane's first row; never push down into it.
-      if (delta < -1) outer.scrollBy({ top: delta, behavior: 'smooth' });
+      if (delta < -1) { this._lyrQuiet(1200); outer.scrollBy({ top: delta, behavior: 'smooth' }); }
     });
   },
 
@@ -1611,6 +1614,7 @@ const UI = {
   // had scrolled to.
   _lyrResetScroll() {
     const body = document.getElementById('lyr-body');
+    this._lyrQuiet(400);
     if (body) body.scrollTo({ top: 0, behavior: 'instant' });
     if (this._lyrTabOpen()) this._scrollTabToStart('lyrics');
   },
@@ -1649,15 +1653,41 @@ const UI = {
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable) return;
       if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) hold();
     }, opt);
-    // Scrollbar drag: the press lands on the root element (page scrollbar)
-    // or on #lyr-body's own gutter, to the right of its content box.
-    window.addEventListener('pointerdown', (e) => {
-      const t = e.target;
-      if (t === document.documentElement) hold();
-      else if (t.id === 'lyr-body' && e.offsetX >= t.clientWidth) hold();
+    // Scrollbar drag. Pressing a scrollbar is reported with the SCROLLER as the target, and the
+    // pointer is outside its content box (over the bar). Works for whichever element scrolls the
+    // lyrics: #lyr-body itself, #main (stacked portrait layout) or the page. Some browsers only
+    // report scrollbar presses as mousedown (not pointerdown), so listen for both.
+    const body = () => document.getElementById('lyr-body');
+    const onBar = (e) => {
+      const t = e.target, b = body();
+      if (!b || !(t instanceof Element) || !t.contains(b)) return;      // only scrollers that carry the lyrics
+      const root = document.documentElement;
+      let over;
+      if (t === root) over = e.clientX >= root.clientWidth || e.clientY >= root.clientHeight;
+      else {
+        const r = t.getBoundingClientRect();
+        over = e.clientX >= r.left + t.clientLeft + t.clientWidth || e.clientY >= r.top + t.clientTop + t.clientHeight;
+      }
+      if (over) hold();
+    };
+    window.addEventListener('pointerdown', onBar, opt);
+    window.addEventListener('mousedown', onBar, opt);
+    // Safety net for anything that moves the lyrics without a wheel / touch / key / press we
+    // could see (a scrollbar drag the browser doesn't report, middle-click autoscroll, ...):
+    // scrolling the app didn't start itself. Our own smooth scrolls and layout changes are
+    // covered by _lyrQuiet(); a stray burst of scroll events (2+ within 300 ms) outside that is
+    // the user. A single event is ignored — that is what a layout clamp looks like.
+    let strays = 0, strayAt = 0;
+    window.addEventListener('scroll', (e) => {
+      const now = performance.now(), b = body(), t = e.target === document ? document.documentElement : e.target;
+      if (!b || !(t instanceof Element) || !t.contains(b)) return;
+      if (now < this._lyrQuietUntil) { strays = 0; return; }
+      strays = now - strayAt < 300 ? strays + 1 : 1;
+      strayAt = now;
+      if (strays >= 2) hold();
     }, opt);
     document.getElementById('btn-lyr-sync').addEventListener('click', () => this._lyrResume());
-    window.addEventListener('resize', () => this._lyrPlaceSync());
+    window.addEventListener('resize', () => { this._lyrPlaceSync(); this._lyrQuiet(600); });
   },
 
   syncLyrics() {

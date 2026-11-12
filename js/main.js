@@ -161,6 +161,7 @@ const Main = {
       if (on === compact) return;
       compact = on;
       document.body.classList.toggle('np-compact', on);
+      if (typeof UI !== 'undefined' && UI._lyrQuiet) UI._lyrQuiet(600);   // the resize can fire scroll events
     };
     const headerH = () => {
       for (const id of ['hdr-lobby', 'hdr-standalone']) {
