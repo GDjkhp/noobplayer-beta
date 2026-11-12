@@ -96,17 +96,23 @@ const Main = {
         const maxW = Math.max(minW, Math.floor(vw * 0.6));                         // always leave room for the tabs
         const avail = main.clientHeight;                                           // the page doesn't scroll: #main is exactly the height under the header
         let w = minW;
-        // The panel can re-wrap as the width changes, so settle over a few passes.
-        for (let i = 0; i < 4; i++) {
+        // The panel re-wraps as the column's width changes, so its height (and therefore the
+        // width we want) depends on the width itself. Settle over a few passes, and stop as
+        // soon as a width repeats: two widths that keep answering each other is a 2-cycle,
+        // and chasing it is exactly what made the layout flip back and forth every frame.
+        const seen = new Set();
+        for (let i = 0; i < 6; i++) {
+          seen.add(w);
           main.style.setProperty('--left-w', w + 'px');
           const next = Math.min(maxW, Math.max(minW, Math.floor(avail - panel.offsetHeight)));
-          if (next === w) break;
+          if (next === w || seen.has(next)) break;
           w = next;
         }
+        main.style.setProperty('--left-w', w + 'px');   // make sure the final width is the applied one
         // On a short window the column can't get narrower than minW, so a square cover
-        // plus the panel would be taller than the screen and #left would show a scrollbar.
-        // So the cover gives up the height instead: it is as tall as what's left under
-        // the panel (never taller than it is wide), and the image crops to fill it.
+        // plus the panel would be taller than the screen. So the cover gives up the height
+        // instead: it is as tall as what's left under the panel (never taller than it is
+        // wide), and the image crops to fill it.
         const MIN_ART = 96;
         const artH = Math.max(MIN_ART, Math.min(w, avail - panel.offsetHeight));
         main.style.setProperty('--art-h', artH + 'px');

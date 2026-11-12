@@ -244,7 +244,14 @@ textarea.hi {
   width:480px; flex-shrink: 0; border-right: 1px solid var(--brd);
   display: flex; flex-direction: column; background: var(--surf);
   overflow-y: auto;
+  /* Never show (or reserve room for) a scrollbar here. It used to appear and disappear as
+     the window was resized; each time it took ~15px of width, which re-wrapped the controls,
+     which changed the fitted size, which toggled the scrollbar again: the whole player
+     flickered between two layouts. It can still scroll with the wheel / touch if a window
+     is too short for even the smallest cover. */
+  scrollbar-width: none;
 }
+#left::-webkit-scrollbar { display: none; }
 #art-wrap { position: relative; aspect-ratio: 1; background: var(--surf2); overflow: hidden; flex-shrink: 0; }
 /* Groups info/progress/ctrls so they can be treated as one block —
    on mobile this whole panel gets overlaid on top of the album art instead
