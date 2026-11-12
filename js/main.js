@@ -92,7 +92,11 @@ const Main = {
       try {
         if (!sideBySide.matches) { main.style.removeProperty('--left-w'); main.style.removeProperty('--art-h'); return; }
         const vw = window.innerWidth;
-        const minW = vw > 1000 ? 480 : Math.min(380, Math.max(280, vw * 0.36));   // the stylesheet's own widths
+        // The narrowest the column may get. This used to be the stylesheet's 480px, which kept
+        // the cover from staying square on a wide but short window (the column couldn't shrink
+        // to match the height, so the cover came out 480 x 448). 360px still fits the controls
+        // (they wrap onto an extra row, as they do at ~450px); below that the cover crops instead.
+        const minW = vw > 1000 ? 360 : Math.min(380, Math.max(280, vw * 0.36));
         const maxW = Math.max(minW, Math.floor(vw * 0.6));                         // always leave room for the tabs
         const avail = main.clientHeight;                                           // the page doesn't scroll: #main is exactly the height under the header
         let w = minW;
@@ -101,7 +105,7 @@ const Main = {
         // soon as a width repeats: two widths that keep answering each other is a 2-cycle,
         // and chasing it is exactly what made the layout flip back and forth every frame.
         const seen = new Set();
-        for (let i = 0; i < 6; i++) {
+        for (let i = 0; i < 10; i++) {
           seen.add(w);
           main.style.setProperty('--left-w', w + 'px');
           const next = Math.min(maxW, Math.max(minW, Math.floor(avail - panel.offsetHeight)));
