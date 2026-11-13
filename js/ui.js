@@ -1223,13 +1223,12 @@ const UI = {
 
   /* Lyrics provider. '' = "Default": nothing is sent and NodeLink picks the best
      lyrics it can. Anything else is the name of one NodeLink lyrics provider
-     (the file names under NodeLink's src/lyrics; lrcRed is left out because
-     NodeLink lower-cases the requested name and then can't find it). */
+     (the file names under NodeLink's src/lyrics, so the case matters: "lrcRed"). */
   _LYR_PROVIDERS: [
     ['', 'Default'],
     ['bilibili', 'Bilibili'], ['deezer', 'Deezer'], ['genius', 'Genius'], ['lrclib', 'LRCLIB'],
-    ['letrasmus', 'Letras.mus.br'], ['monochrome', 'Monochrome'], ['musixmatch', 'Musixmatch'],
-    ['unison', 'Unison'], ['yandexmusic', 'Yandex Music'], ['youtube', 'YouTube'],
+    ['lrcRed', 'LrcRed'], ['letrasmus', 'Letras.mus.br'], ['monochrome', 'Monochrome'],
+    ['musixmatch', 'Musixmatch'], ['unison', 'Unison'], ['yandexmusic', 'Yandex Music'], ['youtube', 'YouTube'],
   ],
   _lyrGen: 0,   // bumped per fetch, so a slow answer from an old provider can't overwrite a newer one
 
@@ -1387,29 +1386,28 @@ const UI = {
   initLyricsTranslate() {
     const sel = document.getElementById('lyr-tr-lang');
     if (!sel) return;
-    sel.innerHTML = this._TR_LANGS.map(([c, n]) => `<option value="${c}">${esc(n)}</option>`).join('');
-    sel.value = this._trLang();
+    // "Off" replaces the old Translate on/off button: it lives in the same dropdown as the languages.
+    sel.innerHTML = `<option value="off">Off</option>` + this._TR_LANGS.map(([c, n]) => `<option value="${c}">${esc(n)}</option>`).join('');
+    sel.value = this._trOn() ? this._trLang() : 'off';
     this._trSync();
   },
 
   _trSync() {
     const on = this._trOn();
-    const b = document.getElementById('btn-lyr-tr');
-    if (b) { b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); }
     const body = document.getElementById('lyr-body');
     if (body) body.classList.toggle('tr-off', !on);
   },
 
-  toggleLyricsTranslate() {
-    const on = !this._trOn();
-    try { Store.setItem('nl_lyr_tr', on ? '1' : '0'); } catch (_) {}
-    this._trSync();
-    if (on) this._lyrTranslate().catch(() => {});
-    else this._trGen++;                       // cancel anything still running
-  },
-
+  // The dropdown's value is a language code, or "off".
   setLyricsTranslateLang(lang) {
-    try { Store.setItem('nl_lyr_tr_lang', lang); } catch (_) {}
+    if (lang === 'off') {
+      try { Store.setItem('nl_lyr_tr', '0'); } catch (_) {}
+      this._trSync();
+      this._trGen++;                          // cancel anything still running
+      return;
+    }
+    try { Store.setItem('nl_lyr_tr', '1'); Store.setItem('nl_lyr_tr_lang', lang); } catch (_) {}
+    this._trSync();
     this._trWarned = false;
     this._lyrTranslate().catch(() => {});
   },
