@@ -47,6 +47,11 @@ pub const LOBBY_CODE_LENGTH: usize = 6;
 /// corrupted snapshot can't bloat memory.
 pub const RESTORE_MAX_QUEUE: usize = 9999;
 
+/// Request-body cap for the routes that carry a whole queue (restore, bulk add).
+/// axum's default is 2 MiB, which a big lobby snapshot (thousands of queued
+/// tracks plus history) easily exceeds -> "length limit exceeded".
+pub const BIG_BODY_LIMIT: usize = 64 * 1024 * 1024;
+
 // ── Recommendations / autoplay ──
 /// For sources with no recommendation API (SoundCloud, Bandcamp, direct URLs)
 /// fall back to a plain YouTube Music search for the track's artist.

@@ -19,6 +19,7 @@ mod util;
 
 use std::path::PathBuf;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderName, Method};
 use axum::routing::{get, post};
 use axum::{middleware, Router};
@@ -56,7 +57,7 @@ fn router() -> Router {
         .route("/api/lobby/join", post(api::join_lobby).fallback(fb))
         .route("/api/lobby/public", get(api::list_public).fallback(fb))
         .route("/api/lobby/rejoin", post(api::rejoin_lobby).fallback(fb))
-        .route("/api/lobby/restore", post(api::restore_lobby).fallback(fb))
+        .route("/api/lobby/restore", post(api::restore_lobby).layer(DefaultBodyLimit::max(config::BIG_BODY_LIMIT)).fallback(fb))
         .route(&lobby("leave"), post(api::leave_lobby).fallback(fb))
         .route(&lobby("chat"), post(api::post_chat).fallback(fb))
         .route(&lobby("history"), get(api::lobby_history).fallback(fb))
@@ -81,7 +82,7 @@ fn router() -> Router {
         .route(&lobby("code"), post(api::lobby_change_code).fallback(fb))
         .route(&lobby("rename"), post(api::lobby_rename).fallback(fb))
         .route(&lobby("queue/add"), post(api::lobby_queue_add).fallback(fb))
-        .route(&lobby("queue/add_bulk"), post(api::lobby_queue_add_bulk).fallback(fb))
+        .route(&lobby("queue/add_bulk"), post(api::lobby_queue_add_bulk).layer(DefaultBodyLimit::max(config::BIG_BODY_LIMIT)).fallback(fb))
         .route(&lobby("queue/remove"), post(api::lobby_queue_remove).fallback(fb))
         .route(&lobby("queue/shuffle"), post(api::lobby_queue_shuffle).fallback(fb))
         .route(&lobby("queue/clear"), post(api::lobby_queue_clear).fallback(fb))
