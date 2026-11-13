@@ -378,6 +378,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   /* ───────── Lyrics ───────── */
   UI.initLyricsTranslate();
+  UI.initLyricsProvider();
+  document.getElementById('lyr-provider').addEventListener('change', e => UI.setLyricsProvider(e.target.value));
   document.getElementById('btn-lyr-tr').addEventListener('click', () => UI.toggleLyricsTranslate());
   document.getElementById('lyr-tr-lang').addEventListener('change', e => UI.setLyricsTranslateLang(e.target.value));
 

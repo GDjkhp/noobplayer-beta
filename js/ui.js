@@ -1186,7 +1186,7 @@ const UI = {
       this._lyrCache.delete(encoded); this._lyrCache.set(encoded, p);
       return p;
     }
-    p = Promise.resolve(Backend.loadlyrics(encoded)).catch(e => { this._lyrCache.delete(encoded); throw e; });
+    p = Promise.resolve(Backend.loadlyrics(encoded, this._lyrProvider())).catch(e => { if (this._lyrCache.get(encoded) === p) this._lyrCache.delete(encoded); throw e; });
     this._lyrCache.set(encoded, p);
     this._lyrEvict(encoded, keep);
     return p;
@@ -1219,6 +1219,46 @@ const UI = {
     const prev = this._lyrPreFor;
     this._lyrPreFor = enc;
     this._lyrLoad(enc, [prev]).catch(() => { if (this._lyrPreFor === enc) this._lyrPreFor = null; });
+  },
+
+  /* Lyrics provider. '' = "Default": nothing is sent and NodeLink picks the best
+     lyrics it can. Anything else is the name of one NodeLink lyrics provider
+     (the file names under NodeLink's src/lyrics; lrcRed is left out because
+     NodeLink lower-cases the requested name and then can't find it). */
+  _LYR_PROVIDERS: [
+    ['', 'Default'],
+    ['bilibili', 'Bilibili'], ['deezer', 'Deezer'], ['genius', 'Genius'], ['lrclib', 'LRCLIB'],
+    ['letrasmus', 'Letras.mus.br'], ['monochrome', 'Monochrome'], ['musixmatch', 'Musixmatch'],
+    ['unison', 'Unison'], ['yandexmusic', 'Yandex Music'], ['youtube', 'YouTube'],
+  ],
+  _lyrGen: 0,   // bumped per fetch, so a slow answer from an old provider can't overwrite a newer one
+
+  _lyrProvider() {
+    let v = null; try { v = Store.getItem('nl_lyr_provider'); } catch (_) {}
+    return this._LYR_PROVIDERS.some(p => p[0] === v) ? v : '';
+  },
+  _lyrProviderName() {
+    const v = this._lyrProvider();
+    return (this._LYR_PROVIDERS.find(p => p[0] === v) || [])[1] || '';
+  },
+
+  initLyricsProvider() {
+    const sel = document.getElementById('lyr-provider');
+    if (!sel) return;
+    sel.innerHTML = this._LYR_PROVIDERS.map(([c, n]) => `<option value="${c}">${esc(n)}</option>`).join('');
+    sel.value = this._lyrProvider();
+  },
+
+  setLyricsProvider(v) {
+    const val = this._LYR_PROVIDERS.some(p => p[0] === v) ? v : '';
+    try { val ? Store.setItem('nl_lyr_provider', val) : Store.removeItem('nl_lyr_provider'); } catch (_) {}
+    // Everything cached (and the preloaded next track) came from the old provider.
+    this._lyrCache.clear();
+    this._lyrPreFor = null;
+    if (!S.current) return;
+    S.lyricsFetchedFor = null;
+    S.lyrics = null; S.lyricsType = null; S._lyrLastIdx = -1;
+    this.fetchLyrics({ notify: true });
   },
 
   // Manual "Fetch Lyrics": throw away whatever we have for this track (cached
@@ -1455,6 +1495,7 @@ const UI = {
     const enc = S.current.encoded;
     if (S.lyricsFetchedFor === enc) { this.preloadNextLyrics(); return; }
     S.lyricsFetchedFor = enc;
+    const gen = ++this._lyrGen;
     this._lyrBusy(true);
     this._lyrHold(false);
     this._lyrBadge();
@@ -1464,7 +1505,7 @@ const UI = {
     const note = opts.notify ? toast.loading('Fetching lyrics…') : null;
     document.getElementById('lyr-src-lbl').textContent = 'Loading…';
     document.getElementById('lyr-body').innerHTML = `<div class="empty"><div class="dots"><span></span><span></span><span></span></div><p>Fetching lyrics…</p></div>`;
-    const stale = () => !S.current || S.current.encoded !== enc;   // track changed while we waited
+    const stale = () => !S.current || S.current.encoded !== enc || gen !== this._lyrGen;   // track (or provider) changed while we waited
     try {
       await this._fetchLyricsInto(enc, stale);
       if (note) {
@@ -1482,10 +1523,18 @@ const UI = {
     try {
       const data = await this._lyrLoad(enc);
       if (stale()) return;
+      const pick = this._lyrProviderName();    // '' on Default
+      if (pick && data && data.loadType === 'error') {
+        // Only when a specific provider was asked for: on Default an all-failed lookup still reads as "no lyrics".
+        S.lyrics = null; S.lyricsType = null;
+        document.getElementById('lyr-src-lbl').textContent = 'Error';
+        document.getElementById('lyr-body').innerHTML = `<div class="empty"><p>${esc((data.data && data.data.message) || `${pick} could not provide lyrics`)}</p></div>`;
+        return;
+      }
       if (!data || data.loadType === 'empty' || !data.data) {
         S.lyrics = null; S.lyricsType = null;
         document.getElementById('lyr-src-lbl').textContent = 'No lyrics found';
-        document.getElementById('lyr-body').innerHTML = `<div class="empty"><p>No lyrics available</p></div>`;
+        document.getElementById('lyr-body').innerHTML = `<div class="empty"><p>${pick ? `${esc(pick)} has no lyrics for this track` : 'No lyrics available'}</p></div>`;
         return;
       }
       const d = data.data;

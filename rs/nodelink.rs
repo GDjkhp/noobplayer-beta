@@ -174,7 +174,13 @@ pub async fn nl_loadtracks(Query(q): Query<std::collections::HashMap<String, Str
 
 pub async fn nl_loadlyrics(Query(q): Query<std::collections::HashMap<String, String>>) -> Response {
     let et = q.get("encodedTrack").cloned().unwrap_or_default();
-    proxy_json("/v4/loadlyrics", &[("encodedTrack", et.as_str())]).await
+    // Optional lyrics provider. Absent/empty ("Default") sends nothing, so NodeLink picks the best lyrics itself.
+    let src = q.get("source").map(|s| s.trim().to_string()).unwrap_or_default();
+    let mut params: Vec<(&str, &str)> = vec![("encodedTrack", et.as_str())];
+    if !src.is_empty() {
+        params.push(("source", src.as_str()));
+    }
+    proxy_json("/v4/loadlyrics", &params).await
 }
 
 pub async fn nl_meaning(Query(q): Query<std::collections::HashMap<String, String>>) -> Response {

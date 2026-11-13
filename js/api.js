@@ -189,10 +189,14 @@ const Backend = {
     return this._get(path);
   },
 
-  async loadlyrics(encodedTrack) {
+  // `source` is a specific NodeLink lyrics provider. Empty/undefined ("Default")
+  // sends nothing at all, so the server walks its own provider order and returns
+  // the best lyrics it can find.
+  async loadlyrics(encodedTrack, source) {
+    const q = `encodedTrack=${encodeURIComponent(encodedTrack)}` + (source ? `&source=${encodeURIComponent(source)}` : '');
     const path = this.mode === 'standalone'
-      ? `/v4/loadlyrics?encodedTrack=${encodeURIComponent(encodedTrack)}`
-      : `/api/nodelink/loadlyrics?encodedTrack=${encodeURIComponent(encodedTrack)}`;
+      ? `/v4/loadlyrics?${q}`
+      : `/api/nodelink/loadlyrics?${q}`;
     return this._get(path);
   },
 

@@ -2715,7 +2715,12 @@ async def nl_loadtracks():
 @app.route("/api/nodelink/loadlyrics")
 async def nl_loadlyrics():
     et = request.args.get("encodedTrack", "")
-    async with http_session.get(f"{NL_HOST}/v4/loadlyrics", params={"encodedTrack": et},
+    params = {"encodedTrack": et}
+    # Optional lyrics provider; absent/empty ("Default") sends nothing so NodeLink picks the best lyrics itself.
+    src = request.args.get("source", "").strip()
+    if src:
+        params["source"] = src
+    async with http_session.get(f"{NL_HOST}/v4/loadlyrics", params=params,
                                  headers={"Authorization": NL_PASS}) as r:
         body = await r.read()
         return Response(body, status=r.status, mimetype="application/json")

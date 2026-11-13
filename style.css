@@ -502,7 +502,12 @@ mark { background: color-mix(in srgb, var(--accent) 38%, transparent); color: in
 #btn-lyr-tr { opacity: 1; }
 #btn-lyr-tr.on { background: var(--accent); border-color: var(--accent); color: #05050f; }
 #lyr-tr-lang { background: var(--bg); border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--text); font-family: var(--fm); font-size: 10px; padding: 4px 8px; outline: none; cursor: pointer; flex-shrink: 0; max-width: 120px; }
-#lyr-tr-lang option { background: var(--surf2); }
+#lyr-tr-lang option, #lyr-provider option { background: var(--surf2); }
+/* Provider picker: same pill as the language select, with a small icon in front. */
+.lyr-prov { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; min-width: 0; background: var(--bg); border: 1px solid var(--brd2); border-radius: var(--sh-full); color: var(--muted); padding: 0 4px 0 8px; transition: border-color .15s; }
+.lyr-prov:focus-within { border-color: var(--accent); }
+.lyr-prov .material-symbols-outlined { font-size: 13px; }
+#lyr-provider { background: none; border: none; outline: none; color: var(--text); font-family: var(--fm); font-size: 10px; padding: 4px 2px; cursor: pointer; min-width: 0; max-width: 130px; }
 @media (max-width: 700px) { #lyr-hdr { flex-wrap: wrap; } #btn-lyr-tr .lbl { display: none; } }
 .ll:hover { color: var(--text); background: var(--st-hover); }
 .ll.active { color: var(--text); font-size: 20px; }
@@ -1419,6 +1424,8 @@ body.pad-active.pad-tabs-focused .pane :focus {
   #btn-lyr-tr { grid-column: span 2; justify-content: center; }
   #btn-lyr-tr .lbl { display: inline; }
   #lyr-tr-lang { grid-column: span 4; width: 100%; min-width: 0; max-width: none; }
+  .lyr-prov { grid-column: 1 / -1; }
+  #lyr-provider { flex: 1; max-width: none; }
   #btn-lyr-refetch { grid-column: 1 / -1; justify-content: center; }
 }
 
